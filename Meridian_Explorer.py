@@ -23,7 +23,7 @@ FOOTER_HEIGHT = 60
 PANE_GAP = 14
 FONT_NAME = "consolas"
 THISPC = "THISPC" # sentinel path meaning "show the drive-selection root"
-STATE_FILE = os.path.join(os.path.expanduser("~"), ".meridian_browser_state.json")
+STATE_FILE = os.path.join(os.path.expanduser("~"), ".meridian_explorer_state.json")
 # --- Color palette: dark "console" theme --------------------------------- #
 COL_BG = (14, 16, 22)
 COL_PANE_BG = (22, 25, 34)
@@ -261,10 +261,10 @@ class Cooldown:
             self._last[key] = now
             return True
         return False
-class MeridianBrowser:
+class MeridianExplorer:
     def __init__(self):
         pygame.init()
-        pygame.display.set_caption("Meridian Browser")
+        pygame.display.set_caption("Meridian Explorer")
         info = pygame.display.Info()
         self.width, self.height = info.current_w, info.current_h
         self.screen = pygame.display.set_mode((self.width, self.height), pygame.FULLSCREEN)
@@ -815,7 +815,7 @@ class MeridianBrowser:
     # ------------------------------------------------------------------ #
     def draw_header(self):
         pygame.draw.rect(self.screen, COL_HEADER_BG, (0, 0, self.width, HEADER_HEIGHT))
-        title = self.font_title.render("MERIDIAN BROWSER", True, COL_ACCENT)
+        title = self.font_title.render("MERIDIAN EXPLORER", True, COL_ACCENT)
         self.screen.blit(title, (30, 12))
         if self.multi_active:
             tag = "SELECT ALL MODE" if len(self.panes[self.multi_pane_index].multi_selected) == len(
@@ -830,7 +830,7 @@ class MeridianBrowser:
         if self.multi_active:
             hints = "A: Toggle Select Y: Options B: Cancel Multi-Select"
         else:
-            hints = "A: Okay B: Back Y: Options LB/RB: Switch Pane LT/RT: Fast Scroll Hold Select: Multi R3: Select All"
+            hints = "A: Confirm B: Back Y: Options LB/RB: Switch Pane L-Stick R/RT: Fast Scroll Hold Select: Multi R3: Select All"
         text = self.font_footer.render(hints, True, COL_DIM_TEXT)
         self.screen.blit(text, (30, y + (FOOTER_HEIGHT - text.get_height()) // 2))
     def draw_pane(self, pane, index, rect):
@@ -966,4 +966,4 @@ class MeridianBrowser:
         self.save_state()
         pygame.quit()
 if __name__ == "__main__":
-    MeridianBrowser().run()
+    MeridianExplorer().run()
