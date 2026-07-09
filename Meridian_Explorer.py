@@ -7,6 +7,11 @@ import string
 import ctypes
 import subprocess
 import collections
+# Prevent the fullscreen pygame window from auto-minimizing when it loses
+# OS focus (e.g. when the Y-menu "Edit"/"Open" actions launch Notepad or
+# another external app). Without this, the window drops to the background
+# and stops receiving controller/keyboard input until manually restored.
+os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
 import pygame
 # --------------------------------------------------------------------------- #
 # CONFIG
@@ -24,6 +29,7 @@ PANE_GAP = 14
 FONT_NAME = "consolas"
 THISPC = "THISPC" # sentinel path meaning "show the drive-selection root"
 STATE_FILE = os.path.join(os.path.expanduser("~"), ".meridian_explorer_state.json")
+INSTALL_DIR = r"C:\Program Files\DskoTech"
 # --- Color palette: dark "console" theme --------------------------------- #
 COL_BG = (14, 16, 22)
 COL_PANE_BG = (22, 25, 34)
@@ -110,6 +116,50 @@ def recycle_bin_delete(paths):
                     os.remove(p)
             except OSError:
                 pass
+def check_install_location():
+    """
+    On Windows, verify the running file (script or frozen exe) lives in
+    C:\\Program Files\\DskoTech\\. If not, prompt the user with a native
+    Yes/No message box offering to copy it there. Runs before pygame is
+    initialized, so it uses the plain Win32 MessageBox API.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        current_path = os.path.abspath(
+            sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+        )
+    except NameError:
+        return
+    current_dir = os.path.dirname(current_path)
+    if os.path.normcase(os.path.normpath(current_dir)) == os.path.normcase(os.path.normpath(INSTALL_DIR)):
+        return
+    MB_YESNO = 0x04
+    MB_ICONQUESTION = 0x20
+    MB_ICONWARNING = 0x30
+    MB_TOPMOST = 0x40000
+    IDYES = 6
+    message = (
+        "Meridian Explorer is not in C:\\Program Files\\DskoTech\\, "
+        "you can run it elsewhere, but it will cause errors if it's not there, "
+        "would you like to make a copy there?"
+    )
+    result = ctypes.windll.user32.MessageBoxW(
+        0, message, "Meridian Explorer", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST
+    )
+    if result != IDYES:
+        return
+    try:
+        os.makedirs(INSTALL_DIR, exist_ok=True)
+        dest = os.path.join(INSTALL_DIR, os.path.basename(current_path))
+        shutil.copy2(current_path, dest)
+        ctypes.windll.user32.MessageBoxW(
+            0, f"Copied to {dest}", "Meridian Explorer", MB_TOPMOST
+        )
+    except OSError as e:
+        ctypes.windll.user32.MessageBoxW(
+            0, f"Copy failed: {e}", "Meridian Explorer", MB_ICONWARNING | MB_TOPMOST
+        )
 class Pane:
     """A single directory-listing column (left or right)."""
     def __init__(self, path=None):
@@ -402,6 +452,15 @@ class MeridianExplorer:
         recycle_bin_delete(paths)
         for p in self.panes:
             p.refresh()
+    @staticmethod
+    def edit_in_notepad(path):
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["notepad.exe", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception:
+            pass
     def do_rename(self, old_path, new_name):
         new_path = os.path.join(os.path.dirname(old_path.rstrip(os.sep)), new_name)
         try:
@@ -430,8 +489,12 @@ class MeridianExplorer:
         else:
             if pane.current_entry() is None:
                 return
-            self.menu_options = [
-                "Open", "Copy", "Cut", "Paste", "Rename", "Change File Extension",
+            entry = pane.current_entry()
+            self.menu_options = ["Open"]
+            if not entry.is_dir and not entry.is_drive:
+                self.menu_options.append("Edit")
+            self.menu_options += [
+                "Copy", "Cut", "Paste", "Rename", "Change File Extension",
                 "Move 2 Other Side", "Copy 2 Other Side", "Delete", "Cancel",
             ]
             self.menu_is_multi = False
@@ -452,6 +515,10 @@ class MeridianExplorer:
         if choice == "Open":
             for path in targets:
                 Pane._launch_file(path)  # static method, works for files/folders
+            self.close_menu()
+        elif choice == "Edit":
+            for path in targets:
+                self.edit_in_notepad(path)
             self.close_menu()
         elif choice == "Copy":
             self.do_copy(targets)
@@ -782,7 +849,8 @@ class MeridianExplorer:
             if pressed(0) and self.cooldown.ready("btn_a", 1.0):
                 if self.multi_active and self.active_pane == self.multi_pane_index:
                     pane.toggle_current_multi()
-                # A no longer opens files (use menu "Open" instead)
+                else:
+                    pane.enter()
                 self.select_option()
             if pressed(1) and self.cooldown.ready("btn_b"):
                 if self.multi_active:
@@ -830,7 +898,7 @@ class MeridianExplorer:
         if self.multi_active:
             hints = "A: Toggle Select Y: Options B: Cancel Multi-Select"
         else:
-            hints = "A: Confirm B: Back Y: Options LB/RB: Switch Pane L-Stick R/RT: Fast Scroll Hold Select: Multi R3: Select All"
+            hints = "A: Confirm B: Back Y: Options LB/RB: Switch Pane L-Stick R/RT: Fast Scroll Hold Select: Multi R3: Select All Start: Quit"
         text = self.font_footer.render(hints, True, COL_DIM_TEXT)
         self.screen.blit(text, (30, y + (FOOTER_HEIGHT - text.get_height()) // 2))
     def draw_pane(self, pane, index, rect):
@@ -966,4 +1034,5 @@ class MeridianExplorer:
         self.save_state()
         pygame.quit()
 if __name__ == "__main__":
+    check_install_location()
     MeridianExplorer().run()
