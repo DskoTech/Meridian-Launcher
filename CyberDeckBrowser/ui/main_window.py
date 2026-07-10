@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(
 
-            "CyberDeck Browser"
+            "CyberDeckBrowser"
 
         )
 

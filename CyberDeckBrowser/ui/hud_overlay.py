@@ -507,7 +507,7 @@ class HUDOverlay(QWidget):
 
             Qt.AlignVCenter,
 
-            "CYBERBROWSER ONLINE"
+            "CYBERDECKBROWSER ONLINE"
 
         )
 

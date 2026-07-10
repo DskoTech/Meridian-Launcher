@@ -66,7 +66,7 @@ class BrowserTabs(QTabWidget):
         )
 
         self.close_program_button.setToolTip(
-            "Close CyberBrowser"
+            "Close CyberDeckBrowser"
         )
 
         self.close_program_button.setCursor(
