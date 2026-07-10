@@ -17,6 +17,7 @@ pyinstaller ^
     --noconfirm ^
     --onefile ^
     --windowed ^
+    --icon onscreenmenu.ico ^
     --name onscreenmenu ^
     launcher.py
 
