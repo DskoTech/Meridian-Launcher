@@ -1,0 +1,43 @@
+{
+  "folders": {
+    "music": [],
+    "photos": [],
+    "videos": []
+  },
+  "sections": {
+    "apps": {
+      "items": []
+    },
+    "games": {
+      "items": []
+    },
+    "emulators": {
+      "items": []
+    },
+    "chat": {
+      "items": []
+    },
+    "streaming": {
+      "items": []
+    },
+    "macros": {
+      "items": []
+    }
+  },
+  "custom_sections": [],
+  "macros_whitelist": [
+    "onscreenmenu.exe"
+  ],
+  "background_image": null,
+  "overlay_enabled": false,
+  "overlay_image": null,
+  "opening_video": null,
+  "window_mode": "fullscreen",
+  "load_subfolders": true,
+  "video_fullscreen": false,
+  "battery_indicator": true,
+  "playnite": {
+    "export_path": null,
+    "executable_path": null
+  }
+}

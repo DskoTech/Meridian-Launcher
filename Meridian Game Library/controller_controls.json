@@ -1,0 +1,18 @@
+{
+  "confirm": "A",
+  "back": "B",
+  "up": "DPAD_UP",
+  "down": "DPAD_DOWN",
+  "left": "DPAD_LEFT",
+  "right": "DPAD_RIGHT",
+  "quit_combo": [
+    "LEFT_THUMB",
+    "RIGHT_THUMB"
+  ],
+  "foreground_combo": [
+    "START",
+    "BACK"
+  ],
+  "deadzone": 0.25,
+  "cooldown_ms": 200
+}

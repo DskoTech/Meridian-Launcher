@@ -1,0 +1,6 @@
+Id: meridian_library_exporter
+Name: Meridian Library Exporter
+Author: You (built with Claude)
+Version: 1.0
+Module: MeridianExporter.psm1
+Type: Script
