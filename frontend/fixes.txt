@@ -1,0 +1,28 @@
+
+#horizon-glow {
+  position: fixed; inset: 0; z-index: 0;
+  background:
+    radial-gradient(1000px 340px at 50% 4%, color-mix(in srgb, var(--active-accent) 16%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 55%, var(--bg-0) 100%);
+  transition: background 700ms ease;
+}
+#horizon-glow::after {
+  content: "";
+  position: absolute; left: 0; right: 0; top: 76px; height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--active-accent) 70%, white 10%), transparent);
+  box-shadow: 0 0 24px 2px color-mix(in srgb, var(--active-accent) 65%, transparent);
+  transition: background 700ms ease, box-shadow 700ms ease;
+}
+
+##preview-pane {
+  width: 260px; 
+  flex-shrink: 0;
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  gap: 10px;
+  padding-top: 4px;
+
+  /* Move left by 100px using transform (recommended) */
+  transform: translateX(-100px);
+}
