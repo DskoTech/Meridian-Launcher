@@ -1,6 +1,0 @@
-pywebview>=4.4
-mutagen>=1.47
-Pillow>=10.0
-pyinstaller>=6.0
-psutil>=5.9
-pywin32>=306
