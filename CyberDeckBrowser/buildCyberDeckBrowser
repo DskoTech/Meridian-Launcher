@@ -63,9 +63,11 @@ REM correctly, add --windowed to the line below to
 REM hide the console for normal use.
 
 pyinstaller --noconfirm --onedir --name CyberDeckBrowser ^
+    --icon "icon.ico" ^
     --collect-all PySide6 ^
     --collect-all shiboken6 ^
     --add-data "osk.bat;." ^
+    --add-data "icon.ico;." ^
     launcher.py
 
 if errorlevel 1 (
@@ -78,6 +80,10 @@ if errorlevel 1 (
 REM Safety net in case --add-data didn't place it
 if not exist "dist\CyberDeckBrowser\osk.bat" (
     copy /y "osk.bat" "dist\CyberDeckBrowser\osk.bat" >nul
+)
+
+if not exist "dist\CyberDeckBrowser\icon.ico" (
+    copy /y "icon.ico" "dist\CyberDeckBrowser\icon.ico" >nul
 )
 
 echo.
