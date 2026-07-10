@@ -1,0 +1,15 @@
+{
+    "homepage": "https://www.google.com",
+    "fullscreen": true,
+    "zoom": 1.0,
+    "search_engine": "https://www.google.com/search?q=",
+    "mouse_sensitivity": 30.0,
+    "trigger_boost": 4.0,
+    "deadzone": 0.15,
+    "hud_enabled": true,
+    "crt_enabled": true,
+    "scanlines_enabled": true,
+    "glitch_enabled": true,
+    "animation_level": "MEDIUM",
+    "cyberpunk_prompt_shown": False
+}
