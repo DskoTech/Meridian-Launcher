@@ -65,8 +65,8 @@ rem   often misses it, causing a startup crash without this.
 rem --collect-submodules webview: makes sure pywebview's platform-specific
 rem   backends (edgechromium on Windows) get bundled rather than silently
 rem   dropped.
-rem If you have your own icon, drop an icon.ico next to this script and
-rem   uncomment the --icon line below.
+rem --icon: icon.ico ships in this folder already — this sets the .exe's
+rem   file icon. Swap in your own icon.ico here if you want a different one.
 python -m PyInstaller ^
     --name "%APP_NAME%" ^
     --windowed ^
@@ -74,8 +74,8 @@ python -m PyInstaller ^
     --noconfirm ^
     --hidden-import win32timezone ^
     --collect-submodules webview ^
+    --icon "%SCRIPT_DIR%icon.ico" ^
     "%SCRIPT_DIR%main.py"
-rem    --icon "%SCRIPT_DIR%icon.ico" ^
 
 if errorlevel 1 (
     echo.
