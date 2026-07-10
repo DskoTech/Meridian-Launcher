@@ -1010,13 +1010,6 @@ def start_controller():
 # Boot: onscreenmenu.exe, resolution detection, window creation
 # --------------------------------------------------------------------------
 
-def launch_onscreenmenu():
-    exe = BASE_DIR / "onscreenmenu.exe"
-    if exe.exists():
-        try:
-            subprocess.Popen([str(exe)], cwd=str(BASE_DIR))
-        except Exception:
-            pass
 
 
 def detect_screen_size():
@@ -1028,7 +1021,7 @@ def detect_screen_size():
 
 
 def main():
-    launch_onscreenmenu()
+   
 
     width, height = detect_screen_size()
     mode = SETTINGS.get("window_mode", "fullscreen")
