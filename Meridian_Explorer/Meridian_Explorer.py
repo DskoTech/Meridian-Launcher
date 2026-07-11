@@ -28,8 +28,16 @@ FOOTER_HEIGHT = 60
 PANE_GAP = 14
 FONT_NAME = "consolas"
 THISPC = "THISPC" # sentinel path meaning "show the drive-selection root"
-STATE_FILE = os.path.join(os.path.expanduser("~"), ".meridian_explorer_state.json")
-INSTALL_DIR = r"C:\Program Files\DskoTech"
+STATE_FILE_LEGACY = os.path.join(os.path.expanduser("~"), ".meridian_explorer_state.json")
+_local_appdata = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+DATA_DIR = os.path.join(_local_appdata, "Meridian Launcher", "Meridian Explorer")
+os.makedirs(DATA_DIR, exist_ok=True)
+STATE_FILE = os.path.join(DATA_DIR, "state.json")
+if os.path.exists(STATE_FILE_LEGACY) and not os.path.exists(STATE_FILE):
+    try:
+        shutil.copy2(STATE_FILE_LEGACY, STATE_FILE)
+    except OSError:
+        pass
 # --- Color palette: dark "console" theme --------------------------------- #
 COL_BG = (14, 16, 22)
 COL_PANE_BG = (22, 25, 34)
@@ -116,50 +124,6 @@ def recycle_bin_delete(paths):
                     os.remove(p)
             except OSError:
                 pass
-def check_install_location():
-    """
-    On Windows, verify the running file (script or frozen exe) lives in
-    C:\\Program Files\\DskoTech\\. If not, prompt the user with a native
-    Yes/No message box offering to copy it there. Runs before pygame is
-    initialized, so it uses the plain Win32 MessageBox API.
-    """
-    if not sys.platform.startswith("win"):
-        return
-    try:
-        current_path = os.path.abspath(
-            sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
-        )
-    except NameError:
-        return
-    current_dir = os.path.dirname(current_path)
-    if os.path.normcase(os.path.normpath(current_dir)) == os.path.normcase(os.path.normpath(INSTALL_DIR)):
-        return
-    MB_YESNO = 0x04
-    MB_ICONQUESTION = 0x20
-    MB_ICONWARNING = 0x30
-    MB_TOPMOST = 0x40000
-    IDYES = 6
-    message = (
-        "Meridian Explorer is not in C:\\Program Files\\DskoTech\\, "
-        "you can run it elsewhere, but it will cause errors if it's not there, "
-        "would you like to make a copy there?"
-    )
-    result = ctypes.windll.user32.MessageBoxW(
-        0, message, "Meridian Explorer", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST
-    )
-    if result != IDYES:
-        return
-    try:
-        os.makedirs(INSTALL_DIR, exist_ok=True)
-        dest = os.path.join(INSTALL_DIR, os.path.basename(current_path))
-        shutil.copy2(current_path, dest)
-        ctypes.windll.user32.MessageBoxW(
-            0, f"Copied to {dest}", "Meridian Explorer", MB_TOPMOST
-        )
-    except OSError as e:
-        ctypes.windll.user32.MessageBoxW(
-            0, f"Copy failed: {e}", "Meridian Explorer", MB_ICONWARNING | MB_TOPMOST
-        )
 class Pane:
     """A single directory-listing column (left or right)."""
     def __init__(self, path=None):
@@ -317,7 +281,11 @@ class MeridianExplorer:
         pygame.display.set_caption("Meridian Explorer")
         info = pygame.display.Info()
         self.width, self.height = info.current_w, info.current_h
-        self.screen = pygame.display.set_mode((self.width, self.height), pygame.FULLSCREEN)
+        # Borderless windowed fullscreen (a frameless window sized/
+        # positioned to exactly cover the screen) instead of an OS-exclusive
+        # display-mode fullscreen switch.
+        os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
+        self.screen = pygame.display.set_mode((self.width, self.height), pygame.NOFRAME)
         self.clock = pygame.time.Clock()
         self.cooldown = Cooldown(COOLDOWN)
         self.font_header = pygame.font.SysFont(FONT_NAME, 26, bold=True)
@@ -1034,5 +1002,4 @@ class MeridianExplorer:
         self.save_state()
         pygame.quit()
 if __name__ == "__main__":
-    check_install_location()
     MeridianExplorer().run()
