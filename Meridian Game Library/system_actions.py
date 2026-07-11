@@ -55,6 +55,32 @@ def _run(cmd):
         return False, str(e)
 
 
+def is_process_running(exe_name: str) -> bool:
+    """Case-insensitive check for whether a process with this executable
+    name (e.g. 'onscreenmenu.exe') is currently running."""
+    if psutil is None:
+        return False
+    exe_name = exe_name.lower()
+    for proc in psutil.process_iter(["name"]):
+        try:
+            if (proc.info.get("name") or "").lower() == exe_name:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            continue
+    return False
+
+
+def open_folder(path):
+    """Open a folder in Windows Explorer, creating it first if it doesn't
+    exist yet."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        os.startfile(path)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 def open_default_browser(url: str = "https://www.google.com"):
     try:
         webbrowser.open(url)

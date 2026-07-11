@@ -1,10 +1,15 @@
-"""Settings + controls JSON storage. Everything lives in the app's own
-directory (not a hidden OS config folder), per spec: settings.json,
-keyboard_controls.json, and controller_controls.json all sit in the program root.
+"""Settings + controls JSON storage.
+
+BASE_DIR is still the folder the app itself lives in (used to find sibling
+exes/scripts). Actual user data - settings.json, the controls files,
+cached thumbnails, etc - lives under
+%LOCALAPPDATA%\\Meridian Launcher\\Meridian Game Library\\ instead, so the
+app folder can sit anywhere without losing write access to its own config.
 """
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -12,18 +17,43 @@ from controller_input import DEFAULT_CONTROLS
 
 # sys.frozen is set by PyInstaller. Path(__file__) resolves into a
 # bundled/temporary location once compiled (not the folder the .exe
-# actually lives in), which would silently reset settings every launch —
-# using sys.executable's folder instead keeps this pointed at the real,
-# persistent app folder in both source and compiled form.
+# actually lives in) — using sys.executable's folder instead keeps BASE_DIR
+# pointed at the real app folder in both source and compiled form.
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 else:
     BASE_DIR = Path(__file__).resolve().parent
 
-SETTINGS_FILE = BASE_DIR / "settings.json"
-KEYBOARD_CONTROLS_FILE = BASE_DIR / "keyboard_controls.json"
-CONTROLLER_CONTROLS_FILE = BASE_DIR / "controller_controls.json"
-OVERLAY_FILE = BASE_DIR / "overlay.png"
+# All persistent user data (settings, controls, cached thumbnails) lives
+# under %LOCALAPPDATA%\Meridian Launcher\Meridian Game Library\ rather than
+# next to the exe.
+_local_appdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+DATA_DIR = Path(_local_appdata) / "Meridian Launcher" / "Meridian Game Library"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+SETTINGS_FILE = DATA_DIR / "settings.json"
+KEYBOARD_CONTROLS_FILE = DATA_DIR / "keyboard_controls.json"
+CONTROLLER_CONTROLS_FILE = DATA_DIR / "controller_controls.json"
+OVERLAY_FILE = DATA_DIR / "overlay.png"
+
+
+def _migrate_legacy_file(old_path, new_path):
+    """One-time migration: carry a pre-update data file sitting next to the
+    exe over to the new location, if the new location doesn't have one yet."""
+    try:
+        if old_path.exists() and not new_path.exists():
+            shutil.copy2(old_path, new_path)
+    except Exception:
+        pass
+
+
+for _old, _new in (
+    (BASE_DIR / "settings.json", SETTINGS_FILE),
+    (BASE_DIR / "keyboard_controls.json", KEYBOARD_CONTROLS_FILE),
+    (BASE_DIR / "controller_controls.json", CONTROLLER_CONTROLS_FILE),
+    (BASE_DIR / "overlay.png", OVERLAY_FILE),
+):
+    _migrate_legacy_file(_old, _new)
 
 # Fixed sections that use a simple "list of launchable .exe" model.
 EXE_LIST_SECTIONS = ["apps", "games", "emulators", "chat", "streaming"]

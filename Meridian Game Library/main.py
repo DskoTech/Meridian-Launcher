@@ -161,7 +161,7 @@ def media_url(path):
 # Thumbnails & metadata (music / photos / videos)
 # --------------------------------------------------------------------------
 
-CACHE_DIR = BASE_DIR / ".cache"
+CACHE_DIR = store.DATA_DIR / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
@@ -947,20 +947,51 @@ class Api:
         store.save_settings(SETTINGS)
         try:
             win = webview.windows[0]
+            # Borderless windowed fullscreen instead of OS-exclusive
+            # fullscreen: move the frameless window to (0, 0) to cover the
+            # screen, or off to a windowed position otherwise. The frame
+            # itself can't be added/removed at runtime (pywebview
+            # limitation), so a live toggle only takes full effect after a
+            # restart.
             if mode == "fullscreen" and not getattr(win, "_meridian_fullscreen", False):
-                win.toggle_fullscreen()
+                win.move(0, 0)
                 win._meridian_fullscreen = True
             elif mode == "windowed" and getattr(win, "_meridian_fullscreen", False):
-                win.toggle_fullscreen()
+                win.move(60, 60)
                 win._meridian_fullscreen = False
         except Exception:
             pass
         return SETTINGS
 
+    # ---------------- settings: app data folder ----------------
+    def open_app_data_folder(self):
+        """Opens %LOCALAPPDATA%\\Meridian Launcher\\Meridian Game Library\\
+        in Explorer, then makes sure onscreenmenu is running (launched if it
+        wasn't already) so a controller can be used to navigate the folder."""
+        ok, err = system_actions.open_folder(str(store.DATA_DIR))
+        if ok:
+            _maybe_launch_onscreenmenu()
+        return {"ok": ok, "error": err}
+
 
 # --------------------------------------------------------------------------
 # Controller wiring
 # --------------------------------------------------------------------------
+
+def _maybe_launch_onscreenmenu():
+    """Best-effort launch of onscreenmenu.exe from the app's own folder, but
+    only if it isn't already running — used after opening the app data
+    folder so the on-screen menu companion is available to navigate it with
+    a controller."""
+    if system_actions.is_process_running("onscreenmenu.exe"):
+        return
+    exe = BASE_DIR / "onscreenmenu.exe"
+    if exe.exists():
+        try:
+            system_actions.launch_path(str(exe))
+        except Exception:
+            pass
+
 
 def _bring_to_foreground():
     if win32gui is None:
@@ -1007,7 +1038,7 @@ def start_controller():
 
 
 # --------------------------------------------------------------------------
-# Boot: onscreenmenu.exe, resolution detection, window creation
+# Boot: resolution detection, window creation
 # --------------------------------------------------------------------------
 
 
@@ -1025,22 +1056,34 @@ def main():
 
     width, height = detect_screen_size()
     mode = SETTINGS.get("window_mode", "fullscreen")
-    fullscreen = mode == "fullscreen"
-    frameless = False
+    # Meridian Launcher passes --window-mode=borderless-fullscreen when it
+    # opens this app (via the Games section's Game Library entry), asking
+    # for windowed (borderless) fullscreen for this run regardless of
+    # whatever was last saved. This is only applied to this run, not
+    # persisted, so a person's own saved window mode (set from this app's
+    # own settings) survives the next time they open it by hand.
+    if "--window-mode=borderless-fullscreen" in sys.argv:
+        mode = "fullscreen"
+    # Borderless (windowed) fullscreen instead of OS-exclusive fullscreen:
+    # a frameless window sized and positioned to exactly cover the screen.
+    borderless_fullscreen = mode == "fullscreen"
+    frameless = borderless_fullscreen
 
     api = Api()
     window = webview.create_window(
         APP_TITLE,
         str(BASE_DIR / "frontend" / "index.html"),
         js_api=api,
+        x=0 if borderless_fullscreen else None,
+        y=0 if borderless_fullscreen else None,
         width=width,
         height=height,
         min_size=(1024, 640),
         background_color="#05070d",
-        fullscreen=fullscreen,
+        fullscreen=False,
         frameless=frameless,
     )
-    window._meridian_fullscreen = fullscreen
+    window._meridian_fullscreen = borderless_fullscreen
 
     # Best-effort library freshness: silently launch Playnite in the
     # background, wait for its MeridianExporter extension to rewrite the
