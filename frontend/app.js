@@ -1061,6 +1061,22 @@ async function renderSettings() {
     c.appendChild(note);
   }
 
+  // app data folder (settings.json, controls files, cached thumbnails)
+  const dataBlock = document.createElement("div");
+  dataBlock.className = "settings-block";
+  dataBlock.innerHTML = `<h3>App data folder</h3>`;
+  const dataBtn = document.createElement("button");
+  dataBtn.className = "btn-outline";
+  dataBtn.textContent = "Open App data folder";
+  dataBtn.addEventListener("click", async () => {
+    const result = await api().open_app_data_folder();
+    if (!result || result.ok === false) {
+      showToast(result && result.error ? result.error : "Couldn't open the app data folder.");
+    }
+  });
+  dataBlock.appendChild(dataBtn);
+  c.appendChild(dataBlock);
+
   // revert to factory settings — always the very last option
   const resetBlock = document.createElement("div");
   resetBlock.className = "settings-block";
