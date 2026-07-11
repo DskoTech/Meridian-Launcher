@@ -46,6 +46,15 @@ else:
 
 APP_TITLE = "MeridianLauncher"
 
+# Passed to the other Meridian apps (CyberDeckBrowser.exe, "Meridian Game
+# Library.exe", onscreenmenu.exe) when Meridian Launcher opens them, asking
+# them to open in windowed (borderless) fullscreen rather than whatever
+# window mode they last had saved. Those apps understand this flag;
+# arbitrary third-party apps (Apps/Games/Emulators sections) don't, so they
+# still only get the best-effort "start maximized" hint in
+# system_actions.launch_path.
+WINDOW_MODE_REQUEST_FLAG = "--window-mode=borderless-fullscreen"
+
 MUSIC_EXT = {".mp3", ".flac", ".wav", ".m4a", ".ogg", ".wma", ".aac"}
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".m4v"}
@@ -154,7 +163,7 @@ def media_url(path):
 # Thumbnails & metadata (music / photos / videos)
 # --------------------------------------------------------------------------
 
-CACHE_DIR = BASE_DIR / ".cache"
+CACHE_DIR = store.DATA_DIR / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
@@ -467,21 +476,36 @@ def _maybe_launch_osm():
             pass
 
 
+def _maybe_launch_onscreenmenu():
+    """Best-effort launch of onscreenmenu.exe from the app's own folder, but
+    only if it isn't already running — used after opening the app data
+    folder so the on-screen menu companion is available to navigate it with
+    a controller."""
+    if system_actions.is_process_running("onscreenmenu.exe"):
+        return
+    exe = BASE_DIR / "onscreenmenu.exe"
+    if exe.exists():
+        try:
+            system_actions.launch_path(str(exe), args=[WINDOW_MODE_REQUEST_FLAG])
+        except Exception:
+            pass
+
+
 def _apply_kiosk_disable():
     """Shared by every kiosk-exit path (secret code, 45s Y hold, factory
-    reset): flips window_mode back to fullscreen, persists it, and — where
-    possible — un-fullscreens/un-frameless the live window. Note: pywebview
-    can't drop a window's frameless flag at runtime, so a window that was
-    created frameless (kiosk) will need an app restart to regain its title
-    bar even after this runs; the fullscreen toggle itself takes effect
-    immediately though."""
+    reset): flips window_mode back to fullscreen, persists it. The app uses
+    borderless windowed fullscreen (a frameless window sized/positioned to
+    exactly cover the screen) instead of OS-exclusive fullscreen, so kiosk
+    and plain fullscreen are already the same size/position — there's
+    nothing to resize here. Note: pywebview can't drop a window's frameless
+    flag at runtime, so a window created frameless (kiosk) will still need
+    an app restart to regain its title bar if the person later switches to
+    windowed mode."""
     SETTINGS["window_mode"] = "fullscreen"
     store.save_settings(SETTINGS)
     try:
         win = webview.windows[0]
-        if not getattr(win, "_meridian_fullscreen", False):
-            win.toggle_fullscreen()
-            win._meridian_fullscreen = True
+        win._meridian_fullscreen = True
     except Exception:
         pass
 
@@ -771,7 +795,7 @@ class Api:
         exe = BASE_DIR / "CyberDeckBrowser.exe"
         if not exe.exists():
             return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
-        ok, err = system_actions.launch_path(str(exe))
+        ok, err = system_actions.launch_path(str(exe), args=[WINDOW_MODE_REQUEST_FLAG])
         return {"ok": ok, "error": err}
 
     def quit_app(self):
@@ -850,11 +874,16 @@ class Api:
         store.save_settings(SETTINGS)
         try:
             win = webview.windows[0]
+            # Borderless windowed fullscreen instead of OS-exclusive
+            # fullscreen: move the frameless window to (0, 0) to cover the
+            # screen, or off to a windowed position otherwise. The frame
+            # itself can't be added/removed at runtime (pywebview
+            # limitation) — see _apply_kiosk_disable.
             if mode in ("fullscreen", "kiosk") and not getattr(win, "_meridian_fullscreen", False):
-                win.toggle_fullscreen()
+                win.move(0, 0)
                 win._meridian_fullscreen = True
             elif mode == "windowed" and getattr(win, "_meridian_fullscreen", False):
-                win.toggle_fullscreen()
+                win.move(60, 60)
                 win._meridian_fullscreen = False
         except Exception:
             pass
@@ -896,7 +925,17 @@ class Api:
         exe = BASE_DIR / "Meridian Game Library.exe"
         if not exe.exists():
             return {"ok": False, "error": "Meridian Game Library.exe not found in the app folder."}
-        ok, err = system_actions.launch_path(str(exe))
+        ok, err = system_actions.launch_path(str(exe), args=[WINDOW_MODE_REQUEST_FLAG])
+        return {"ok": ok, "error": err}
+
+    # ---------------- settings: app data folder ----------------
+    def open_app_data_folder(self):
+        """Opens %LOCALAPPDATA%\\Meridian Launcher\\ in Explorer, then makes
+        sure onscreenmenu is running (launched if it wasn't already) so a
+        controller can be used to navigate the folder."""
+        ok, err = system_actions.open_folder(str(store.DATA_DIR))
+        if ok:
+            _maybe_launch_onscreenmenu()
         return {"ok": ok, "error": err}
     
 
@@ -989,22 +1028,27 @@ def detect_screen_size():
 def main():
     width, height = detect_screen_size()
     mode = SETTINGS.get("window_mode", "fullscreen")
-    fullscreen = mode in ("fullscreen", "kiosk")
-    frameless = mode == "kiosk"
+    # Borderless (windowed) fullscreen instead of OS-exclusive fullscreen:
+    # a frameless window sized and positioned to exactly cover the screen,
+    # rather than a real display-mode fullscreen switch.
+    borderless_fullscreen = mode in ("fullscreen", "kiosk")
+    frameless = borderless_fullscreen
 
     api = Api()
     window = webview.create_window(
         APP_TITLE,
         "frontend/index.html",
         js_api=api,
+        x=0 if borderless_fullscreen else None,
+        y=0 if borderless_fullscreen else None,
         width=width,
         height=height,
         min_size=(1024, 640),
         background_color="#05070d",
-        fullscreen=fullscreen,
+        fullscreen=False,
         frameless=frameless,
     )
-    window._meridian_fullscreen = fullscreen
+    window._meridian_fullscreen = borderless_fullscreen
 
     start_controller()
     webview.start(debug=False, gui="edgechromium")

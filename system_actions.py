@@ -26,7 +26,7 @@ PROTECTED_PROCESSES = {
 SW_SHOWMAXIMIZED = 3
 
 
-def launch_path(path: str):
+def launch_path(path: str, args=None):
     """Launch an .exe or .bat, requesting a maximized window. Returns
     (ok, error_message).
 
@@ -42,11 +42,32 @@ def launch_path(path: str):
     Explorer would, which matters for .bat/.cmd: Windows can't CreateProcess
     those directly (subprocess.Popen(["x.bat"]) raises WinError 193), they
     have to be handed to cmd.exe. os.startfile does that for us.
+
+    args: optional list of extra command-line arguments. Used for the other
+    Meridian apps (CyberDeckBrowser.exe, "Meridian Game Library.exe",
+    onscreenmenu.exe), which understand a --window-mode=borderless-fullscreen
+    flag requesting they open in windowed (borderless) fullscreen rather
+    than whatever window mode they last had saved — that request only
+    works for apps we actually wrote, unlike the maximize hint above, which
+    is the best that can be asked of an arbitrary third-party program.
+    os.startfile can't pass arguments, so when args are given this always
+    goes through subprocess.Popen instead.
     """
     if not path or not os.path.isfile(path):
         return False, "File not found."
     try:
-        if hasattr(os, "startfile"):
+        if args:
+            ext = os.path.splitext(path)[1].lower()
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = SW_SHOWMAXIMIZED
+            if ext in (".bat", ".cmd"):
+                subprocess.Popen(["cmd.exe", "/c", path] + list(args), cwd=os.path.dirname(path) or None,
+                                  startupinfo=startupinfo)
+            else:
+                subprocess.Popen([path] + list(args), cwd=os.path.dirname(path) or None, shell=False,
+                                  startupinfo=startupinfo)
+        elif hasattr(os, "startfile"):
             try:
                 # show_cmd param requires Python 3.10+
                 os.startfile(path, show_cmd=SW_SHOWMAXIMIZED)
@@ -71,6 +92,32 @@ def launch_path(path: str):
 def _run(cmd):
     try:
         subprocess.Popen(cmd)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def is_process_running(exe_name: str) -> bool:
+    """Case-insensitive check for whether a process with this executable
+    name (e.g. 'onscreenmenu.exe') is currently running."""
+    if psutil is None:
+        return False
+    exe_name = exe_name.lower()
+    for proc in psutil.process_iter(["name"]):
+        try:
+            if (proc.info.get("name") or "").lower() == exe_name:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            continue
+    return False
+
+
+def open_folder(path):
+    """Open a folder in Windows Explorer, creating it first if it doesn't
+    exist yet."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        os.startfile(path)
         return True, None
     except Exception as e:
         return False, str(e)

@@ -6,5 +6,5 @@ tasklist /fi "ImageName eq onscreenmenu.exe" /fo csv 2>NUL | find /I "onscreenme
 if "%ERRORLEVEL%"=="0" (
     taskkill /f /im onscreenmenu.exe >NUL 2>&1
 ) else (
-    start "" "%~dp0onscreenmenu.exe"
+    start "" "%~dp0onscreenmenu.exe" --window-mode=borderless-fullscreen
 )

@@ -1,20 +1,52 @@
-"""Settings + controls JSON storage. Everything lives in the app's own
-directory (not a hidden OS config folder), per spec: settings.json,
-keyboard_controls.json, and controller_controls.json all sit in the program root.
+"""Settings + controls JSON storage.
+
+BASE_DIR is still the folder the app itself lives in (used to find sibling
+files like osm.bat and other Meridian .exe's sitting next to this one).
+Actual user data - settings.json, the controls files, cached thumbnails,
+etc - lives under %LOCALAPPDATA%\\Meridian Launcher\\ instead, so the app
+folder can sit anywhere (including a read-only location like Program Files)
+without losing write access to its own config.
 """
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 from controller_input import DEFAULT_CONTROLS
 
 BASE_DIR = Path(__file__).resolve().parent
 
-SETTINGS_FILE = BASE_DIR / "settings.json"
-KEYBOARD_CONTROLS_FILE = BASE_DIR / "keyboard_controls.json"
-CONTROLLER_CONTROLS_FILE = BASE_DIR / "controller_controls.json"
-OVERLAY_FILE = BASE_DIR / "overlay.png"
+# All persistent user data (settings, controls, cached thumbnails) lives
+# under %LOCALAPPDATA%\Meridian Launcher\ rather than next to the exe.
+_local_appdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+DATA_DIR = Path(_local_appdata) / "Meridian Launcher"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+SETTINGS_FILE = DATA_DIR / "settings.json"
+KEYBOARD_CONTROLS_FILE = DATA_DIR / "keyboard_controls.json"
+CONTROLLER_CONTROLS_FILE = DATA_DIR / "controller_controls.json"
+OVERLAY_FILE = DATA_DIR / "overlay.png"
+
+
+def _migrate_legacy_file(old_path, new_path):
+    """One-time migration: if a pre-update install left a data file sitting
+    next to the exe and nothing has been written to the new location yet,
+    carry it over so existing users don't lose their settings."""
+    try:
+        if old_path.exists() and not new_path.exists():
+            shutil.copy2(old_path, new_path)
+    except Exception:
+        pass
+
+
+for _old, _new in (
+    (BASE_DIR / "settings.json", SETTINGS_FILE),
+    (BASE_DIR / "keyboard_controls.json", KEYBOARD_CONTROLS_FILE),
+    (BASE_DIR / "controller_controls.json", CONTROLLER_CONTROLS_FILE),
+    (BASE_DIR / "overlay.png", OVERLAY_FILE),
+):
+    _migrate_legacy_file(_old, _new)
 
 # Fixed sections that use a simple "list of launchable .exe" model.
 EXE_LIST_SECTIONS = ["apps", "games", "emulators", "chat", "streaming"]
@@ -35,8 +67,11 @@ def default_settings():
     for sid in EXE_LIST_SECTIONS:
         # each item: {"path": ..., "name": ...}
         # launch_with_osm: whether launching an item from this section also
-        # runs osm.bat (on-screen-menu companion script) — on by default.
-        sections[sid] = {"items": [], "launch_with_osm": True}
+        # runs osm.bat (on-screen-menu companion script) — on by default
+        # for every section except Games, since games are usually played
+        # with the controller captured by the game itself rather than
+        # needing the on-screen menu overlay running alongside them.
+        sections[sid] = {"items": [], "launch_with_osm": sid != "games"}
     sections["macros"] = {"items": []}  # each item: {"type": "bat", "path": ..., "name": ...}
 
     return {

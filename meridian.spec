@@ -3,9 +3,11 @@
 # (or just run compile.bat, which does this for you)
 #
 # Notes:
-# - keyboard_controls.json / controller_controls.json / settings.json are
-#   generated at first run next to the .exe, so they are NOT bundled as
-#   read-only datas here — they need to stay writable in the install folder.
+# - keyboard_controls.json / controller_controls.json / settings.json /
+#   cached thumbnails are generated at first run under
+#   %LOCALAPPDATA%\Meridian Launcher\, so they are NOT bundled as read-only
+#   datas here — they need to stay writable regardless of where the exe
+#   itself is installed (e.g. Program Files).
 # - Drop osm.bat next to the built Meridian Launcher.exe if you want
 #   sections/system features with "Launch with onscreenmenu?" enabled
 #   (on by default) to trigger it; the app looks for it in its own directory.
