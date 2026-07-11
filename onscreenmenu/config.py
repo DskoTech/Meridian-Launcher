@@ -1,33 +1,54 @@
 """
 onscreenmenu Configuration
 
-Stored under %APPDATA%\\DskoTech\\onscreenmenu\\config.json so the
-app can read/write its settings regardless of where the exe itself
-lives (Program Files is often not writable by a normal user).
+Stored under %LOCALAPPDATA%\\Meridian Launcher\\onscreenmenu\\config.json so
+the app can read/write its settings regardless of where the exe itself
+lives (Program Files is often not writable by a normal user), and so all
+five Meridian apps keep their data together under one shared root folder.
 """
 
 import json
 import os
+import shutil
 
 
-APP_DIR_NAME = "DskoTech"
+APP_DIR_NAME = "Meridian Launcher"
 APP_SUBDIR_NAME = "onscreenmenu"
 CONFIG_FILENAME = "config.json"
 
+# Pre-update installs stored config under %APPDATA%\DskoTech\onscreenmenu\ -
+# migrated forward automatically the first time the new location is used.
+_LEGACY_APP_DIR_NAME = "DskoTech"
+
 
 def _config_dir():
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+
+    if not local_appdata:
+
+        # Non-Windows / no LOCALAPPDATA fallback (dev/testing)
+
+        local_appdata = os.path.expanduser("~")
+
+    return os.path.join(
+        local_appdata,
+        APP_DIR_NAME,
+        APP_SUBDIR_NAME
+    )
+
+
+def _legacy_config_dir():
 
     appdata = os.environ.get("APPDATA")
 
     if not appdata:
 
-        # Non-Windows / no APPDATA fallback (dev/testing)
-
         appdata = os.path.expanduser("~")
 
     return os.path.join(
         appdata,
-        APP_DIR_NAME,
+        _LEGACY_APP_DIR_NAME,
         APP_SUBDIR_NAME
     )
 
@@ -38,6 +59,24 @@ def _config_path():
         _config_dir(),
         CONFIG_FILENAME
     )
+
+
+def _migrate_legacy_config():
+
+    old_path = os.path.join(_legacy_config_dir(), CONFIG_FILENAME)
+
+    new_path = _config_path()
+
+    if os.path.exists(old_path) and not os.path.exists(new_path):
+
+        try:
+            os.makedirs(_config_dir(), exist_ok=True)
+            shutil.copy2(old_path, new_path)
+        except OSError:
+            pass
+
+
+_migrate_legacy_config()
 
 
 DEFAULTS = {

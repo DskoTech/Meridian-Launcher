@@ -290,12 +290,21 @@ class MainWindow(QMainWindow):
         )
 
         #
-        # ---- fullscreen, click-through ----
+        # ---- borderless fullscreen, click-through ----
+        #
+        # Already frameless (WindowFlags above), so "fullscreen" here just
+        # means resizing/positioning to exactly cover the primary screen —
+        # not Qt's showFullScreen() state, which behaves like a genuine
+        # fullscreen mode switch on some platforms. This keeps the overlay
+        # a plain borderless window instead.
         #
 
         if config.get("fullscreen", True):
 
-            self.showFullScreen()
+            screen_geo = QApplication.primaryScreen().geometry()
+            self.move(screen_geo.x(), screen_geo.y())
+            self.resize(screen_geo.width(), screen_geo.height())
+            self.show()
 
         else:
 

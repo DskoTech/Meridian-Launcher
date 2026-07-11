@@ -8,6 +8,7 @@ shortcuts, followed by "Add Shortcut" / "Remove Shortcut".
 
 import os
 import subprocess
+import sys
 
 import psutil
 import win32con
@@ -15,15 +16,34 @@ import win32gui
 import win32process
 
 
+def _onscreenmenu_dir():
+    """Folder onscreenmenu.exe (or, when run from source, main.py) actually
+    lives in."""
+
+    if getattr(sys, "frozen", False):
+
+        return os.path.dirname(os.path.abspath(sys.executable))
+
+    return os.path.dirname(os.path.abspath(sys.argv[0]))
+
+
 MERIDIAN_LABEL = "Meridian Launcher"
 
 MERIDIAN_EXE_NAME = "MeridianLauncher.exe"
 
-MERIDIAN_PATH = r"C:\Program Files\DskoTech\MeridianLauncher.exe"
+# All five Meridian .exe's (MeridianLauncher.exe, onscreenmenu.exe,
+# CyberDeckBrowser.exe, "Meridian Explorer.exe", "Meridian Game
+# Library.exe") are deployed flat in the same install folder - see
+# osm.bat, which launches onscreenmenu.exe via "%~dp0onscreenmenu.exe".
+# So MeridianLauncher.exe sits right next to onscreenmenu.exe itself.
+MERIDIAN_PATH = os.path.join(
+    _onscreenmenu_dir(),
+    MERIDIAN_EXE_NAME
+)
 
 MERIDIAN_ERROR_MESSAGE = (
     "Hey! Move MeridianLauncher.exe back to "
-    "C:\\Program Files\\DskoTech you psychopath!"
+    "the local folder you psychopath!"
 )
 
 MAX_CUSTOM_SHORTCUTS = 11

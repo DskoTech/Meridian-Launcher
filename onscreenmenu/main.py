@@ -6,6 +6,14 @@ import os
 import sys
 import traceback
 
+try:
+
+    import psutil
+
+except ImportError:
+
+    psutil = None
+
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt
 
@@ -14,6 +22,48 @@ from config import load_config, save_config, _config_dir
 from features import startup
 
 from ui.main_window import MainWindow
+
+
+EXE_NAME = "onscreenmenu.exe"
+
+
+def _another_instance_already_running():
+    """Checks whether a different process is already running
+    onscreenmenu.exe, so a second launch (e.g. from a shortcut/macro that
+    fires even though it's already open) can quietly bow out instead of
+    running two overlays at once."""
+
+    if psutil is None:
+
+        return False
+
+    my_pid = os.getpid()
+
+    try:
+
+        for proc in psutil.process_iter(["pid", "name"]):
+
+            try:
+
+                if proc.pid == my_pid:
+
+                    continue
+
+                name = proc.info.get("name")
+
+                if name and name.lower() == EXE_NAME.lower():
+
+                    return True
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+
+                continue
+
+    except Exception:
+
+        return False
+
+    return False
 
 
 def _crash_log_path():
@@ -44,6 +94,16 @@ def _write_crash_log(exc_text):
 
 def main():
 
+    #
+    # Single-instance guard: if another onscreenmenu.exe is already
+    # running, this one quietly exits instead of running a second
+    # overlay/cursor/hotkey stack alongside it.
+    #
+
+    if _another_instance_already_running():
+
+        sys.exit(0)
+
     Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
 
     app = QApplication(sys.argv)
@@ -65,6 +125,18 @@ def main():
     app.setQuitOnLastWindowClosed(False)
 
     config = load_config()
+
+    #
+    # Meridian Launcher (or osm.bat) passes --window-mode=borderless-
+    # fullscreen when it starts this app, asking for windowed (borderless)
+    # fullscreen for this run regardless of whatever was last saved. This
+    # only affects the in-memory config for this run - never written back
+    # to disk, so a person's own saved preference survives the next launch.
+    #
+
+    if "--window-mode=borderless-fullscreen" in sys.argv:
+
+        config["fullscreen"] = True
 
     #
     # 1. "Wrong place" install prompt (only does anything for a
