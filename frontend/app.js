@@ -1077,6 +1077,31 @@ async function renderSettings() {
   dataBlock.appendChild(dataBtn);
   c.appendChild(dataBlock);
 
+  // updates
+  const updateBlock = document.createElement("div");
+  updateBlock.className = "settings-block";
+  const versionInfo = await api().get_version();
+  updateBlock.innerHTML = `<h3>Updates</h3><p style="font-size:12px;color:var(--text-lo);margin:0 0 10px;">Version ${versionInfo.version}</p>`;
+  const updateBtn = document.createElement("button");
+  updateBtn.className = "btn-outline";
+  updateBtn.textContent = "Check for Updates";
+  updateBtn.addEventListener("click", async () => {
+    updateBtn.disabled = true;
+    updateBtn.textContent = "Checking...";
+    const result = await api().check_for_updates();
+    updateBtn.disabled = false;
+    updateBtn.textContent = "Check for Updates";
+    if (result && result.available) {
+      showUpdateModal(result, { manual: true });
+    } else if (result && result.error) {
+      showToast(result.error);
+    } else {
+      showToast("You're on the latest version.");
+    }
+  });
+  updateBlock.appendChild(updateBtn);
+  c.appendChild(updateBlock);
+
   // revert to factory settings — always the very last option
   const resetBlock = document.createElement("div");
   resetBlock.className = "settings-block";
@@ -1681,6 +1706,72 @@ async function exitKioskModeAndNotify() {
 }
 
 window.onKioskDisabledExternally = function () { exitKioskModeAndNotify(); };
+
+// ---------------- update available modal ----------------
+
+function showUpdateModal(info, { manual = false } = {}) {
+  let backdrop = document.getElementById("update-modal-backdrop");
+  if (backdrop) backdrop.remove();
+
+  backdrop = document.createElement("div");
+  backdrop.id = "update-modal-backdrop";
+
+  const box = document.createElement("div");
+  box.className = "update-modal";
+
+  const title = document.createElement("h3");
+  title.textContent = "Update available";
+  box.appendChild(title);
+
+  const p = document.createElement("p");
+  p.textContent = `Meridian Launcher ${info.latest} is out (you're on ${info.current}).`;
+  box.appendChild(p);
+
+  if (info.notes) {
+    const notes = document.createElement("div");
+    notes.className = "update-notes";
+    notes.textContent = info.notes;
+    box.appendChild(notes);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "update-modal-actions";
+
+  const laterBtn = document.createElement("button");
+  laterBtn.textContent = manual ? "Close" : "Later";
+  laterBtn.addEventListener("click", () => backdrop.remove());
+  actions.appendChild(laterBtn);
+
+  const updateBtn = document.createElement("button");
+  updateBtn.className = "btn-primary";
+  updateBtn.textContent = "Update Now";
+  updateBtn.addEventListener("click", async () => {
+    updateBtn.disabled = true;
+    laterBtn.disabled = true;
+    updateBtn.textContent = "Downloading...";
+    const res = await api().start_update(info.download_url);
+    if (res && res.ok === false) {
+      updateBtn.disabled = false;
+      laterBtn.disabled = false;
+      updateBtn.textContent = "Update Now";
+      showToast(res.error ? `Update failed: ${res.error}` : "Update failed.");
+      return;
+    }
+    updateBtn.textContent = "Restarting...";
+    p.textContent = "Downloaded. Meridian Launcher will close and the installer will open — follow its prompts to finish updating.";
+  });
+  actions.appendChild(updateBtn);
+
+  box.appendChild(actions);
+  backdrop.appendChild(box);
+  document.body.appendChild(backdrop);
+}
+
+// Called by main.py once at boot (see _check_for_update_at_boot), only when
+// an update is actually available — silent otherwise.
+window.onUpdateAvailable = function (info) {
+  showUpdateModal(info, { manual: false });
+};
 
 // ---------------- boot ----------------
 

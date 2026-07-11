@@ -364,3 +364,38 @@ html, body {
 }
 .osk-key.wide { min-width: 100px; }
 .osk-key.osk-selected { border-color: var(--active-accent); color: var(--active-accent); box-shadow: 0 0 10px -2px var(--active-accent); }
+
+/* ---------------- update available modal ---------------- */
+
+#update-modal-backdrop {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(3, 5, 10, 0.88);
+  display: flex; align-items: center; justify-content: center;
+}
+#update-modal-backdrop.hidden { display: none; }
+.update-modal {
+  width: min(460px, 88vw);
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: 14px;
+  padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+  font-family: var(--font-body); color: var(--text-hi);
+}
+.update-modal h3 {
+  font-family: var(--font-display); font-size: 14px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--active-accent); margin: 0 0 6px;
+}
+.update-modal p { font-size: 13px; color: var(--text-lo); line-height: 1.5; margin: 0 0 14px; }
+.update-modal .update-notes {
+  max-height: 140px; overflow-y: auto; font-size: 12px; color: var(--text-lo);
+  white-space: pre-wrap; background: var(--bg-0); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px; margin-bottom: 16px;
+}
+.update-modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.update-modal-actions button {
+  padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg-0); color: var(--text-hi); font-size: 13px; cursor: pointer;
+  font-family: var(--font-body);
+}
+.update-modal-actions button:hover { border-color: var(--active-accent); color: var(--active-accent); }
+.update-modal-actions .btn-primary {
+  background: var(--active-accent); color: var(--bg-0); border-color: var(--active-accent); font-weight: 600;
+}
