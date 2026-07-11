@@ -96,7 +96,7 @@ class ControllerListener:
         self._stop = threading.Event()
         self._last_fire = {}
         self._prev_buttons = 0
-        self._combo_latch = {"quit": False, "foreground": False}
+        self._combo_latch = {"quit": False, "foreground": False, "shoulders": False}
         self._y_hold_start = None
         self._y_fired = False
 
@@ -181,6 +181,25 @@ class ControllerListener:
                     btn = self.controls.get(action_name)
                     if btn and btn in rising:
                         self.on_action(action_name)
+
+                # Y quick-press (distinct from the 45s hold above) -> jump to
+                # the subfolder/filter panel, same idea as the \ key
+                if "Y" in rising:
+                    self.on_action("y_subfolder")
+
+                # shoulders: single press = prev/next track, both held at
+                # once = random track (edge-triggered, same latch pattern
+                # as the quit/foreground combos above)
+                if "LEFT_SHOULDER" in pressed and "RIGHT_SHOULDER" in pressed:
+                    if not self._combo_latch["shoulders"]:
+                        self._combo_latch["shoulders"] = True
+                        self.on_action("random_track")
+                else:
+                    self._combo_latch["shoulders"] = False
+                    if "LEFT_SHOULDER" in rising:
+                        self.on_action("prev_track")
+                    if "RIGHT_SHOULDER" in rising:
+                        self.on_action("next_track")
 
                 # directional: dpad OR left stick, cooldown-repeated while held
                 lx = self._deadzone(pad.sThumbLX)

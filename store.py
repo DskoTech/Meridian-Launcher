@@ -78,15 +78,21 @@ def default_settings():
         "folders": {"music": [], "photos": [], "videos": []},
         "sections": sections,
         "custom_sections": [],  # [{"id": "...", "label": "..."}]
+        "web_shortcuts": [],  # [{"url": "...", "label": "..."}] — user-added, opened in CyberDeckBrowser
         "macros_whitelist": ["onscreenmenu.exe"],
         "background_image": None,
         "overlay_enabled": False,
         "overlay_image": None,
         "opening_video": None,
-        "window_mode": "fullscreen",  # fullscreen | windowed | kiosk
+        "window_mode": "windowed_fullscreen",  # exclusive_fullscreen | windowed_fullscreen | windowed | kiosk
+        "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
+        "recent_games": [],  # [{"path": ..., "name": ...}], most-recent-first, capped at 5
+        "display_type": {"games": "gallery"},  # per-section-id: "list" | "gallery"; any id not present defaults to "list"
+        "desktop_section_enabled": False,  # Desktop: always first in the list when on, off by default
         "load_subfolders": True,
         "video_fullscreen": False,
         "battery_indicator": True,
+        "auto_shuffle_songs": True,  # when a song ends, load a random one instead of the next in list order
         # Global toggle: also run osm.bat when System section items that
         # shell out to Windows (Task Manager, Control Panel, Recycle Bin,
         # Uninstall Apps, "open Windows Bluetooth settings") are used.

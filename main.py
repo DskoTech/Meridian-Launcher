@@ -26,6 +26,20 @@ import system_actions
 import updater
 from controller_input import ControllerListener
 
+# Recently-played games are sourced from Game Library's own Playnite
+# integration (real, comprehensive play history) rather than Launcher
+# tracking its own separate, much-smaller local history. Game Library
+# ships as a sibling folder of this install; playnite_import.py has no
+# webview/GUI dependencies, so it's safe to import directly rather than
+# reimplementing the same Playnite-export parsing and launch logic here.
+_GAME_LIBRARY_DIR = Path(__file__).resolve().parent / "Meridian Game Library"
+if str(_GAME_LIBRARY_DIR) not in sys.path:
+    sys.path.insert(0, str(_GAME_LIBRARY_DIR))
+try:
+    import playnite_import
+except ImportError:
+    playnite_import = None  # Game Library isn't installed alongside this copy of Launcher
+
 try:
     import win32gui
     import win32con
@@ -76,6 +90,7 @@ IMAGE_FILE_TYPES = ("Image Files (*.png;*.jpg;*.jpeg;*.bmp;*.webp)",)
 VIDEO_FILE_TYPES = ("Video Files (*.mp4;*.webm;*.mov;*.mkv;*.avi)",)
 EXE_FILE_TYPES = ("Executable Files (*.exe)",)
 BAT_FILE_TYPES = ("Batch Files (*.bat)",)
+SCRIPT_FILE_TYPES = ("Scripts (*.bat;*.ps1)",)
 
 SETTINGS = store.load_settings()
 store.ensure_controls_files()
@@ -461,6 +476,67 @@ def _section_store(section_id):
     return None
 
 
+def _scan_desktop_folder():
+    """Whatever's sitting on the user's actual Windows Desktop right now —
+    shortcuts, exes, files, folders — re-scanned fresh every time the
+    Desktop section is opened rather than cached, since this reflects
+    live desktop contents, not a curated Meridian list. Hidden/system
+    files (desktop.ini etc.) are skipped; folders are included so they
+    can still be opened via the normal launch path (Explorer handles
+    that fine)."""
+    desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+    if not desktop.exists():
+        return []
+    items = []
+    try:
+        for entry in sorted(desktop.iterdir(), key=lambda p: p.name.lower()):
+            if entry.name.startswith(".") or entry.name.lower() == "desktop.ini":
+                continue
+            try:
+                # Files/shortcuts only — launch_path requires os.path.isfile(),
+                # so folders are skipped rather than risk changing that shared
+                # function (used by every other section's launch path too).
+                if entry.is_file():
+                    items.append({"path": str(entry), "name": store.display_name(str(entry))})
+            except OSError:
+                continue
+    except OSError:
+        return []
+    return items
+
+
+def _game_library_playnite_settings():
+    """Game Library's real user data lives under %LOCALAPPDATA%\\Meridian
+    Launcher\\Meridian Game Library\\settings.json (not next to its exe —
+    see that app's store.py for the same convention Launcher itself uses).
+    Returns a settings dict shaped the way playnite_import.py expects,
+    even when the file can't be read, so callers don't need their own
+    fallback logic."""
+    local_appdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    settings_path = Path(local_appdata) / "Meridian Launcher" / "Meridian Game Library" / "settings.json"
+    try:
+        with open(settings_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("playnite") or {"export_path": None, "executable_path": None}
+    except (OSError, json.JSONDecodeError):
+        return {"export_path": None, "executable_path": None}
+
+
+def _record_recent_game(path):
+    """Track the last few games launched from the Games section, most-recent-
+    first, capped at 5 — shown right after the Game Library tile in the
+    Games gallery. Local to Meridian Launcher's own exe-list section, not
+    pulled from the separate Meridian Game Library app's Playnite history."""
+    sec = _section_store("games")
+    existing = next((it for it in sec["items"] if it["path"] == path), None) if sec else None
+    name = existing["name"] if existing else store.display_name(path)
+    recents = SETTINGS.setdefault("recent_games", [])
+    recents[:] = [r for r in recents if r["path"] != path]
+    recents.insert(0, {"path": path, "name": name})
+    del recents[5:]
+    store.save_settings(SETTINGS)
+
+
 def _with_icons(items):
     out = []
     for it in items:
@@ -515,13 +591,109 @@ def _apply_kiosk_disable():
     flag at runtime, so a window created frameless (kiosk) will still need
     an app restart to regain its title bar if the person later switches to
     windowed mode."""
-    SETTINGS["window_mode"] = "fullscreen"
+    SETTINGS["window_mode"] = "windowed_fullscreen"
     store.save_settings(SETTINGS)
     try:
         win = webview.windows[0]
         win._meridian_fullscreen = True
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------
+# Background thumbnail/metadata precaching
+# --------------------------------------------------------------------------
+# scan_library/browse_folder already only regenerate a thumbnail when a
+# file's mtime doesn't match what's cached, so calling this machinery
+# proactively — before the person has actually opened the section — is
+# cheap once warm and just moves the one-time cost earlier instead of
+# making the first visit feel slow.
+
+def _scan_library_impl(kind):
+    extmap = {"music": MUSIC_EXT, "photos": PHOTO_EXT, "videos": VIDEO_EXT}
+    if kind not in extmap:
+        return []
+
+    cache = _load_index_cache(kind)
+    cached_mtimes = cache.get("files", {})
+    cached_items = cache.get("items", {})
+
+    current_mtimes = {}
+    for folder in SETTINGS["folders"].get(kind, []):
+        if not os.path.isdir(folder):
+            continue
+        for path in scan_dir(folder, extmap[kind]):
+            try:
+                current_mtimes[path] = os.path.getmtime(path)
+            except OSError:
+                continue
+
+    fresh_items = {}
+    for path, mtime in current_mtimes.items():
+        if path in cached_items and cached_mtimes.get(path) == mtime:
+            fresh_items[path] = cached_items[path]  # unchanged: skip re-reading tags/thumbnail entirely
+        else:
+            fresh_items[path] = _build_entry(kind, path)
+
+    _save_index_cache(kind, {"files": current_mtimes, "items": fresh_items})
+    return _entries_to_response(kind, fresh_items)
+
+
+def _browse_folder_impl(kind, path, precache_subfolders=True):
+    """Non-recursive single-directory listing, used by the subfolder
+    navigation sidebar when Load Subfolders is disabled. Also kicks off a
+    background thread to warm the thumbnail cache for every subfolder
+    underneath this one, so descending further is already fast by the
+    time the person gets there."""
+    extmap = {"music": MUSIC_EXT, "photos": PHOTO_EXT, "videos": VIDEO_EXT}
+    if kind not in extmap or not path or not os.path.isdir(path):
+        return {"path": path, "subfolders": [], "items": []}
+    subfolders = _list_subfolders(path)
+    entries = {p: _build_entry(kind, p) for p in _scan_flat(path, extmap[kind])}
+    if precache_subfolders and subfolders:
+        threading.Thread(target=_precache_folder_recursive, args=(kind, path), daemon=True).start()
+    return {"path": path, "subfolders": subfolders, "items": _entries_to_response(kind, entries)}
+
+
+def _precache_folder_recursive(kind, root_path):
+    """Walk root_path and every subfolder underneath it, warming the
+    thumbnail/metadata cache for each matching file. Safe to call
+    liberally — every thumb/metadata function it bottoms out in already
+    checks for an existing cached file first, so re-visiting an
+    already-warm path costs almost nothing."""
+    extmap = {"music": MUSIC_EXT, "photos": PHOTO_EXT, "videos": VIDEO_EXT}
+    ext = extmap.get(kind)
+    if not ext:
+        return
+    try:
+        for dirpath, _dirnames, filenames in os.walk(root_path):
+            for fname in filenames:
+                if os.path.splitext(fname)[1].lower() in ext:
+                    try:
+                        _build_entry(kind, os.path.join(dirpath, fname))
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+
+def _precache_all_libraries():
+    """Warm the whole configured library (music/videos/photos) in the
+    background at startup, so the first visit to each section is already
+    fast instead of generating thumbnails on demand right as the person
+    opens it."""
+    for kind in ("videos", "music", "photos"):  # videos first — the slowest per-file (ffmpeg)
+        try:
+            _scan_library_impl(kind)
+        except Exception:
+            continue
+        for folder in SETTINGS["folders"].get(kind, []):
+            if os.path.isdir(folder):
+                _precache_folder_recursive(kind, folder)
+
+
+def start_background_precache():
+    threading.Thread(target=_precache_all_libraries, daemon=True).start()
 
 
 # --------------------------------------------------------------------------
@@ -560,43 +732,31 @@ class Api:
         return ffmpeg_available()
 
     def scan_library(self, kind):
-        extmap = {"music": MUSIC_EXT, "photos": PHOTO_EXT, "videos": VIDEO_EXT}
-        if kind not in extmap:
-            return []
-
-        cache = _load_index_cache(kind)
-        cached_mtimes = cache.get("files", {})
-        cached_items = cache.get("items", {})
-
-        current_mtimes = {}
-        for folder in SETTINGS["folders"].get(kind, []):
-            if not os.path.isdir(folder):
-                continue
-            for path in scan_dir(folder, extmap[kind]):
-                try:
-                    current_mtimes[path] = os.path.getmtime(path)
-                except OSError:
-                    continue
-
-        fresh_items = {}
-        for path, mtime in current_mtimes.items():
-            if path in cached_items and cached_mtimes.get(path) == mtime:
-                fresh_items[path] = cached_items[path]  # unchanged: skip re-reading tags/thumbnail entirely
-            else:
-                fresh_items[path] = _build_entry(kind, path)
-
-        _save_index_cache(kind, {"files": current_mtimes, "items": fresh_items})
-        return _entries_to_response(kind, fresh_items)
+        return _scan_library_impl(kind)
 
     def browse_folder(self, kind, path):
-        """Non-recursive single-directory listing, used by the subfolder
-        navigation sidebar when Load Subfolders is disabled."""
-        extmap = {"music": MUSIC_EXT, "photos": PHOTO_EXT, "videos": VIDEO_EXT}
-        if kind not in extmap or not path or not os.path.isdir(path):
-            return {"path": path, "subfolders": [], "items": []}
-        subfolders = _list_subfolders(path)
-        entries = {p: _build_entry(kind, p) for p in _scan_flat(path, extmap[kind])}
-        return {"path": path, "subfolders": subfolders, "items": _entries_to_response(kind, entries)}
+        return _browse_folder_impl(kind, path)
+
+    def delete_thumbnail_cache(self):
+        """Settings > Delete Thumbnail Cache. Clears every generated thumb
+        plus the mtime index caches, so the next scan rebuilds everything
+        from scratch (background precache picks it back up right away)."""
+        cleared = 0
+        try:
+            for f in CACHE_DIR.iterdir():
+                try:
+                    f.unlink()
+                    cleared += 1
+                except OSError:
+                    continue
+            for kind in ("music", "videos", "photos"):
+                p = _index_cache_path(kind)
+                if p.exists():
+                    p.unlink()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        start_background_precache()
+        return {"ok": True, "cleared": cleared}
 
     def get_root_folders(self, kind):
         return SETTINGS["folders"].get(kind, [])
@@ -631,7 +791,50 @@ class Api:
             sec = _section_store(section_id)
             if sec is not None and sec.get("launch_with_osm", True):
                 _maybe_launch_osm()
+            if section_id == "games":
+                _record_recent_game(path)
         return {"ok": ok, "error": err}
+
+    def get_recent_games(self):
+        if playnite_import is not None:
+            recents = playnite_import.get_recently_played(_game_library_playnite_settings())
+            if recents:
+                return [
+                    {"__playnite": True, "id": e["id"], "name": e["title"], "iconUrl": media_url(e["art"]) if e["art"] else None}
+                    for e in recents
+                ]
+        # Game Library isn't installed alongside this copy, or Playnite
+        # isn't connected there yet, or nothing's been played through it —
+        # fall back to Launcher's own (much smaller) local launch history.
+        return _with_icons(SETTINGS.get("recent_games", []))
+
+    def launch_recent_game(self, game_id):
+        if playnite_import is None:
+            return {"ok": False, "error": "Meridian Game Library isn't installed alongside this copy of Launcher."}
+        try:
+            playnite_import.launch_game(game_id, _game_library_playnite_settings())
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---------------- Desktop section (auto-populated, off by default) ----------------
+    def list_desktop_items(self):
+        return _with_icons(_scan_desktop_folder())
+
+    def set_desktop_section_enabled(self, enabled):
+        SETTINGS["desktop_section_enabled"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_display_type(self, section_id, display_type):
+        """Per-section 'List Style' vs 'Gallery Style' — same generic toggle
+        for any section (media or exe-list). Purely a frontend rendering
+        concern; the backend just persists which one each section is on."""
+        if display_type not in ("list", "gallery"):
+            return SETTINGS
+        SETTINGS.setdefault("display_type", {})[section_id] = display_type
+        store.save_settings(SETTINGS)
+        return SETTINGS
 
     # ---------------- custom sections ----------------
     def add_custom_section(self, name):
@@ -658,18 +861,30 @@ class Api:
 
     # ---------------- macros ----------------
     def list_macro_items(self):
-        builtin = [{"type": "builtin", "id": "close_others", "name": "Close all other programs"}]
-        bats = _with_icons(SETTINGS["sections"]["macros"]["items"])
-        for b in bats:
-            b["type"] = "bat"
-        return builtin + bats
+        builtin = [
+            {"type": "builtin", "id": "close_others", "name": "Close all other programs"},
+        ]
+        shell_ps1 = BASE_DIR / "MakeUnmakeShell.ps1"
+        if shell_ps1.exists():
+            builtin.append({
+                "type": "builtin", "id": "toggle_default_shell",
+                "name": "Make / Unmake Meridian The Default Shell",
+            })
+        scripts = _with_icons(SETTINGS["sections"]["macros"]["items"])
+        for s in scripts:
+            s.setdefault("type", "bat")  # existing saved items predate .ps1 support
+        return builtin + scripts
 
     def add_bat_to_macros(self):
-        paths = _open_file_dialog(BAT_FILE_TYPES)
+        """Add a .bat or .ps1 macro script; kept the original method name
+        since the frontend already calls it, just broadened what it
+        accepts. Type is inferred from the extension."""
+        paths = _open_file_dialog(SCRIPT_FILE_TYPES)
+        items = SETTINGS["sections"]["macros"]["items"]
         for p in paths:
-            items = SETTINGS["sections"]["macros"]["items"]
             if not any(it["path"] == p for it in items):
-                items.append({"type": "bat", "path": p, "name": store.display_name(p)})
+                script_type = "ps1" if p.lower().endswith(".ps1") else "bat"
+                items.append({"type": script_type, "path": p, "name": store.display_name(p)})
         store.save_settings(SETTINGS)
         return self.list_macro_items()
 
@@ -685,7 +900,33 @@ class Api:
             whitelist.add("onscreenmenu.exe")
             whitelist.add(Path(sys.executable).name)
             return system_actions.close_all_except(whitelist)
+        if macro_id == "toggle_default_shell":
+            return self.run_ps1_file(str(BASE_DIR / "MakeUnmakeShell.ps1"))
         return {"ok": False, "error": "Unknown macro"}
+
+    def run_ps1_file(self, path):
+        """Run any .ps1 macro (bundled or user-added) elevated. If even the
+        per-process elevation attempt fails, the frontend offers restarting
+        Meridian Launcher itself as administrator instead — see
+        relaunch_as_admin below."""
+        ok, err, needs_admin_relaunch = system_actions.launch_ps1_elevated(path)
+        return {"ok": ok, "error": err, "needs_admin_relaunch": needs_admin_relaunch}
+
+    def relaunch_as_admin(self):
+        """Restart Meridian Launcher itself elevated (UAC prompt), then quit
+        this non-elevated instance. Only called after a per-macro elevation
+        attempt (run_ps1_file) has already failed."""
+        try:
+            import ctypes
+            exe = sys.executable
+            params = " ".join(f'"{a}"' for a in sys.argv[1:])
+            result = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, str(BASE_DIR), 1)
+            if result > 32:
+                threading.Timer(0.3, lambda: os._exit(0)).start()
+                return {"ok": True}
+            return {"ok": False, "error": "Elevation was declined or failed."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     # ---------------- web / files / system ----------------
     def open_web(self):
@@ -805,12 +1046,33 @@ class Api:
         return {"ok": ok, "error": err}
 
     # ---------------- Web section ----------------
-    def launch_cyberdeck(self):
+    def launch_cyberdeck(self, url=None):
+        """Launch CyberDeckBrowser, optionally straight to a URL (used by
+        the Web section's user-added shortcuts). Assumes CyberDeckBrowser
+        accepts a bare URL as a command-line argument the same way most
+        Chromium-based browsers do — worth confirming against the actual
+        CyberDeckBrowser build if shortcuts don't land on the right page."""
         exe = BASE_DIR / "CyberDeckBrowser.exe"
         if not exe.exists():
             return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
-        ok, err = system_actions.launch_path(str(exe), args=[WINDOW_MODE_REQUEST_FLAG])
+        args = [WINDOW_MODE_REQUEST_FLAG] + ([url] if url else [])
+        ok, err = system_actions.launch_path(str(exe), args=args)
         return {"ok": ok, "error": err}
+
+    def add_web_shortcut(self, url):
+        from urllib.parse import urlparse
+        label = urlparse(url).netloc or url
+        label = label[4:] if label.startswith("www.") else label
+        shortcuts = SETTINGS.setdefault("web_shortcuts", [])
+        if not any(s["url"] == url for s in shortcuts):
+            shortcuts.append({"url": url, "label": label})
+            store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def remove_web_shortcut(self, url):
+        SETTINGS["web_shortcuts"] = [s for s in SETTINGS.get("web_shortcuts", []) if s["url"] != url]
+        store.save_settings(SETTINGS)
+        return SETTINGS
 
     def quit_app(self):
         os._exit(0)
@@ -883,24 +1145,52 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    def set_auto_shuffle_songs(self, enabled):
+        SETTINGS["auto_shuffle_songs"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
     def set_window_mode(self, mode):
         SETTINGS["window_mode"] = mode
         store.save_settings(SETTINGS)
         try:
             win = webview.windows[0]
-            # Borderless windowed fullscreen instead of OS-exclusive
-            # fullscreen: move the frameless window to (0, 0) to cover the
-            # screen, or off to a windowed position otherwise. The frame
-            # itself can't be added/removed at runtime (pywebview
-            # limitation) — see _apply_kiosk_disable.
-            if mode in ("fullscreen", "kiosk") and not getattr(win, "_meridian_fullscreen", False):
-                win.move(0, 0)
+            is_exclusive = getattr(win, "_meridian_exclusive_fs", False)
+            if mode == "exclusive_fullscreen":
+                if not is_exclusive:
+                    win.toggle_fullscreen()  # true OS-level fullscreen
+                    win._meridian_exclusive_fs = True
                 win._meridian_fullscreen = True
-            elif mode == "windowed" and getattr(win, "_meridian_fullscreen", False):
-                win.move(60, 60)
-                win._meridian_fullscreen = False
+            elif mode in ("windowed_fullscreen", "kiosk"):
+                if is_exclusive:
+                    win.toggle_fullscreen()  # drop out of exclusive fullscreen first
+                    win._meridian_exclusive_fs = False
+                # Borderless windowed fullscreen instead of OS-exclusive
+                # fullscreen: move the frameless window to (0, 0) to cover
+                # the screen. The frame itself can't be added/removed at
+                # runtime (pywebview limitation) — see _apply_kiosk_disable.
+                if not getattr(win, "_meridian_fullscreen", False):
+                    win.move(0, 0)
+                    win._meridian_fullscreen = True
+            elif mode == "windowed":
+                if is_exclusive:
+                    win.toggle_fullscreen()
+                    win._meridian_exclusive_fs = False
+                if getattr(win, "_meridian_fullscreen", False):
+                    win.move(60, 60)
+                    win._meridian_fullscreen = False
         except Exception:
             pass
+        return SETTINGS
+
+    def set_layout(self, mode):
+        """UI layout mode: 'night_horizon' (default) or 'cyber_radial'. Purely
+        a frontend concern — the frontend toggles a body class off this and
+        does all the actual layout work; the backend just persists it."""
+        if mode not in ("dawning_horizon", "night_horizon", "cyber_radial"):
+            return SETTINGS
+        SETTINGS["layout"] = mode
+        store.save_settings(SETTINGS)
         return SETTINGS
 
     # ---------------- kiosk mode: exit paths ----------------
@@ -1063,6 +1353,12 @@ def _check_for_update_at_boot(window):
     webview.start below), in its own thread so the network call never
     blocks startup. Silent on failure or when already up to date — only
     pushes something to the UI when there's an actual update to offer."""
+    if SETTINGS.get("window_mode") == "exclusive_fullscreen":
+        try:
+            window.toggle_fullscreen()
+            window._meridian_exclusive_fs = True
+        except Exception:
+            pass
     try:
         result = updater.check_for_update(CURRENT_VERSION)
     except Exception:
@@ -1083,11 +1379,12 @@ def _check_for_update_at_boot(window):
 
 def main():
     width, height = detect_screen_size()
-    mode = SETTINGS.get("window_mode", "fullscreen")
-    # Borderless (windowed) fullscreen instead of OS-exclusive fullscreen:
-    # a frameless window sized and positioned to exactly cover the screen,
-    # rather than a real display-mode fullscreen switch.
-    borderless_fullscreen = mode in ("fullscreen", "kiosk")
+    mode = SETTINGS.get("window_mode", "windowed_fullscreen")
+    # Borderless (windowed) fullscreen: a frameless window sized and
+    # positioned to exactly cover the screen. Exclusive fullscreen instead
+    # requests a real OS display-mode fullscreen switch via toggle_fullscreen()
+    # once the window exists (can't be requested at creation time), see below.
+    borderless_fullscreen = mode in ("windowed_fullscreen", "kiosk")
     frameless = borderless_fullscreen
 
     api = Api()
@@ -1107,6 +1404,7 @@ def main():
     window._meridian_fullscreen = borderless_fullscreen
 
     start_controller()
+    start_background_precache()
     webview.start(
         _check_for_update_at_boot, window,
         debug=False, gui="edgechromium",

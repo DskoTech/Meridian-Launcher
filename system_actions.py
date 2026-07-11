@@ -421,3 +421,32 @@ def close_all_except(whitelist_names):
         except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
             continue
     return {"ok": True, "error": None, "closed": closed}
+
+
+def launch_ps1_elevated(path, args=None):
+    """Run a PowerShell script elevated — a UAC prompt for just that one
+    process, not the whole app — via ShellExecuteW's "runas" verb.
+    Returns (ok, error_message, needs_admin_relaunch). needs_admin_relaunch
+    is True when even the per-process elevation attempt failed (e.g. the
+    UAC prompt was declined, or something about the environment blocks it
+    outright), which is the caller's cue to offer restarting Meridian
+    Launcher itself as administrator instead.
+    """
+    if not path or not os.path.isfile(path):
+        return False, "File not found.", False
+    try:
+        import ctypes
+        arg_str = " ".join(f'"{a}"' for a in (args or []))
+        params = f'-NoProfile -ExecutionPolicy Bypass -File "{path}"' + (f" {arg_str}" if arg_str else "")
+        # SW_SHOWNORMAL = 1. Return value > 32 means success; <= 32 is an
+        # HINSTANCE-shaped error code (5 = access denied / UAC declined).
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "powershell.exe", params, os.path.dirname(path) or None, 1
+        )
+        if result > 32:
+            return True, None, False
+        if result == 5:
+            return False, "Administrator permission was declined.", True
+        return False, f"Couldn't launch elevated (error code {result}).", True
+    except Exception as e:
+        return False, str(e), True
