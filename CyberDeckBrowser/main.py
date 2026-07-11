@@ -30,6 +30,19 @@ def main():
 
     config = load_config()
 
+    #
+    # Meridian Launcher passes --window-mode=borderless-fullscreen when it
+    # opens this app, asking for windowed (borderless) fullscreen for this
+    # run regardless of whatever was last saved. This only affects the
+    # in-memory config for this run - it is never written back to disk, so
+    # a person's own saved preference (set from CyberDeck Browser's own
+    # settings) survives the next time they open it by hand.
+    #
+
+    if "--window-mode=borderless-fullscreen" in sys.argv:
+
+        config["fullscreen"] = True
+
 
     #
     # Keeps references alive once created inside
@@ -46,7 +59,17 @@ def main():
 
         if config.get("fullscreen", True):
 
-            loading.showFullScreen()
+            # Already frameless, so "fullscreen" just means covering the
+            # primary screen exactly — not Qt's showFullScreen() state,
+            # which behaves like a real fullscreen mode switch on some
+            # platforms. Borderless windowed instead.
+            screen_geo = QApplication.primaryScreen().geometry()
+
+            loading.move(screen_geo.x(), screen_geo.y())
+
+            loading.resize(screen_geo.width(), screen_geo.height())
+
+            loading.show()
 
         else:
 
@@ -113,7 +136,13 @@ def main():
 
         if config.get("fullscreen", True):
 
-            prompt.showFullScreen()
+            screen_geo = QApplication.primaryScreen().geometry()
+
+            prompt.move(screen_geo.x(), screen_geo.y())
+
+            prompt.resize(screen_geo.width(), screen_geo.height())
+
+            prompt.show()
 
         else:
 

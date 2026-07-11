@@ -53,3 +53,47 @@ def get_app_root():
 
 
 APP_ROOT = get_app_root()
+
+
+#
+# DATA_DIR holds CyberDeck Browser's own persistent data (its config and
+# bookmarks) under %LOCALAPPDATA%\Meridian Launcher\CyberDeckBrowser\,
+# rather than next to the exe - the app folder itself no longer needs to be
+# writable (e.g. it can sit in Program Files).
+#
+
+def _get_data_dir():
+
+    local_appdata = os.environ.get("LOCALAPPDATA") or os.path.join(
+        os.path.expanduser("~"), "AppData", "Local"
+    )
+
+    data_dir = os.path.join(local_appdata, "Meridian Launcher", "CyberDeckBrowser")
+
+    os.makedirs(data_dir, exist_ok=True)
+
+    return data_dir
+
+
+DATA_DIR = _get_data_dir()
+
+
+def _migrate_legacy_file(filename):
+    """Carries a pre-update data file sitting next to the exe over to the
+    new %LOCALAPPDATA% location, if the new location doesn't have one yet."""
+
+    old_path = os.path.join(APP_ROOT, filename)
+
+    new_path = os.path.join(DATA_DIR, filename)
+
+    if os.path.exists(old_path) and not os.path.exists(new_path):
+
+        try:
+            import shutil
+            shutil.copy2(old_path, new_path)
+        except OSError:
+            pass
+
+
+for _f in ("cyberdeck_config.json", "cyberdeck_bookmarks.json"):
+    _migrate_legacy_file(_f)

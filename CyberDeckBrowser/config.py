@@ -6,11 +6,11 @@ CyberDeck Browser Configuration
 import json
 import os
 
-from paths import APP_ROOT
+from paths import DATA_DIR
 
 
 CONFIG_FILE = os.path.join(
-    APP_ROOT,
+    DATA_DIR,
     "cyberdeck_config.json"
 )
 
