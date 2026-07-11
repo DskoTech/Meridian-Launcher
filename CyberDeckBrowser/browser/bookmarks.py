@@ -8,11 +8,11 @@ Simple JSON-backed bookmark list.
 import json
 import os
 
-from paths import APP_ROOT
+from paths import DATA_DIR
 
 
 BOOKMARKS_FILE = os.path.join(
-    APP_ROOT,
+    DATA_DIR,
     "cyberdeck_bookmarks.json"
 )
 

@@ -447,7 +447,10 @@ class MainWindow(QMainWindow):
 
 
         #
-        # Fullscreen
+        # Borderless fullscreen (a frameless window sized/positioned to
+        # exactly cover the primary screen) instead of Qt's showFullScreen()
+        # state, which behaves like a real display-mode fullscreen switch
+        # on some platforms.
         #
 
         if config.get(
@@ -458,7 +461,17 @@ class MainWindow(QMainWindow):
 
         ):
 
-            self.showFullScreen()
+            self.setWindowFlags(
+                self.windowFlags() | Qt.FramelessWindowHint
+            )
+
+            screen_geo = QApplication.primaryScreen().geometry()
+
+            self.move(screen_geo.x(), screen_geo.y())
+
+            self.resize(screen_geo.width(), screen_geo.height())
+
+            self.show()
 
         else:
 
