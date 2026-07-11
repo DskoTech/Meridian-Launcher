@@ -8,6 +8,10 @@
 #   %LOCALAPPDATA%\Meridian Launcher\, so they are NOT bundled as read-only
 #   datas here — they need to stay writable regardless of where the exe
 #   itself is installed (e.g. Program Files).
+# - VERSION is bundled read-only (see datas below) and read at runtime via
+#   sys._MEIPASS — it's what the update checker (updater.py) compares
+#   against the latest GitHub release tag. Bump it before tagging a new
+#   release.
 # - Drop osm.bat next to the built Meridian Launcher.exe if you want
 #   sections/system features with "Launch with onscreenmenu?" enabled
 #   (on by default) to trigger it; the app looks for it in its own directory.
@@ -22,7 +26,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('frontend', 'frontend')],
+    datas=[('frontend', 'frontend'), ('VERSION', '.')],
     hiddenimports=[
         'webview.platforms.winforms',
         'webview.platforms.edgechromium',

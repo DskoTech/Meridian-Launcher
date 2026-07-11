@@ -23,6 +23,7 @@ import webview
 
 import store
 import system_actions
+import updater
 from controller_input import ControllerListener
 
 try:
@@ -43,6 +44,19 @@ if getattr(sys, 'frozen', False):
 else:
     # Running as standard script; get directory of the current Python file
     BASE_DIR = Path(__file__).resolve().parent
+
+
+def _resource_path(*parts):
+    """Path to a bundled read-only resource, from source or from a frozen
+    (onefile) PyInstaller build. Onefile builds extract bundled `datas`
+    into a temporary _MEIPASS folder at startup rather than leaving them
+    next to the exe (BASE_DIR), so this has to check for that separately.
+    """
+    base = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+    return base.joinpath(*parts)
+
+
+CURRENT_VERSION = updater.get_local_version(str(_resource_path("VERSION")))
 
 APP_TITLE = "MeridianLauncher"
 
@@ -937,6 +951,25 @@ class Api:
         if ok:
             _maybe_launch_onscreenmenu()
         return {"ok": ok, "error": err}
+
+    # ---------------- settings: updates ----------------
+    def get_version(self):
+        return {"version": CURRENT_VERSION}
+
+    def check_for_updates(self):
+        """Manual "Check for Updates" button in Settings — same check as
+        the silent one at boot, just triggered on demand and always
+        reported back to the UI (including "you're up to date")."""
+        return updater.check_for_update(CURRENT_VERSION)
+
+    def start_update(self, download_url):
+        """Downloads the .exe installer and launches it, then quits the app
+        so the installer isn't fighting a running/locked
+        MeridianLauncher.exe."""
+        ok, err = updater.download_and_run_installer(download_url)
+        if ok:
+            threading.Timer(0.6, lambda: os._exit(0)).start()
+        return {"ok": ok, "error": err}
     
 
 
@@ -1025,6 +1058,29 @@ def detect_screen_size():
         return 1280, 800
 
 
+def _check_for_update_at_boot(window):
+    """Runs once the webview window exists (see the func= passed to
+    webview.start below), in its own thread so the network call never
+    blocks startup. Silent on failure or when already up to date — only
+    pushes something to the UI when there's an actual update to offer."""
+    try:
+        result = updater.check_for_update(CURRENT_VERSION)
+    except Exception:
+        return
+    if not result.get("available"):
+        return
+    try:
+        payload = json.dumps({
+            "current": result.get("current"),
+            "latest": result.get("latest"),
+            "download_url": result.get("download_url"),
+            "notes": result.get("notes", ""),
+        })
+        window.evaluate_js(f"window.onUpdateAvailable && window.onUpdateAvailable({payload})")
+    except Exception:
+        pass
+
+
 def main():
     width, height = detect_screen_size()
     mode = SETTINGS.get("window_mode", "fullscreen")
@@ -1051,7 +1107,10 @@ def main():
     window._meridian_fullscreen = borderless_fullscreen
 
     start_controller()
-    webview.start(debug=False, gui="edgechromium")
+    webview.start(
+        _check_for_update_at_boot, window,
+        debug=False, gui="edgechromium",
+    )
 
 
 if __name__ == "__main__":
