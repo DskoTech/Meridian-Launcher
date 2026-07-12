@@ -1,51 +1,20 @@
-"""Game controller support via XInput (Windows). Polls in a background thread
-so combos like Start+Back (bring to foreground) work even when the app
-window isn't focused.
+"""Game controller support via the Windows GameInput API, with XInput
+fallback. Polls in a background thread so combos like Start+Back (bring to
+foreground) work even when the app window isn't focused.
+
+GameInput is Microsoft's modern replacement for XInput/DirectInput and is
+the input path used by Windows 11's Xbox full screen experience ("Xbox
+mode"). Polling it first fixes the fullscreen-experience no-controls
+problem; on systems without GameInput we fall back to classic XInput, so
+behavior everywhere else is unchanged. All backend details live in
+gameinput_api.py — this module keeps the same ControllerListener interface
+it always had.
 """
 
-import ctypes
 import threading
 import time
 
-# ---- XInput bindings ----
-
-class XINPUT_GAMEPAD(ctypes.Structure):
-    _fields_ = [
-        ("wButtons", ctypes.c_ushort),
-        ("bLeftTrigger", ctypes.c_ubyte),
-        ("bRightTrigger", ctypes.c_ubyte),
-        ("sThumbLX", ctypes.c_short),
-        ("sThumbLY", ctypes.c_short),
-        ("sThumbRX", ctypes.c_short),
-        ("sThumbRY", ctypes.c_short),
-    ]
-
-
-class XINPUT_STATE(ctypes.Structure):
-    _fields_ = [("dwPacketNumber", ctypes.c_ulong), ("Gamepad", XINPUT_GAMEPAD)]
-
-
-BUTTONS = {
-    "DPAD_UP": 0x0001, "DPAD_DOWN": 0x0002, "DPAD_LEFT": 0x0004, "DPAD_RIGHT": 0x0008,
-    "START": 0x0010, "BACK": 0x0020,
-    "LEFT_THUMB": 0x0040, "RIGHT_THUMB": 0x0080,
-    "LEFT_SHOULDER": 0x0100, "RIGHT_SHOULDER": 0x0200,
-    "A": 0x1000, "B": 0x2000, "X": 0x4000, "Y": 0x8000,
-}
-
-
-def _load_xinput():
-    for name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
-        try:
-            lib = getattr(ctypes.windll, name)
-            lib.XInputGetState.argtypes = [ctypes.c_uint, ctypes.POINTER(XINPUT_STATE)]
-            lib.XInputGetState.restype = ctypes.c_uint
-            return lib
-        except OSError:
-            continue
-        except AttributeError:
-            continue
-    return None
+from gameinput_api import XI_BUTTONS as BUTTONS, open_gamepad
 
 
 # Buttons watched for the kiosk-mode secret unlock sequence — reported via
@@ -85,7 +54,7 @@ class ControllerListener:
         on_y_hold_complete(): called once after Y has been held continuously
             for Y_HOLD_SECONDS — another kiosk-mode exit path.
         """
-        self.xinput = _load_xinput()
+        self.gamepad = open_gamepad()
         self.controls = controls
         self.on_action = on_action
         self.on_any = on_any
@@ -101,15 +70,15 @@ class ControllerListener:
         self._y_fired = False
 
     def start(self):
-        if self.xinput is None:
+        if self.gamepad is None:
             return  # no controller driver available; app still works with kb/mouse
         threading.Thread(target=self._loop, daemon=True).start()
 
     def stop(self):
         self._stop.set()
 
-    def _deadzone(self, value):
-        norm = value / 32768.0
+    def _deadzone(self, norm):
+        # norm is already a float in -1.0 .. 1.0 (GamepadSnapshot convention)
         dz = self.controls.get("deadzone", 0.25)
         if abs(norm) < dz:
             return 0.0
@@ -128,12 +97,14 @@ class ControllerListener:
         return {name for name, bit in BUTTONS.items() if mask & bit}
 
     def _loop(self):
-        state = XINPUT_STATE()
         while not self._stop.is_set():
-            res = self.xinput.XInputGetState(0, ctypes.byref(state))
-            if res == 0:  # ERROR_SUCCESS: controller connected
-                pad = state.Gamepad
-                pressed = self._button_names(pad.wButtons)
+            snap = None
+            try:
+                snap = self.gamepad.poll()
+            except Exception:
+                snap = None
+            if snap is not None:  # controller connected
+                pressed = self._button_names(snap.buttons)
                 rising = pressed - self._button_names(self._prev_buttons)
 
                 # combos
@@ -202,8 +173,8 @@ class ControllerListener:
                         self.on_action("next_track")
 
                 # directional: dpad OR left stick, cooldown-repeated while held
-                lx = self._deadzone(pad.sThumbLX)
-                ly = self._deadzone(pad.sThumbLY)
+                lx = self._deadzone(snap.lx)
+                ly = self._deadzone(snap.ly)
                 dirs_active = set()
                 if "DPAD_UP" in pressed or ly > 0:
                     dirs_active.add("up")
@@ -220,5 +191,12 @@ class ControllerListener:
                     if self._can_fire(d):
                         self.on_action(d)
 
-                self._prev_buttons = pad.wButtons
+                self._prev_buttons = snap.buttons
+            else:
+                # controller disconnected: clear edge/latch state so nothing
+                # fires spuriously when it comes back
+                self._prev_buttons = 0
+                self._combo_latch = {k: False for k in self._combo_latch}
+                self._y_hold_start = None
+                self._y_fired = False
             time.sleep(0.016)  # ~60Hz poll

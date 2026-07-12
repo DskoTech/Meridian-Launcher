@@ -86,6 +86,11 @@ def default_settings():
         "opening_video": None,
         "window_mode": "windowed_fullscreen",  # exclusive_fullscreen | windowed_fullscreen | windowed | kiosk
         "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
+        # Dawning Horizon background hue: "original", or "<palette>:<hue>"
+        # where palette is light|dark|neon|primary|pastel|bubblegum and hue
+        # is red|orange|yellow|green|blue|indigo|violet. Purely a frontend
+        # concern (app.js computes and applies the actual colors).
+        "dawning_theme_color": "original",
         "recent_games": [],  # [{"path": ..., "name": ...}], most-recent-first, capped at 5
         "display_type": {"games": "gallery"},  # per-section-id: "list" | "gallery"; any id not present defaults to "list"
         "desktop_section_enabled": False,  # Desktop: always first in the list when on, off by default

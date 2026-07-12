@@ -1193,6 +1193,23 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    def set_dawning_theme_color(self, value):
+        """Dawning Horizon primary theme color: "original", or
+        "<palette>:<hue>". Like set_layout, the backend only validates and
+        persists — the frontend computes the actual HSL values."""
+        if value != "original":
+            parts = str(value).split(":")
+            if len(parts) != 2:
+                return SETTINGS
+            palette, hue = parts
+            if palette not in ("light", "dark", "neon", "primary", "pastel", "bubblegum"):
+                return SETTINGS
+            if hue not in ("red", "orange", "yellow", "green", "blue", "indigo", "violet"):
+                return SETTINGS
+        SETTINGS["dawning_theme_color"] = value
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
     # ---------------- kiosk mode: exit paths ----------------
     def disable_kiosk_via_code(self):
         """Called by the frontend once it detects the secret controller/
