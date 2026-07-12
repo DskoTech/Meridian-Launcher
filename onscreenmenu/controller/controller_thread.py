@@ -1,498 +1,206 @@
 """
 onscreenmenu Controller Thread
 
-Runs gamepad polling in a separate thread.
+Background gamepad poller that publishes a shared ControllerState
+read by InputManager, ControllerCursor, and MainWindow's combo
+watcher every UI tick.
 
-Provides:
-- Analog stick movement
-- D-pad events
-- Controller buttons
-- Shoulder buttons
-- Triggers
+Backend order (via gameinput_api.open_gamepad):
 
-UI code should connect to signals.
+1. Windows GameInput API — the input path used by Windows 11's
+   Xbox full screen experience ("Xbox mode"). Polling this first
+   fixes the fullscreen-experience no-controls problem.
+2. Legacy XInput — fallback so nothing changes on systems
+   without GameInput.
+
+State conventions (what the rest of onscreenmenu was written
+against):
+
+    sticks   : -1.0 .. 1.0, screen convention (down = +1), so
+               ControllerCursor can add left_y straight to a
+               screen coordinate
+    triggers : 0.0 (released) .. 1.0 (fully pressed) — cursor's
+               trigger_boost checks `> 0.5`
+    buttons  : plain bools, level state; consumers do their own
+               edge detection against `last`
+
+Because polling happens here (not tied to window focus or Qt
+events), Start+Select hibernate and L3+R3 quit keep working even
+while onscreenmenu is an invisible background overlay.
 """
 
 
-from PySide6.QtCore import (
-    QThread,
-    Signal
-)
-
 import time
+
+from PySide6.QtCore import QThread
 
 from controller.state import ControllerState
 
+from gameinput_api import open_gamepad, XI_BUTTONS
 
 
-try:
+# How often to re-scan for a controller when none is connected (seconds)
+_RESCAN_INTERVAL = 2.0
 
-    import pygame
-
-    GAMEPAD_AVAILABLE = True
-
-
-except ImportError:
-
-    GAMEPAD_AVAILABLE = False
-
-
-
+# Poll rate while a controller is connected (~60 Hz)
+_POLL_SLEEP = 0.016
 
 
 class ControllerThread(QThread):
 
 
-    #
-    # Buttons
-    #
-
-    a_pressed = Signal()
-
-    b_pressed = Signal()
-
-    x_pressed = Signal()
-
-    y_pressed = Signal()
-
-
-
-    start_pressed = Signal()
-
-    select_pressed = Signal()
-
-
-
-    lb_pressed = Signal()
-
-    rb_pressed = Signal()
-
-
-
-    #
-    # D-pad
-    #
-
-    dpad_up = Signal()
-
-    dpad_down = Signal()
-
-    dpad_left = Signal()
-
-    dpad_right = Signal()
-
-
-
-    #
-    # Analog movement
-    #
-
-    left_stick = Signal(
-        float,
-        float
-    )
-
-
-    right_stick = Signal(
-        float,
-        float
-    )
-
-
-    #
-    # Triggers
-    #
-
-    left_trigger = Signal(
-        float
-    )
-
-
-    right_trigger = Signal(
-        float
-    )
-
-
-
-
-
-    def __init__(
-        self,
-        parent=None
-    ):
+    def __init__(self, parent=None):
 
         super().__init__(parent)
 
-
-
         self.running = True
 
-
-
-        self.controller = None
-
-
-
-        self.last_buttons = {}
-
-        self.current_buttons = {}
+        self.pad = None
 
         self.state = ControllerState()
 
 
+    #
+    # ---- backend discovery ----
+    #
+
+    def _open_backend(self):
+
+        try:
+
+            # GameInput first, XInput fallback (see module docstring)
+            self.pad = open_gamepad()
+
+        except Exception:
+
+            self.pad = None
 
 
-
-    def initialize_controller(self):
-
-
-        if not GAMEPAD_AVAILABLE:
-
-            return
-
-
-
-        pygame.init()
-
-
-        pygame.joystick.init()
-
-
-
-        if pygame.joystick.get_count() > 0:
-
-
-            self.controller = pygame.joystick.Joystick(0)
-
-
-            self.controller.init()
-
-
-
-
-
-    def button_pressed(
-        self,
-        button
-    ):
-
-
-        return (
-
-            self.last_buttons.get(
-                button,
-                False
-            )
-
-            and
-
-            not self.current_buttons.get(
-                button,
-                False
-            )
-
-        )
-
-
-
-
+    #
+    # ---- main loop ----
+    #
 
     def run(self):
 
+        self._open_backend()
 
-        self.initialize_controller()
-
-
+        last_rescan = time.time()
 
         while self.running:
 
+            snap = None
 
-            if not self.controller:
+            if self.pad is not None:
+
+                try:
+
+                    snap = self.pad.poll()
+
+                except Exception:
+
+                    snap = None
+
+            if snap is None:
+
+                #
+                # No controller (or no driver at all). Blank the
+                # state so stale button values can't re-trigger
+                # combos, then rescan occasionally.
+                #
+
+                if self.state.connected:
+
+                    self.state = ControllerState()
 
                 self.state.connected = False
 
-                time.sleep(
-                    .5
-                )
+                now = time.time()
+
+                if self.pad is None and now - last_rescan >= _RESCAN_INTERVAL:
+
+                    last_rescan = now
+
+                    self._open_backend()
+
+                time.sleep(0.25 if self.pad is None else _POLL_SLEEP)
 
                 continue
 
+            self._apply(snap)
 
+            time.sleep(_POLL_SLEEP)
 
-            pygame.event.pump()
 
+    def _apply(self, snap):
 
+        s = self.state
 
-            self.current_buttons = {}
+        b = snap.buttons
 
-            self.state.connected = True
+        s.connected = True
 
+        #
+        # Buttons
+        #
 
+        s.a = bool(b & XI_BUTTONS["A"])
+        s.b = bool(b & XI_BUTTONS["B"])
+        s.x = bool(b & XI_BUTTONS["X"])
+        s.y = bool(b & XI_BUTTONS["Y"])
 
-            #
-            # Standard Xbox layout
-            #
+        s.start = bool(b & XI_BUTTONS["START"])
+        s.select = bool(b & XI_BUTTONS["BACK"])
 
-            for i in range(
+        s.left_shoulder = bool(b & XI_BUTTONS["LEFT_SHOULDER"])
+        s.right_shoulder = bool(b & XI_BUTTONS["RIGHT_SHOULDER"])
 
-                self.controller.get_numbuttons()
+        s.l3 = bool(b & XI_BUTTONS["LEFT_THUMB"])
+        s.r3 = bool(b & XI_BUTTONS["RIGHT_THUMB"])
 
-            ):
+        #
+        # D-pad
+        #
 
+        s.dpad_up = bool(b & XI_BUTTONS["DPAD_UP"])
+        s.dpad_down = bool(b & XI_BUTTONS["DPAD_DOWN"])
+        s.dpad_left = bool(b & XI_BUTTONS["DPAD_LEFT"])
+        s.dpad_right = bool(b & XI_BUTTONS["DPAD_RIGHT"])
 
-                self.current_buttons[i] = (
+        #
+        # Sticks — snapshot is XInput convention (up = +1);
+        # flip Y to screen convention (down = +1) for the cursor.
+        #
 
-                    self.controller.get_button(i)
+        s.left_x = snap.lx
+        s.left_y = -snap.ly
 
-                )
+        s.right_x = snap.rx
+        s.right_y = -snap.ry
 
+        #
+        # Triggers — already 0..1 in the snapshot
+        #
 
-
-            self.state.a = self.current_buttons.get(0, False)
-            self.state.b = self.current_buttons.get(1, False)
-            self.state.x = self.current_buttons.get(2, False)
-            self.state.y = self.current_buttons.get(3, False)
-
-            self.state.start = self.current_buttons.get(7, False)
-            self.state.select = self.current_buttons.get(6, False)
-
-            self.state.left_shoulder = self.current_buttons.get(4, False)
-            self.state.right_shoulder = self.current_buttons.get(5, False)
-
-            #
-            # Stick clicks. Standard SDL2/XInput layout puts these
-            # at indices 8 (left stick / L3) and 9 (right stick /
-            # R3) - if your controller/driver numbers them
-            # differently, adjust these two indices.
-            #
-
-            self.state.l3 = self.current_buttons.get(8, False)
-            self.state.r3 = self.current_buttons.get(9, False)
-
-
-
-
-            #
-            # Buttons
-            #
-
-            self.check_button(
-                0,
-                self.a_pressed
-            )
-
-
-            self.check_button(
-                1,
-                self.b_pressed
-            )
-
-
-            self.check_button(
-                2,
-                self.x_pressed
-            )
-
-
-            self.check_button(
-                3,
-                self.y_pressed
-            )
-
-
-            self.check_button(
-                7,
-                self.start_pressed
-            )
-
-
-            self.check_button(
-                6,
-                self.select_pressed
-            )
-
-
-            self.check_button(
-                4,
-                self.lb_pressed
-            )
-
-
-            self.check_button(
-                5,
-                self.rb_pressed
-            )
-
-
-
-
-
-            #
-            # Analog sticks
-            #
-
-            lx = self.controller.get_axis(0)
-
-            ly = self.controller.get_axis(1)
-
-
-            rx = self.controller.get_axis(2)
-
-            ry = self.controller.get_axis(3)
-
-
-
-            deadzone = .15
-
-
-
-            if abs(lx) < deadzone:
-
-                lx = 0
-
-
-            if abs(ly) < deadzone:
-
-                ly = 0
-
-
-            if abs(rx) < deadzone:
-
-                rx = 0
-
-
-            if abs(ry) < deadzone:
-
-                ry = 0
-
-
-            self.state.left_x = lx
-            self.state.left_y = ly
-
-            self.state.right_x = rx
-            self.state.right_y = ry
-
-
-
-            self.left_stick.emit(
-                lx,
-                ly
-            )
-
-
-            self.right_stick.emit(
-                rx,
-                ry
-            )
-
-
-
-
-
-            #
-            # Triggers
-            #
-
-            self.left_trigger.emit(
-
-                self.controller.get_axis(4)
-
-            )
-
-
-            self.right_trigger.emit(
-
-                self.controller.get_axis(5)
-
-            )
-
-
-            self.state.left_trigger = self.controller.get_axis(4)
-            self.state.right_trigger = self.controller.get_axis(5)
-
-
-
-
-
-            #
-            # D-pad
-            #
-
-            hat = self.controller.get_hat(0)
-
-
-            self.state.dpad_up = hat[1] == 1
-            self.state.dpad_down = hat[1] == -1
-
-            self.state.dpad_left = hat[0] == -1
-            self.state.dpad_right = hat[0] == 1
-
-
-            if hat[1] == 1:
-
-                self.dpad_up.emit()
-
-
-            elif hat[1] == -1:
-
-                self.dpad_down.emit()
-
-
-
-            if hat[0] == -1:
-
-                self.dpad_left.emit()
-
-
-            elif hat[0] == 1:
-
-                self.dpad_right.emit()
-
-
-
-
-
-            self.last_buttons = self.current_buttons.copy()
-
-
-
-            time.sleep(
-                .016
-            )
-
-
-
-
-
-    def check_button(
-        self,
-        index,
-        signal
-    ):
-
-
-        if (
-
-            self.current_buttons.get(index)
-
-            and
-
-            not self.last_buttons.get(index)
-
-        ):
-
-            signal.emit()
-
-
-
+        s.left_trigger = snap.lt
+        s.right_trigger = snap.rt
 
 
     def stop(self):
 
-
         self.running = False
-
 
         self.quit()
 
         self.wait()
+
+        if self.pad is not None:
+
+            try:
+
+                self.pad.close()
+
+            except Exception:
+
+                pass
+
+            self.pad = None

@@ -108,6 +108,55 @@ function Export-MeridianLibrary {
     }
 
     $exported | ConvertTo-Json -Depth 4 | Out-File -LiteralPath $exportPath -Encoding utf8
+
+    Export-MeridianFilterPresets $exportDir
+}
+
+# Also snapshot the user's saved filter presets, with membership resolved
+# by Playnite itself. Meridian's "Playnite filter sections" toggle turns
+# each of these into its own section, so the filter logic (genres, sources,
+# install state, whatever the preset says) never has to be reimplemented
+# on the Python side — Playnite evaluates it here and Meridian just reads
+# name + matching game ids.
+#
+# GetFilteredGames(FilterPresetSettings) is the documented SDK call for
+# this; older Playnite versions may lack it, so there's a per-game
+# GetGameMatchesFilter fallback, and if neither is available the preset is
+# still exported by name with an empty membership rather than crashing the
+# whole export.
+function Export-MeridianFilterPresets {
+    param($exportDir)
+
+    $presetPath = Join-Path $exportDir "playnite_filter_presets.json"
+    $presetsOut = @()
+
+    try {
+        foreach ($preset in $PlayniteApi.Database.FilterPresets) {
+            $gameIds = @()
+            try {
+                $matched = $PlayniteApi.Database.GetFilteredGames($preset.Settings)
+                foreach ($g in $matched) { $gameIds += $g.Id.ToString() }
+            } catch {
+                try {
+                    foreach ($g in $PlayniteApi.Database.Games) {
+                        if ($PlayniteApi.Database.GetGameMatchesFilter($g, $preset.Settings)) {
+                            $gameIds += $g.Id.ToString()
+                        }
+                    }
+                } catch { }
+            }
+
+            $presetsOut += [PSCustomObject]@{
+                Id      = $preset.Id.ToString()
+                Name    = $preset.Name
+                GameIds = $gameIds
+            }
+        }
+    } catch { }
+
+    # ConvertTo-Json turns a single-element array into a bare object;
+    # Meridian's reader handles both shapes, so no wrapping gymnastics here.
+    $presetsOut | ConvertTo-Json -Depth 4 | Out-File -LiteralPath $presetPath -Encoding utf8
 }
 
 # Runs automatically on every Playnite startup and after every library sync

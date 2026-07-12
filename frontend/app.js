@@ -25,6 +25,7 @@ const ICONS = {
   macros: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg>`,
   settings: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.56V21a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1-1.56 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.56-1H3a2 2 0 110-4h.09a1.7 1.7 0 001.56-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H9a1.7 1.7 0 001-1.56V3a2 2 0 114 0v.09a1.7 1.7 0 001 1.56 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V9a1.7 1.7 0 001.56 1H21a2 2 0 110 4h-.09a1.7 1.7 0 00-1.56 1z"/></svg>`,
   generic: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>`,
+  desktop: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>`,
   power: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v8"/><path d="M6.3 6.3a9 9 0 1011.4 0"/></svg>`,
   sleep: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>`,
   hibernate: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v20M2 12h20M5 5l14 14M19 5L5 19"/></svg>`,
@@ -105,6 +106,8 @@ const state = {
   folderEntries: [], // flattened navigable sidebar rows for the current media category
   folderCursor: 0,
   settingsCursor: 0, // controller/keyboard cursor over Settings' focusable controls
+  radialFocus: "sections", // "sections" | "options" | "subfolder" — CyberRadial layout only
+  sectionsBrowseIndex: 0, // NightHorizon/CyberRadial: which section is highlighted while browsing, may differ from catIndex (the actually-loaded one) until confirmed
 };
 
 const el = (id) => document.getElementById(id);
@@ -145,12 +148,15 @@ function buildCategories(settings) {
   const base = [...FIXED_CATEGORIES, ...custom];
   // Kiosk mode hides Settings and System entirely — the only ways back out
   // are the secret code, a 45s Y hold, or hand-editing settings.json.
-  if (settings.window_mode === "kiosk") return base;
-  return [
+  const withSystem = settings.window_mode === "kiosk" ? base : [
     ...base,
     { id: "settings", label: "Settings", kind: "settings", color: "var(--accent-settings)" },
     { id: "system", label: "System", kind: "system_list", color: "var(--accent-system)" },
   ];
+  // Desktop: auto-populated from the user's actual Desktop folder, off by
+  // default (Settings toggle), always first in the list when it's on.
+  if (!settings.desktop_section_enabled) return withSystem;
+  return [{ id: "desktop", label: "Desktop", kind: "desktop_list", color: "var(--accent-desktop)" }, ...withSystem];
 }
 
 function iconFor(catId) {
@@ -161,9 +167,17 @@ function iconFor(catId) {
 
 const categoryElements = new Map(); // id -> persistent DOM node, so transitions can animate
 
+// Which index should visually drive the carousel/highlight right now: the
+// browse cursor while the user is scrubbing through sections pre-confirm
+// (NightHorizon/CyberRadial), or simply the loaded section otherwise.
+function currentHighlightIndex() {
+  return (state.radialFocus === "sections" && usesConfirmToLoadSections()) ? state.sectionsBrowseIndex : state.catIndex;
+}
+
 function computeDisplayOrder() {
   const n = state.categories.length;
-  const start = state.catIndex <= CAROUSEL_ANCHOR ? 0 : state.catIndex - CAROUSEL_ANCHOR;
+  const anchor = currentHighlightIndex();
+  const start = anchor <= CAROUSEL_ANCHOR ? 0 : anchor - CAROUSEL_ANCHOR;
   const order = [];
   for (let i = 0; i < n; i++) order.push((start + i) % n);
   return order;
@@ -195,6 +209,7 @@ function renderCategories() {
   }
 
   const order = computeDisplayOrder();
+  const highlightIdx = currentHighlightIndex();
 
   // FLIP part 1: record where each visible element currently sits
   const oldRects = new Map();
@@ -209,13 +224,38 @@ function renderCategories() {
   order.forEach((realIdx) => {
     const cat = state.categories[realIdx];
     const wrap = ensureCategoryElement(cat);
-    wrap.classList.toggle("active", realIdx === state.catIndex);
+    wrap.classList.toggle("active", realIdx === highlightIdx);
+    wrap.classList.toggle("pending-confirm", realIdx === highlightIdx && highlightIdx !== state.catIndex);
     frag.appendChild(wrap);
   });
   row.innerHTML = "";
   row.appendChild(frag);
 
-  // FLIP part 2: animate from the old position to the new one
+  // CyberRadial: the active category is always pinned to angle 0 (the
+  // fixed point straight out from the hub's center, pill pointing back in)
+  // — not a moving highlight on a static arc. Everything else's angle is
+  // just "how many positions away from active", so moving up/down rotates
+  // neighbors into that fixed spot rather than moving a cursor along a
+  // fixed ring. Harmless no-op in NightHorizon (angle unused there).
+  const activePos = order.indexOf(highlightIdx);
+  const ORBIT_STEP_DEG = 20;
+  const ORBIT_FADE_RANGE = 5; // matches where clamping kicks in (90/20=4.5) so nothing visible ever shares a clamped angle
+  order.forEach((realIdx, i) => {
+    const cat = state.categories[realIdx];
+    const elx = categoryElements.get(cat.id);
+    const offset = i - activePos;
+    const angle = Math.max(-90, Math.min(90, offset * ORBIT_STEP_DEG));
+    const fade = Math.max(0, 1 - Math.abs(offset) / ORBIT_FADE_RANGE);
+    elx.style.setProperty("--orbit-angle", angle + "deg");
+    elx.style.setProperty("--orbit-fade", fade.toFixed(3));
+  });
+
+  // FLIP part 2: animate from the old position to the new one. CyberRadial
+  // positions categories via CSS left/top (transitioned in the stylesheet)
+  // driven by --orbit-angle, so this transform-based trick is skipped there
+  // — setting an inline transform would just clobber the orbit's own
+  // translate(-50%,-50%) positioning transform.
+  if (isCyberRadial()) return;
   order.forEach((realIdx) => {
     const cat = state.categories[realIdx];
     const elx = categoryElements.get(cat.id);
@@ -223,12 +263,13 @@ function renderCategories() {
     if (!oldRect) { elx.style.transition = ""; elx.style.transform = ""; return; }
     const newRect = elx.getBoundingClientRect();
     const dx = oldRect.left - newRect.left;
-    if (Math.abs(dx) > 0.5) {
+    const dy = oldRect.top - newRect.top;
+    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
       elx.style.transition = "none";
-      elx.style.transform = `translateX(${dx}px)`;
+      elx.style.transform = `translate(${dx}px, ${dy}px)`;
       requestAnimationFrame(() => {
         elx.style.transition = "transform 320ms ease";
-        elx.style.transform = "translateX(0)";
+        elx.style.transform = "translate(0, 0)";
       });
     } else {
       elx.style.transition = "";
@@ -242,19 +283,128 @@ function renderCategories() {
 // section (measured live rather than hand-tuned, so it stays correct even
 // as row/list content varies).
 function alignCategoryRowToList() {
+  // Left/right no longer changes which category is selected in either
+  // layout (that's up/down now), so "line up the active icon with the
+  // list's icon column on left/right" no longer applies. Kept as a no-op
+  // rather than removing every call site.
   const row = el("category-row");
-  row.style.transform = "translateX(0)";
-  const activeIcon = row.querySelector(".category.active .icon-ring");
-  const firstListIcon = el("item-panel").querySelector(".row-visual");
-  if (!activeIcon || !firstListIcon) return;
-  const activeRect = activeIcon.getBoundingClientRect();
-  const listRect = firstListIcon.getBoundingClientRect();
-  const delta = (listRect.left + listRect.width / 2) - (activeRect.left + activeRect.width / 2);
-  row.style.transform = `translateX(${delta}px)`;
+  row.style.transform = "";
 }
 
 function applyAccent() {
   document.documentElement.style.setProperty("--active-accent", state.categories[state.catIndex].color);
+  applyLayoutClass();
+  const cat = state.categories[state.catIndex] || {};
+  document.body.dataset.activeCat = cat.id || "";
+  document.body.dataset.displayType = getDisplayType(cat.id);
+}
+
+// "List Style" (default) vs "Gallery Style" — a generic per-section toggle
+// (Settings > each section's own block), not just hardcoded for Games.
+// Games defaults to gallery to match how it's always looked; everything
+// else defaults to list. Purely a rendering concern: same items, same
+// state, just a different CSS shape driven by body[data-display-type].
+function getDisplayType(catId) {
+  const map = (state.settings && state.settings.display_type) || {};
+  return map[catId] || "list";
+}
+
+// Layout mode: "night_horizon" (default) is the vertical hub/orbit sidebar
+// look; "cyber_radial" rearranges the same DOM into the orbital-arc variant.
+// Purely a CSS concern driven by one body class — see style.css.
+function isCyberRadial() {
+  return !!(state.settings && state.settings.layout === "cyber_radial");
+}
+function isDawningHorizon() {
+  return !!(state.settings && (state.settings.layout === "dawning_horizon" || !state.settings.layout));
+}
+// NightHorizon and CyberRadial both require an explicit confirm to actually
+// load a highlighted section; Dawning Horizon keeps the original "whatever's
+// highlighted is already loaded" behavior.
+function usesConfirmToLoadSections() {
+  return true; // universal now — all three layouts share this nav model, differing only visually
+}
+// ---------------- Dawning Horizon: primary theme color ----------------
+// "original" leaves the stylesheet's values alone. Anything else is
+// "<palette>:<hue>": the background is re-tinted to that hue in that
+// palette's saturation/lightness, and the per-section accents are
+// reassigned as a ROYGBIV rainbow rotated to start at the background's
+// complement — so the sections always read against the background rather
+// than dissolving into it. All computed here and applied as inline CSS
+// custom properties on <body>, which out-specifies the
+// body.layout-dawninghorizon class block without touching the stylesheet.
+
+const DAWNING_HUES = [
+  ["red", 0], ["orange", 28], ["yellow", 52], ["green", 125],
+  ["blue", 215], ["indigo", 255], ["violet", 285],
+];
+
+// Per-palette recipe: background stops, accent chroma, and whether the
+// background is light enough to need dark text swapped in.
+const DAWNING_PALETTES = {
+  light:     { bg0: [40, 90], bg1: [46, 82], accent: [72, 38], lightBg: true },
+  dark:      { bg0: [55, 6],  bg1: [50, 13], accent: [78, 64], lightBg: false },
+  neon:      { bg0: [95, 5],  bg1: [100, 15], accent: [100, 60], lightBg: false },
+  primary:   { bg0: [85, 26], bg1: [92, 40], accent: [95, 68], lightBg: false },
+  pastel:    { bg0: [55, 91], bg1: [60, 84], accent: [52, 48], lightBg: true },
+  bubblegum: { bg0: [82, 80], bg1: [90, 70], accent: [88, 42], lightBg: true },
+};
+
+function parseDawningThemeColor(settings) {
+  const raw = (settings && settings.dawning_theme_color) || "original";
+  if (raw === "original") return null;
+  const [palette, hueName] = raw.split(":");
+  const pal = DAWNING_PALETTES[palette];
+  const hueEntry = DAWNING_HUES.find(([name]) => name === hueName);
+  if (!pal || !hueEntry) return null;
+  return { palette: pal, hue: hueEntry[1] };
+}
+
+function applyDawningThemeColor(settings) {
+  const body = document.body;
+  const clear = () => {
+    ["--bg-0", "--bg-1", "--text-hi", "--text-lo", "--panel", "--line"].forEach((v) => body.style.removeProperty(v));
+    DAWNING_ACCENT_VARS.forEach((name) => body.style.removeProperty(`--accent-${name}`));
+  };
+  const theme = isDawningHorizon() ? parseDawningThemeColor(settings) : null;
+  if (!theme) { clear(); return; }
+
+  const { palette: pal, hue } = theme;
+  const hsl = (h, s, l) => `hsl(${((h % 360) + 360) % 360}, ${s}%, ${l}%)`;
+  body.style.setProperty("--bg-0", hsl(hue, pal.bg0[0], pal.bg0[1]));
+  body.style.setProperty("--bg-1", hsl(hue, pal.bg1[0], pal.bg1[1]));
+
+  // Light backgrounds need the text/panel/hairline colors flipped too, or
+  // the original light-on-dark text vanishes.
+  if (pal.lightBg) {
+    body.style.setProperty("--text-hi", hsl(hue, 30, 12));
+    body.style.setProperty("--text-lo", hsl(hue, 18, 34));
+    body.style.setProperty("--panel", "rgba(255, 255, 255, 0.55)");
+    body.style.setProperty("--line", "rgba(15, 23, 42, 0.18)");
+  }
+
+  // ROYGBIV accents, rotated so the rainbow starts at the background's
+  // complementary hue and cycles from there.
+  const shift = hue + 180 - DAWNING_HUES[0][1];
+  DAWNING_ACCENT_VARS.forEach((name, i) => {
+    const base = DAWNING_HUES[i % DAWNING_HUES.length][1];
+    body.style.setProperty(`--accent-${name}`, hsl(base + shift, pal.accent[0], pal.accent[1]));
+  });
+}
+
+// Every per-section accent variable the Dawning stylesheet defines, in the
+// order they get rainbow hues. --active-accent itself follows whichever of
+// these the selected category points at, so it needs no direct handling.
+const DAWNING_ACCENT_VARS = [
+  "music", "photos", "videos", "apps", "games", "emulators", "chat",
+  "streaming", "web", "files", "system", "macros", "settings", "desktop",
+];
+
+function applyLayoutClass() {
+  document.body.classList.toggle("layout-cyberradial", isCyberRadial());
+  document.body.classList.toggle("layout-dawninghorizon", isDawningHorizon());
+  document.body.classList.toggle("layout-nighthorizon", !isCyberRadial() && !isDawningHorizon());
+  applyDawningThemeColor(state.settings);
 }
 
 // ---------------- category selection (always live, no separate "enter" step) ----------------
@@ -263,6 +413,9 @@ function selectCategory(i) {
   state.catIndex = i;
   state.selected = 0;
   state.mediaFocus = "list";
+  state.radialFocus = "sections";
+  state.sectionsBrowseIndex = i;
+  document.body.dataset.radialFocus = "sections";
   state.settingsCursor = 0;
   applyAccent();
   renderCategories();
@@ -284,20 +437,94 @@ function isSubfolderModeActive() {
   return !!(cat && cat.kind === "media" && state.settings && state.settings.load_subfolders === false);
 }
 
-function handleLeftNav() {
+// ---------------- sections / options / subfolder focus cycle ----------------
+// Up/down always changes which section is highlighted. Left/right cycles
+// which panel has focus: sections -> options -> subfolder -> sections
+// (right), and the mirror (left). When the current category has no
+// subfolder panel (most of them — media-only, same condition as
+// elsewhere), this degrades to a clean 2-way sections<->options cycle
+// instead of landing on a dead, invisible focus state. Same behavior in
+// both NightHorizon and CyberRadial — this isn't a CyberRadial-only thing.
+function radialSubfolderAvailable() {
+  return isSubfolderModeActive();
+}
+function setRadialFocus(next) {
+  const cat = state.categories[state.catIndex];
+  if (cat.kind === "direct") return; // no options/subfolder concept there
+  if (next === "options" && state.radialFocus === "sections" && usesConfirmToLoadSections()) {
+    commitBrowsedSection();
+    return;
+  }
+  if (next === "sections") state.sectionsBrowseIndex = state.catIndex; // start browsing from wherever's actually loaded
+  setRadialFocusRaw(next);
+}
+function setRadialFocusRaw(next) {
+  state.radialFocus = next;
+  state.mediaFocus = next === "subfolder" ? "folders" : "list";
+  document.body.dataset.radialFocus = next;
+  const cat = state.categories[state.catIndex];
+  if (cat.kind === "settings" || cat.kind === "direct") return; // no item-list to (re)render there
+  if (next === "subfolder") renderSubfolderSidebar(cat.id);
+  renderItemList(cat);
+}
+// Confirm (or right-nav) out of "sections": if the user browsed to a
+// different section than what's actually loaded, load it now — otherwise
+// (they just navigated back into the section that's already showing) skip
+// straight to options without reloading anything.
+function commitBrowsedSection() {
+  if (state.sectionsBrowseIndex !== state.catIndex) {
+    state.catIndex = state.sectionsBrowseIndex;
+    state.selected = 0;
+    state.mediaFocus = "list";
+    state.settingsCursor = 0;
+    applyAccent();
+    renderCategories();
+    refreshItemPanel();
+  }
+  setRadialFocusRaw("options");
+}
+function sectionFocusLeftNav() {
+  // Left no longer goes back to sections or subfolder — that's B/Space and
+  // Y/\ respectively now. Nothing left for plain left-nav to do outside
+  // the gallery grid case (handled earlier in handleLeftNav).
+}
+function sectionFocusRightNav() {
+  // Right no longer advances into the subfolder panel either — Y/\ is the
+  // one dedicated way there now, so there's just one path to learn.
+}
+
+// Dawning Horizon doesn't use the sections/options/subfolder focus cycle at
+// all — it's the original interaction model verbatim: left/right always
+// changes category (with the classic subfolder-sidebar dance for media
+// categories with Load Subfolders off), up/down always browses whatever
+// list/cursor is currently showing.
+function dawningHorizonLeftNav() {
+  const cat = state.categories[state.catIndex];
+  if (getDisplayType(cat.id) === "gallery" && state.items.length && !galleryAtLeftEdge()) {
+    state.selected = Math.max(0, state.selected - 1);
+    renderItemList(cat);
+    scrollSelectedIntoView();
+    return;
+  }
   if (isSubfolderModeActive()) {
     if (state.mediaFocus === "list") {
       state.mediaFocus = "folders";
       renderSubfolderSidebar(state.categories[state.catIndex].id);
       return;
     }
-    moveCategory(-1); // already in the folder sidebar: move to the section to the left
+    moveCategory(-1);
     return;
   }
   moveCategory(-1);
 }
-
-function handleRightNav() {
+function dawningHorizonRightNav() {
+  const cat = state.categories[state.catIndex];
+  if (getDisplayType(cat.id) === "gallery" && state.items.length && !galleryAtRightEdge()) {
+    state.selected = Math.min(state.items.length - 1, state.selected + 1);
+    renderItemList(cat);
+    scrollSelectedIntoView();
+    return;
+  }
   if (isSubfolderModeActive() && state.mediaFocus === "folders") {
     state.mediaFocus = "list";
     renderSubfolderSidebar(state.categories[state.catIndex].id);
@@ -306,8 +533,48 @@ function handleRightNav() {
   moveCategory(1);
 }
 
+// Gallery Style: left/right first try to move within the grid row; only
+// once you're at the leftmost/rightmost column does left/right fall
+// through to the normal sections/options/subfolder focus cycle.
+function galleryAtLeftEdge() {
+  return (state.selected % galleryColumnCount()) === 0;
+}
+function galleryAtRightEdge() {
+  const cols = galleryColumnCount();
+  return (state.selected % cols) === cols - 1 || state.selected === state.items.length - 1;
+}
+
+function handleLeftNav() {
+  const cat = state.categories[state.catIndex];
+  if (cat.kind === "direct") { moveCategory(-1); return; }
+  if (state.radialFocus === "options" && getDisplayType(cat.id) === "gallery" && state.items.length && !galleryAtLeftEdge()) {
+    state.selected = Math.max(0, state.selected - 1);
+    renderItemList(cat);
+    scrollSelectedIntoView();
+    return;
+  }
+  sectionFocusLeftNav();
+}
+function handleRightNav() {
+  const cat = state.categories[state.catIndex];
+  if (cat.kind === "direct") { moveCategory(1); return; }
+  if (state.radialFocus === "options" && getDisplayType(cat.id) === "gallery" && state.items.length && !galleryAtRightEdge()) {
+    state.selected = Math.min(state.items.length - 1, state.selected + 1);
+    renderItemList(cat);
+    scrollSelectedIntoView();
+    return;
+  }
+  sectionFocusRightNav();
+}
+
 function moveSelection(delta) {
   const cat = state.categories[state.catIndex];
+  if (usesConfirmToLoadSections() && state.radialFocus === "sections" && cat.kind !== "direct") {
+    const n = state.categories.length;
+    state.sectionsBrowseIndex = (state.sectionsBrowseIndex + delta + n) % n;
+    renderCategories();
+    return;
+  }
   if (cat.kind === "direct") return; // no linear list to browse there
   if (cat.kind === "settings") {
     const count = settingsFocusableElements().length;
@@ -324,8 +591,33 @@ function moveSelection(delta) {
     return;
   }
   if (!state.items.length) return;
-  state.selected = Math.max(0, Math.min(state.items.length - 1, state.selected + delta));
+  const step = getDisplayType(cat.id) === "gallery" ? galleryColumnCount() : 1;
+  state.selected = Math.max(0, Math.min(state.items.length - 1, state.selected + delta * step));
   renderItemList(cat);
+  scrollSelectedIntoView();
+}
+
+// How many tiles fit per row in the current gallery grid, measured from
+// the actual rendered layout rather than assumed — so it stays correct
+// regardless of screen size or column count. Up/down in Gallery Style
+// jumps by this many items, landing one row down/up, since left/right is
+// claimed by the sections/options/subfolder focus cycle and can't be used
+// for intra-row movement anymore.
+function galleryColumnCount() {
+  const tiles = el("item-panel").querySelectorAll(".item-list > .item-row");
+  if (tiles.length < 2) return 1;
+  const firstTop = tiles[0].offsetTop;
+  let count = 0;
+  for (const t of tiles) {
+    if (t.offsetTop !== firstTop) break;
+    count++;
+  }
+  return Math.max(1, count);
+}
+
+function scrollSelectedIntoView() {
+  const selectedEl = el("item-panel").querySelector(".item-row.selected");
+  if (selectedEl) selectedEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 // ---------------- filling the panel for whatever category is highlighted ----------------
@@ -352,7 +644,12 @@ async function refreshItemPanel() {
     } else if (cat.kind === "web_list") {
       el("subfolder-nav").classList.add("hidden");
       el("preview-pane").classList.add("hidden");
-      state.items = WEB_ITEMS;
+      const shortcuts = (state.settings && state.settings.web_shortcuts) || [];
+      state.items = [
+        ...WEB_ITEMS,
+        ...shortcuts.map((s) => ({ ...s, __customWeb: true })),
+        { __addShortcut: true, label: "Add web shortcut" },
+      ];
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
     } else if (cat.kind === "media") {
@@ -365,11 +662,23 @@ async function refreshItemPanel() {
         state.selected = Math.min(state.selected, state.items.length - 1);
         renderItemList(cat);
       }
+    } else if (cat.kind === "desktop_list") {
+      el("subfolder-nav").classList.add("hidden");
+      el("preview-pane").classList.add("hidden");
+      const items = await api().list_desktop_items();
+      state.items = items.length ? items : [{ __empty: true }];
+      state.selected = Math.min(state.selected, state.items.length - 1);
+      renderItemList(cat);
     } else if (cat.kind === "exe_list") {
       el("subfolder-nav").classList.add("hidden");
       el("preview-pane").classList.add("hidden");
       const items = await api().list_section_items(cat.id);
-      state.items = cat.id === "games" ? [GAME_LIBRARY_ITEM, ...items] : (items.length ? items : [{ __empty: true }]);
+      if (cat.id === "games") {
+        const recents = await api().get_recent_games();
+        state.items = [GAME_LIBRARY_ITEM, ...recents.map((r) => ({ ...r, __recent: true })), ...items];
+      } else {
+        state.items = items.length ? items : [{ __empty: true }];
+      }
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
     } else if (cat.kind === "macro_list") {
@@ -528,18 +837,25 @@ function rowContentFor(cat, item, i) {
       <div class="meta"><div class="title">${escapeHtml(item.title)}</div></div>
       ${cat.id === "videos" && item.durationLabel ? `<span class="dur">${item.durationLabel}</span>` : ""}`;
   }
-  if (cat.kind === "exe_list") {
+  if (cat.kind === "exe_list" || cat.kind === "desktop_list") {
     if (item.__gameLibrary) {
       return `<div class="row-visual">${ICONS.games}</div><div class="meta"><div class="title">${escapeHtml(item.name)}</div></div>`;
     }
     const iconHtml = item.iconUrl ? `<img src="${item.iconUrl}" alt="">` : iconFor(cat.id);
-    return `<div class="row-visual">${iconHtml}</div><div class="meta"><div class="title">${escapeHtml(item.name)}</div></div>`;
+    const subtitle = item.__recent ? `<div class="subtitle">Recently played</div>` : "";
+    return `<div class="row-visual">${iconHtml}</div><div class="meta"><div class="title">${escapeHtml(item.name)}</div>${subtitle}</div>`;
   }
   if (cat.kind === "macro_list") {
     const iconHtml = item.type === "builtin" ? ICONS.macros : (item.iconUrl ? `<img src="${item.iconUrl}" alt="">` : ICONS.bat);
     return `<div class="row-visual">${iconHtml}</div><div class="meta"><div class="title">${escapeHtml(item.name)}</div></div>`;
   }
   if (cat.kind === "system_list" || cat.kind === "file_list" || cat.kind === "web_list") {
+    if (item.__addShortcut) {
+      return `<div class="row-visual">${ICONS.web || ""}</div><div class="meta"><div class="title">+ Add web shortcut</div></div>`;
+    }
+    if (item.__customWeb) {
+      return `<div class="row-visual">${ICONS.web || ""}</div><div class="meta"><div class="title">${escapeHtml(item.label)}</div><div class="subtitle">${escapeHtml(item.url)}</div></div>`;
+    }
     return `<div class="row-visual">${ICONS[item.icon]}</div><div class="meta"><div class="title">${escapeHtml(item.label)}</div></div>`;
   }
   return "";
@@ -551,7 +867,7 @@ function renderItemList(cat) {
   state.items.forEach((item, i) => {
     const row = document.createElement("div");
     const isEmpty = !!item.__empty || !!item.__browsingEmpty;
-    row.className = "item-row" + (i === state.selected ? " selected" : "") + (isEmpty ? " empty-prompt-row" : "");
+    row.className = "item-row" + (i === state.selected ? " selected" : "") + (isEmpty ? " empty-prompt-row" : "") + (item.__recent ? " recent-item" : "");
     row.innerHTML = rowContentFor(cat, item, i);
     row.addEventListener("click", () => { state.selected = i; renderItemList(cat); activateCurrentSelection(); });
     wrap.appendChild(row);
@@ -574,6 +890,7 @@ async function activateCurrentSelection() {
     if (node) node.click();
     return;
   }
+  if (usesConfirmToLoadSections() && state.radialFocus === "sections") { setRadialFocus("options"); return; }
 
   if (isSubfolderModeActive() && state.mediaFocus === "folders") {
     const entry = (state.folderEntries || [])[state.folderCursor];
@@ -590,7 +907,8 @@ async function activateCurrentSelection() {
   if (cat.id === "music") playMusicAt(state.selected);
   else if (cat.id === "photos") openPhoto(state.selected);
   else if (cat.id === "videos") openVideo(state.selected);
-  else if (cat.kind === "exe_list") launchAndNotify(item.path, cat.id);
+  else if (item.__playnite) launchRecentPlayniteGame(item);
+  else if (cat.kind === "exe_list" || cat.kind === "desktop_list") launchAndNotify(item.path, cat.id);
   else if (cat.kind === "macro_list") activateMacro(item);
   else if (cat.kind === "system_list") activateSystemItem(item);
   else if (cat.kind === "file_list") activateFileItem(item);
@@ -628,6 +946,11 @@ async function launchAndNotify(path, sectionId) {
   if (!res.ok) showToast(`Couldn't launch: ${res.error}`);
 }
 
+async function launchRecentPlayniteGame(item) {
+  const res = await api().launch_recent_game(item.id);
+  if (!res.ok) showToast(`Couldn't launch: ${res.error}`);
+}
+
 async function activateGameLibrary() {
   const res = await api().launch_game_library();
   if (res && res.ok === false) showToast(`Couldn't open: ${res.error}`);
@@ -642,12 +965,41 @@ function showToast(msg) {
 }
 
 async function activateMacro(item) {
-  if (item.type === "builtin") {
+  if (item.type === "builtin" && item.id === "close_others") {
     const res = await api().run_macro(item.id);
     showToast(res.ok ? `Closed ${res.closed.length} other program(s).` : `Macro failed: ${res.error}`);
-  } else {
-    launchAndNotify(item.path);
+    return;
   }
+  if (item.type === "builtin" && item.id === "toggle_default_shell") {
+    await runElevatedMacro(() => api().run_macro(item.id));
+    return;
+  }
+  if (item.type === "ps1") {
+    await runElevatedMacro(() => api().run_ps1_file(item.path));
+    return;
+  }
+  launchAndNotify(item.path);
+}
+
+// Shared by any macro that needs to run elevated (.ps1 scripts): try a
+// per-process UAC prompt first (system_actions.launch_ps1_elevated), and
+// if even that fails, offer restarting Meridian Launcher itself as
+// administrator rather than just reporting a dead-end error.
+async function runElevatedMacro(invoke) {
+  const res = await invoke();
+  if (res.ok) { showToast("Done."); return; }
+  if (res.needs_admin_relaunch) {
+    const yes = await openConfirmModal(
+      "Administrator access needed",
+      `${res.error || "This requires administrator access."} Restart Meridian Launcher as administrator now?`,
+    );
+    if (yes) {
+      const relaunch = await api().relaunch_as_admin();
+      if (!relaunch.ok) showToast(`Couldn't restart as administrator: ${relaunch.error}`);
+    }
+    return;
+  }
+  showToast(`Macro failed: ${res.error}`);
 }
 
 async function activateFileItem(item) {
@@ -656,6 +1008,12 @@ async function activateFileItem(item) {
 }
 
 async function activateWebItem(item) {
+  if (item.__addShortcut) { openWebShortcutModal(); return; }
+  if (item.__customWeb) {
+    const res = await api().launch_cyberdeck(item.url);
+    if (res && res.ok === false) showToast(`Couldn't open: ${res.error}`);
+    return;
+  }
   const res = item.id === "cyberdeck" ? await api().launch_cyberdeck() : await api().open_web();
   if (res && res.ok === false) showToast(`Couldn't open: ${res.error}`);
 }
@@ -875,11 +1233,40 @@ function buildToggleBlock(title, isOn, onChange, note) {
 async function renderSettings() {
   const settings = await api().get_settings();
   state.settings = settings;
+  applyLayoutClass();
   const panel = el("item-panel");
   panel.innerHTML = "";
   const c = document.createElement("div");
 
-  // media folders
+  // controller controls quick reference — always the first settings block
+  const controlsBlock = document.createElement("div");
+  controlsBlock.className = "settings-block";
+  controlsBlock.innerHTML = `<h3>Controller controls</h3>
+    <p class="settings-note">What each controller button does in Meridian Launcher. Confirm/Back/directions can be remapped in controller_controls.json; combos always use the physical buttons listed. Keyboard: Enter confirm, Space back, arrow keys navigate, the \\ key jumps to the side panel.</p>
+    <div class="controls-grid"><div class="controls-row"><span class="controls-btn">A</span><span class="controls-desc">Confirm / select the highlighted item</span></div><div class="controls-row"><span class="controls-btn">B</span><span class="controls-desc">Back / close overlays</span></div><div class="controls-row"><span class="controls-btn">D-pad / Left stick</span><span class="controls-desc">Navigate — up/down through lists, left/right across sections</span></div><div class="controls-row"><span class="controls-btn">Y (tap)</span><span class="controls-desc">Jump to the subfolder / filter side panel</span></div><div class="controls-row"><span class="controls-btn">LB</span><span class="controls-desc">Previous music track</span></div><div class="controls-row"><span class="controls-btn">RB</span><span class="controls-desc">Next music track</span></div><div class="controls-row"><span class="controls-btn">LB + RB (together)</span><span class="controls-desc">Play a random track</span></div><div class="controls-row"><span class="controls-btn">Start + Back (together)</span><span class="controls-desc">Bring Meridian Launcher to the foreground</span></div><div class="controls-row"><span class="controls-btn">L3 + R3 (click both sticks)</span><span class="controls-desc">Quit the app instantly</span></div><div class="controls-row"><span class="controls-btn">Y (hold 45 seconds)</span><span class="controls-desc">Exit kiosk mode</span></div><div class="controls-row"><span class="controls-btn">Up Up Down Down Left Right Left Right B A (D-pad)</span><span class="controls-desc">Kiosk-mode exit code, works any time</span></div></div>`;
+  c.appendChild(controlsBlock);
+
+  // "List Style" vs "Gallery Style" — reused by both the media folder
+  // blocks below and buildExeSectionBlock further down.
+  function buildDisplayTypeBlock(sectionId) {
+    const block = document.createElement("div");
+    block.className = "settings-block";
+    block.innerHTML = `<h3>Display type</h3>`;
+    const radioWrap = document.createElement("div");
+    radioWrap.className = "radio-group";
+    [["gallery", "Gallery Style"], ["list", "List Style"]].forEach(([type, label]) => {
+      const pill = document.createElement("div");
+      pill.className = "radio-pill" + (getDisplayType(sectionId) === type ? " active" : "");
+      pill.textContent = label;
+      pill.addEventListener("click", async () => { await api().set_display_type(sectionId, type); renderSettings(); });
+      radioWrap.appendChild(pill);
+    });
+    block.appendChild(radioWrap);
+    return block;
+  }
+
+  // media folders — Desktop Section is inserted after the first one
+  // (Music) rather than being the very first settings control
   ["music", "photos", "videos"].forEach((kind) => {
     const block = document.createElement("div");
     block.className = "settings-block";
@@ -901,6 +1288,21 @@ async function renderSettings() {
     });
     block.appendChild(addBtn);
     c.appendChild(block);
+    c.appendChild(buildDisplayTypeBlock(kind));
+
+    if (kind === "music") {
+      // Desktop section — off by default, always first in the *category
+      // list* when on (unrelated to its position here in Settings)
+      c.appendChild(buildToggleBlock(
+        "Desktop Section",
+        !!settings.desktop_section_enabled,
+        async () => { await api().set_desktop_section_enabled(!settings.desktop_section_enabled); await refreshAfterSettingsChange(); },
+        settings.desktop_section_enabled
+          ? "Enabled — Desktop appears as the first section, showing whatever's on your actual Windows Desktop"
+          : "Disabled — hidden from the section list",
+      ));
+      if (settings.desktop_section_enabled) c.appendChild(buildDisplayTypeBlock("desktop"));
+    }
   });
 
   // Load Subfolders (between Video folders and Apps, as requested)
@@ -920,7 +1322,28 @@ async function renderSettings() {
     { id: "streaming", label: "Streaming" },
     ...(settings.custom_sections || []).map((cs) => ({ id: cs.id, label: cs.label, custom: true })),
   ];
-  exeSections.forEach((sec) => c.appendChild(buildExeSectionBlock(sec, settings)));
+  exeSections.forEach((sec) => { c.appendChild(buildExeSectionBlock(sec, settings)); c.appendChild(buildDisplayTypeBlock(sec.id)); });
+
+  // web shortcuts (custom URLs opened in CyberDeckBrowser)
+  const webBlock = document.createElement("div");
+  webBlock.className = "settings-block";
+  webBlock.innerHTML = `<h3>Web shortcuts</h3>`;
+  (settings.web_shortcuts || []).forEach((s) => {
+    const row = document.createElement("div");
+    row.className = "folder-row";
+    row.innerHTML = `<span>${escapeHtml(s.label)} — ${escapeHtml(s.url)}</span><button title="Remove">&#10005;</button>`;
+    row.querySelector("button").addEventListener("click", async () => {
+      await api().remove_web_shortcut(s.url);
+      renderSettings();
+    });
+    webBlock.appendChild(row);
+  });
+  const addWebBtn = document.createElement("button");
+  addWebBtn.className = "add-folder-btn";
+  addWebBtn.textContent = "+ Add web shortcut";
+  addWebBtn.addEventListener("click", openWebShortcutModal);
+  webBlock.appendChild(addWebBtn);
+  c.appendChild(webBlock);
 
   // add custom section
   const addSectionBtn = document.createElement("button");
@@ -941,10 +1364,16 @@ async function renderSettings() {
   winBlock.innerHTML = `<h3>Window mode</h3>`;
   const radioWrap = document.createElement("div");
   radioWrap.className = "radio-group";
-  ["fullscreen", "windowed", "kiosk"].forEach((mode) => {
+  const WINDOW_MODE_LABELS = {
+    exclusive_fullscreen: "Exclusive Fullscreen",
+    windowed_fullscreen: "Windowed Fullscreen",
+    windowed: "Windowed",
+    kiosk: "Kiosk",
+  };
+  ["exclusive_fullscreen", "windowed_fullscreen", "windowed", "kiosk"].forEach((mode) => {
     const pill = document.createElement("div");
     pill.className = "radio-pill" + (settings.window_mode === mode ? " active" : "");
-    pill.textContent = mode[0].toUpperCase() + mode.slice(1);
+    pill.textContent = WINDOW_MODE_LABELS[mode];
     pill.addEventListener("click", async () => {
       if (mode === "kiosk") {
         if (settings.window_mode === "kiosk") return;
@@ -952,7 +1381,7 @@ async function renderSettings() {
           "Enable kiosk mode?",
           "You sure you want to enable kiosk mode?This can only be disabled by editing the json settings, holding the controllers y button for 45 seconds, or entering the code dpad up, dpad up, dpad down, dpad down, dpad left, dpad right, dpad left, dpad right, b button, a button; or up key, up key, down key, down key, left key, right key, left key, right key, b key, a key."
         );
-        await api().set_window_mode(yes ? "kiosk" : "fullscreen");
+        await api().set_window_mode(yes ? "kiosk" : "windowed_fullscreen");
         await applyKioskChangeAndRefresh();
         return;
       }
@@ -963,6 +1392,70 @@ async function renderSettings() {
   });
   winBlock.appendChild(radioWrap);
   c.appendChild(winBlock);
+
+  // layout mode
+  const layoutBlock = document.createElement("div");
+  layoutBlock.className = "settings-block";
+  layoutBlock.innerHTML = `<h3>Layouts</h3>`;
+  const layoutRadioWrap = document.createElement("div");
+  layoutRadioWrap.className = "radio-group";
+  [["dawning_horizon", "DawningHorizon"], ["night_horizon", "Verticular Blobs"], ["cyber_radial", "CyberRadial"]].forEach(([mode, label]) => {
+    const pill = document.createElement("div");
+    pill.className = "radio-pill" + ((settings.layout || "dawning_horizon") === mode ? " active" : "");
+    pill.textContent = label;
+    pill.addEventListener("click", async () => {
+      await api().set_layout(mode);
+      renderSettings();
+    });
+    layoutRadioWrap.appendChild(pill);
+  });
+  layoutBlock.appendChild(layoutRadioWrap);
+  c.appendChild(layoutBlock);
+
+  // Dawning Horizon primary theme color
+  const themeBlock = document.createElement("div");
+  themeBlock.className = "settings-block";
+  themeBlock.innerHTML = `<h3>Dawning Horizon theme color</h3>`;
+  const themeNote = document.createElement("p");
+  themeNote.className = "settings-note";
+  themeNote.textContent = "Re-tints the DawningHorizon background to a chosen hue; section colors follow as a complementary ROYGBIV rainbow. Only affects the DawningHorizon layout.";
+  themeBlock.appendChild(themeNote);
+  const currentThemeColor = settings.dawning_theme_color || "original";
+  const pickThemeColor = async (value) => {
+    await api().set_dawning_theme_color(value);
+    state.settings = await api().get_settings();
+    applyDawningThemeColor(state.settings);
+    renderSettings();
+  };
+  const origWrap = document.createElement("div");
+  origWrap.className = "radio-group";
+  const origPill = document.createElement("div");
+  origPill.className = "radio-pill" + (currentThemeColor === "original" ? " active" : "");
+  origPill.textContent = "Original";
+  origPill.addEventListener("click", () => pickThemeColor("original"));
+  origWrap.appendChild(origPill);
+  themeBlock.appendChild(origWrap);
+  [["light", "Light"], ["dark", "Dark"], ["neon", "Neon"], ["primary", "Primary"], ["pastel", "Pastel"], ["bubblegum", "Bubblegum"]].forEach(([pal, label]) => {
+    const row = document.createElement("div");
+    row.className = "theme-swatch-row";
+    const lab = document.createElement("span");
+    lab.className = "theme-swatch-label";
+    lab.textContent = label;
+    row.appendChild(lab);
+    DAWNING_HUES.forEach(([hueName, hueDeg]) => {
+      const value = `${pal}:${hueName}`;
+      const sw = document.createElement("button");
+      sw.type = "button";
+      sw.className = "theme-swatch" + (currentThemeColor === value ? " active" : "");
+      const rec = DAWNING_PALETTES[pal];
+      sw.style.background = `hsl(${hueDeg}, ${rec.bg1[0]}%, ${rec.bg1[1]}%)`;
+      sw.title = `${label} \u2014 ${hueName}`;
+      sw.addEventListener("click", () => pickThemeColor(value));
+      row.appendChild(sw);
+    });
+    themeBlock.appendChild(row);
+  });
+  c.appendChild(themeBlock);
 
   // video fullscreen
   c.appendChild(buildToggleBlock(
@@ -976,6 +1469,16 @@ async function renderSettings() {
     "Battery Level Indicator",
     settings.battery_indicator,
     async () => { await api().set_battery_indicator(!settings.battery_indicator); renderSettings(); updateBatteryIndicator(); },
+  ));
+
+  // auto shuffle: when a song ends, load a random one instead of the next
+  // in list order. Next/previous still just move relative to whatever's
+  // currently loaded — including a shuffled pick — so they naturally keep
+  // working the same way either way.
+  c.appendChild(buildToggleBlock(
+    "Auto Shuffle Songs",
+    settings.auto_shuffle_songs !== false,
+    async () => { await api().set_auto_shuffle_songs(!(settings.auto_shuffle_songs !== false)); renderSettings(); },
   ));
 
   // launch external system features (Task Manager, Control Panel, Recycle
@@ -1102,6 +1605,26 @@ async function renderSettings() {
   updateBlock.appendChild(updateBtn);
   c.appendChild(updateBlock);
 
+  // thumbnail/metadata cache (music/photos/videos) — mostly self-managing,
+  // but useful to force-clear if thumbnails ever get stuck stale
+  const cacheBlock = document.createElement("div");
+  cacheBlock.className = "settings-block";
+  cacheBlock.innerHTML = `<h3>Thumbnail Cache</h3>`;
+  const cacheBtn = document.createElement("button");
+  cacheBtn.className = "btn-outline";
+  cacheBtn.textContent = "Delete Thumbnail Cache";
+  cacheBtn.addEventListener("click", async () => {
+    const yes = await openConfirmModal(
+      "Delete thumbnail cache?",
+      "Clears every generated music/photo/video thumbnail. They'll regenerate automatically in the background, but sections may load slower again until that finishes.",
+    );
+    if (!yes) return;
+    const res = await api().delete_thumbnail_cache();
+    showToast(res && res.ok ? "Thumbnail cache cleared." : `Couldn't clear cache: ${res && res.error}`);
+  });
+  cacheBlock.appendChild(cacheBtn);
+  c.appendChild(cacheBlock);
+
   // revert to factory settings — always the very last option
   const resetBlock = document.createElement("div");
   resetBlock.className = "settings-block";
@@ -1125,6 +1648,13 @@ async function renderSettings() {
   });
   resetBlock.appendChild(resetBtn);
   c.appendChild(resetBlock);
+
+
+  // credit footer — always the very last thing in the settings box
+  const creditBlock = document.createElement("div");
+  creditBlock.className = "settings-block settings-credit";
+  creditBlock.innerHTML = `<p>Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026; This is open source software. Donations Appreciated, but Money Not Required.</p>`;
+  c.appendChild(creditBlock);
 
   panel.appendChild(c);
   alignCategoryRowToList();
@@ -1238,7 +1768,7 @@ async function buildMacroSectionBlock() {
 
   const addBtn = document.createElement("button");
   addBtn.className = "add-folder-btn";
-  addBtn.textContent = "+ Add .bat to Macros";
+  addBtn.textContent = "+ Add .bat or .ps1 to Macros";
   addBtn.addEventListener("click", async () => {
     const updated = await api().add_bat_to_macros();
     refreshList(updated);
@@ -1250,15 +1780,31 @@ async function buildMacroSectionBlock() {
 async function refreshAfterSettingsChange() {
   const settings = await api().get_settings();
   state.settings = settings;
+  const currentId = state.categories[state.catIndex] && state.categories[state.catIndex].id;
   state.categories = buildCategories(settings);
-  if (state.catIndex >= state.categories.length) state.catIndex = state.categories.length - 1;
+  let idx = state.categories.findIndex((c) => c.id === currentId);
+  if (idx === -1) idx = Math.min(state.catIndex, state.categories.length - 1);
+  state.catIndex = idx;
   renderCategories();
   await renderSettings();
 }
 
-// ---------------- custom section modal ----------------
+// ---------------- generic text-input modal (custom sections, web shortcuts) ----------------
+
+let modalMode = "section"; // "section" | "web_shortcut"
 
 function openSectionModal() {
+  modalMode = "section";
+  el("modal-title").textContent = "New section";
+  el("modal-input").placeholder = "";
+  el("modal-overlay").classList.remove("hidden");
+  el("modal-input").value = "";
+  el("modal-input").focus();
+}
+function openWebShortcutModal() {
+  modalMode = "web_shortcut";
+  el("modal-title").textContent = "Add web shortcut";
+  el("modal-input").placeholder = "https://example.com";
   el("modal-overlay").classList.remove("hidden");
   el("modal-input").value = "";
   el("modal-input").focus();
@@ -1268,11 +1814,19 @@ function closeSectionModal() {
 }
 el("modal-cancel").addEventListener("click", closeSectionModal);
 el("modal-confirm").addEventListener("click", async () => {
-  const name = el("modal-input").value.trim();
-  if (!name) return;
-  await api().add_custom_section(name);
-  closeSectionModal();
-  await refreshAfterSettingsChange();
+  const value = el("modal-input").value.trim();
+  if (!value) return;
+  if (modalMode === "web_shortcut") {
+    let url = value;
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    state.settings = await api().add_web_shortcut(url);
+    closeSectionModal();
+    await refreshItemPanel();
+  } else {
+    await api().add_custom_section(value);
+    closeSectionModal();
+    await refreshAfterSettingsChange();
+  }
 });
 el("modal-input").addEventListener("keydown", (e) => {
   e.stopPropagation();
@@ -1357,7 +1911,15 @@ audioEl().addEventListener("timeupdate", () => {
   const a = audioEl();
   if (a.duration) el("np-progress-fill").style.width = `${(a.currentTime / a.duration) * 100}%`;
 });
-audioEl().addEventListener("ended", () => { if (state.playIndex < state.items.length - 1) playMusicAt(state.playIndex + 1); });
+audioEl().addEventListener("ended", () => {
+  if (!state.items.length) return;
+  const shuffle = !state.settings || state.settings.auto_shuffle_songs !== false; // default on
+  if (shuffle) {
+    playRandomTrack();
+  } else if (state.playIndex < state.items.length - 1) {
+    playMusicAt(state.playIndex + 1);
+  }
+});
 el("np-play").addEventListener("click", () => { const a = audioEl(); a.paused ? a.play() : a.pause(); });
 el("np-next").addEventListener("click", () => { if (state.playIndex < state.items.length - 1) playMusicAt(state.playIndex + 1); });
 el("np-prev").addEventListener("click", () => { if (state.playIndex > 0) playMusicAt(state.playIndex - 1); });
@@ -1414,12 +1976,39 @@ function handleBack() {
   if (!el("wifi-password-overlay").classList.contains("hidden")) { closeWifiPasswordModal(); return; }
   if (!el("network-overlay").classList.contains("hidden")) { closeNetworkOverlay(); return; }
   if (isConfirmOpen()) { handleConfirmOverlayInput("back"); return; }
-  const cat = state.categories[state.catIndex];
-  if (cat && cat.kind === "media" && state.settings && state.settings.load_subfolders === false) {
-    const stack = state.folderStack[cat.id];
-    if (stack && stack.length > 1) { goUpFolder(cat.id); return; }
-  }
+  // Back always steps out one level of the focus cycle — subfolder ->
+  // options -> sections — the same everywhere now. Going up a directory
+  // within the subfolder list has its own dedicated ".." entry there, so
+  // Back doesn't need to double as folder navigation too.
+  if (state.radialFocus === "subfolder") { setRadialFocus("options"); return; }
+  if (state.radialFocus === "options") { setRadialFocus("sections"); return; }
   // Nothing else to "back" out of — the category bar is always visible.
+}
+
+// Y (quick press) / \ key: jump straight to the subfolder panel from
+// options, when there is one. NightHorizon/CyberRadial only — Dawning
+// Horizon keeps its original Left-into-sidebar gesture for this.
+function handleJumpToSubfolder() {
+  if (!usesConfirmToLoadSections()) return;
+  if (state.radialFocus === "options" && radialSubfolderAvailable()) setRadialFocus("subfolder");
+}
+
+// Left/right shoulder: prev/next track; both at once: random track. Same
+// underlying mechanism as the now-playing widget's own prev/next buttons,
+// so it's reliable while the Music section is what's actually loaded —
+// same as those buttons already were.
+function playPrevTrack() {
+  if (state.playIndex > 0) playMusicAt(state.playIndex - 1);
+}
+function playNextTrack() {
+  if (state.items.length && state.playIndex < state.items.length - 1) playMusicAt(state.playIndex + 1);
+}
+function playRandomTrack() {
+  if (!state.items.length) return;
+  if (state.items.length === 1) { playMusicAt(0); return; }
+  let idx = Math.floor(Math.random() * state.items.length);
+  while (idx === state.playIndex) idx = Math.floor(Math.random() * state.items.length);
+  playMusicAt(idx);
 }
 
 // ---------------- on-screen keyboard (controller-navigable) ----------------
@@ -1602,7 +2191,8 @@ document.addEventListener("keydown", (e) => {
 
   if (!kc) return;
   if (e.key === kc.confirm) { if (!e.repeat) activateCurrentSelection(); }
-  else if (e.key === kc.back) { if (!e.repeat) handleBack(); }
+  else if (e.key === kc.back || e.key === "Backspace") { if (!e.repeat) handleBack(); }
+  else if (e.key === "\\") { if (!e.repeat) handleJumpToSubfolder(); }
   else if (e.key === kc.up) moveSelection(-1);
   else if (e.key === kc.down) moveSelection(1);
   else if (e.key === kc.left) handleLeftNav();
@@ -1626,6 +2216,10 @@ window.handleControllerInput = function (action) {
   }
   if (action === "confirm") activateCurrentSelection();
   else if (action === "back") handleBack();
+  else if (action === "y_subfolder") handleJumpToSubfolder();
+  else if (action === "prev_track") playPrevTrack();
+  else if (action === "next_track") playNextTrack();
+  else if (action === "random_track") playRandomTrack();
   else if (action === "up") moveSelection(-1);
   else if (action === "down") moveSelection(1);
   else if (action === "left") handleLeftNav();
@@ -1775,6 +2369,174 @@ window.onUpdateAvailable = function (info) {
 
 // ---------------- boot ----------------
 
+// ---------------- NightHorizon: animated blob background ----------------
+// A handful of soft circles drift and bounce, fused into lava-lamp-style
+// blobs via the classic canvas blur+contrast "goo" trick (plain Canvas2D +
+// a CSS filter — no WebGL, no external libs). Colors track whatever
+// section is active (re-read from --active-accent every frame, cheap).
+// Runs behind NightHorizon (and Game Library's equivalent "Verticular
+// Blobs"); fades out when CyberRadial is active rather than tearing the
+// canvas down and rebuilding it later.
+let blobState = null;
+function hexToRgbString(hex) {
+  const m = hex.trim().replace("#", "");
+  const full = m.length === 3 ? m.split("").map((c) => c + c).join("") : m;
+  const n = parseInt(full, 16);
+  if (Number.isNaN(n)) return "150,255,120";
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+}
+function initBlobBackground() {
+  if (blobState) return;
+  const canvas = document.createElement("canvas");
+  canvas.id = "blob-canvas";
+  canvas.style.cssText = "position:fixed;inset:0;z-index:0;pointer-events:none;transition:opacity 500ms ease;filter:blur(20px) contrast(34) saturate(1.4);";
+  const horizon = el("horizon-glow");
+  horizon.insertAdjacentElement("afterend", canvas);
+  const ctx = canvas.getContext("2d");
+
+  const BLOB_COUNT = 16;
+  const SPEED = 2.4; // 6x the original 0.4
+  const blobs = Array.from({ length: BLOB_COUNT }, () => ({
+    x: Math.random() * window.innerWidth,
+    y: Math.random() * window.innerHeight,
+    vx: (Math.random() - 0.5) * SPEED,
+    vy: (Math.random() - 0.5) * SPEED,
+    r: 40 + Math.random() * 60,
+    shade: 0.75 + Math.random() * 0.5, // per-blob brightness variance around the accent color
+    spin: Math.random() * Math.PI * 2,
+    spinSpeed: (Math.random() < 0.5 ? -1 : 1) * (0.04 + Math.random() * 0.08),
+  }));
+
+  function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function step() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const accentRgb = hexToRgbString(getComputedStyle(document.documentElement).getPropertyValue("--active-accent") || "#a6e83f");
+
+    for (const b of blobs) {
+      b.x += b.vx; b.y += b.vy;
+      b.spin += b.spinSpeed;
+      if (b.x - b.r < 0 || b.x + b.r > w) { b.vx *= -1; b.x = Math.max(b.r, Math.min(w - b.r, b.x)); }
+      if (b.y - b.r < 0 || b.y + b.r > h) { b.vy *= -1; b.y = Math.max(b.r, Math.min(h - b.r, b.y)); }
+    }
+
+    for (const b of blobs) {
+      const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+      g.addColorStop(0, `rgba(${accentRgb},${0.9 * b.shade})`);
+      g.addColorStop(1, `rgba(${accentRgb},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+
+      // spinning swirl: a brighter core orbiting inside the blob, spinning
+      // around it as it drifts and bounces
+      const sx = b.x + Math.cos(b.spin) * b.r * 0.42;
+      const sy = b.y + Math.sin(b.spin) * b.r * 0.42;
+      const sr = b.r * 0.32;
+      const g2 = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+      g2.addColorStop(0, `rgba(255,255,255,${0.35 * b.shade})`);
+      g2.addColorStop(1, `rgba(${accentRgb},0)`);
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.fill();
+    }
+
+    canvas.style.opacity = (!isCyberRadial() && !isDawningHorizon()) ? "0.6" : "0";
+    blobState.raf = requestAnimationFrame(step);
+  }
+
+  blobState = { canvas, blobs, raf: null };
+  step();
+}
+
+// ---------------- Dawning Horizon: dancing silk threads ---------------
+// Several glowing threads sweep out from the left-center of the screen in
+// slow, waving arcs (silk-in-the-wind motion via a growing sine wave along
+// each thread's length), colored with the active section's accent. Sparks
+// occasionally break off and drift up/down and rightward, fading as they
+// go. Runs only behind Dawning Horizon; fades out otherwise, same
+// stay-alive-but-invisible approach as the blob canvas.
+let threadState = null;
+function initSilkThreads() {
+  if (threadState) return;
+  const canvas = document.createElement("canvas");
+  canvas.id = "silk-canvas";
+  canvas.style.cssText = "position:fixed;inset:0;z-index:0;pointer-events:none;transition:opacity 500ms ease;";
+  const horizon = el("horizon-glow");
+  horizon.insertAdjacentElement("afterend", canvas);
+  const ctx = canvas.getContext("2d");
+
+  const THREAD_COUNT = 7;
+  const threads = Array.from({ length: THREAD_COUNT }, (_, i) => ({
+    phase: Math.random() * Math.PI * 2,
+    speed: 0.006 + Math.random() * 0.006,
+    ampY: 36 + Math.random() * 56,
+    yOffset: (i - (THREAD_COUNT - 1) / 2) * 24,
+    length: 0.55 + Math.random() * 0.35,
+  }));
+  let particles = [];
+
+  function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function threadPoint(t, thr, w, h) {
+    const originY = h / 2 + thr.yOffset;
+    const x = t * w * thr.length;
+    const wave = Math.sin(t * Math.PI * 2.2 + thr.phase) * thr.ampY * t; // amplitude grows with distance from the origin, like a swaying strand
+    return { x, y: originY + wave };
+  }
+
+  function step() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const accentRgb = hexToRgbString(getComputedStyle(document.documentElement).getPropertyValue("--active-accent") || "#fbbf24");
+
+    threads.forEach((thr) => {
+      thr.phase += thr.speed;
+      ctx.beginPath();
+      const segments = 40;
+      for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const p = threadPoint(t, thr, w, h);
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.strokeStyle = `rgba(${accentRgb},0.5)`;
+      ctx.lineWidth = 1.6;
+      ctx.shadowColor = `rgba(${accentRgb},0.85)`;
+      ctx.shadowBlur = 9;
+      ctx.stroke();
+
+      if (Math.random() < 0.06) {
+        const t = Math.random();
+        const p = threadPoint(t, thr, w, h);
+        particles.push({ x: p.x, y: p.y, vx: 0.3 + Math.random() * 0.6, vy: (Math.random() - 0.5) * 1.2, life: 1, rgb: accentRgb });
+      }
+    });
+    ctx.shadowBlur = 0;
+
+    particles.forEach((p) => { p.x += p.vx; p.y += p.vy; p.vy += 0.01; p.life -= 0.012; });
+    particles = particles.filter((p) => p.life > 0 && p.x < w + 20);
+    particles.forEach((p) => {
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${p.rgb},${p.life})`;
+      ctx.shadowColor = `rgba(${p.rgb},0.9)`;
+      ctx.shadowBlur = 6;
+      ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.shadowBlur = 0;
+
+    canvas.style.opacity = isDawningHorizon() ? "0.8" : "0";
+    threadState.raf = requestAnimationFrame(step);
+  }
+
+  threadState = { canvas, threads, raf: null };
+  step();
+}
+
 async function boot() {
   tickClock();
   buildOsk();
@@ -1792,6 +2554,8 @@ async function boot() {
   await applyOverlay(settings);
   await updateBatteryIndicator();
   await refreshItemPanel(); // show the first category's content immediately, live
+  initBlobBackground();
+  initSilkThreads();
 
   await playIntroIfConfigured();
 }
