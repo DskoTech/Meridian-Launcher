@@ -72,7 +72,7 @@ function makeStoreConfig(storeKey, label) {
     uninstallConfirmText: () => null, // this is now a launch action, not destructive
     uninstallingText: (title) => `Launching ${title}\u2026`,
     settingsKey: "playnite",
-    loggedInCheck: (s) => !!(s.playnite && s.playnite.export_available),
+    loggedInCheck: (s) => (s.game_import_source === "heroic") ? !!s.heroic_available : !!(s.playnite && s.playnite.export_available),
     loginButtonLabel: "Check Playnite connection",
     loginStartMessage: () => "Checking for a Playnite library export\u2026",
     loginSubtext: "Press confirm to check whether Meridian Game Library can see your Playnite library yet",
@@ -86,6 +86,30 @@ const STORE_CONFIG = {
   amazon: makeStoreConfig("amazon", "Luna"),
   other: makeStoreConfig("other", "Other"),
 };
+
+// Filter-preset sections reuse the whole game_grid pipeline; the only
+// real differences are (a) the library fetch needs the preset id, handled
+// by refreshGameGridPanel branching to pnfilter_get_library, and (b)
+// launch/install go through the preset-agnostic pnfilter_* Api methods,
+// since a game in a preset is still just a Playnite game.
+function makeFilterPresetConfig(label) {
+  return {
+    ...makeStoreConfig("pnfilter", label),
+    api: {
+      login: "playnite_status",
+      getLibrary: null, // never called directly — refreshGameGridPanel handles presets itself
+      syncLibrary: "pnfilter_touch",
+      install: "pnfilter_install",
+      uninstall: "pnfilter_launch",
+      launch: "pnfilter_launch",
+    },
+  };
+}
+
+function storeConfigFor(cat) {
+  if (cat && cat.preset != null) return makeFilterPresetConfig(cat.label);
+  return STORE_CONFIG[cat.store];
+}
 
 // Note: Settings and System are appended in buildCategories(), in that
 // order, so System always sits after Settings as the very last category.
@@ -135,7 +159,10 @@ const state = {
   folderStack: { music: [], photos: [], videos: [] }, // subfolder browsing, per kind
   gameFilter: {}, // per category id: "all" | "installed" | "not_installed"
   gameLibraryFull: {}, // per category id: unfiltered entries, so filtering doesn't need a refetch
+  filterPresets: [], // [{id, name, count}] saved Playnite filter presets, when that toggle is on
   gridFocus: "list", // "list" | "filter" — which pane has directional focus in a game_grid section
+  radialFocus: "sections", // "sections" | "options" | "subfolder" — sections/filter focus cycle
+  sectionsBrowseIndex: 0, // which section is highlighted while browsing, until confirmed
 };
 
 const el = (id) => document.getElementById(id);
@@ -175,11 +202,42 @@ setInterval(updateBatteryIndicator, 30000);
 
 // ---------------- category list (fixed + custom + settings + system) ----------------
 
+// Playnite filter-preset sections: one section per saved Playnite filter
+// preset (see set_playnite_filter_sections / the MeridianExporter
+// extension), slotted after the fixed storefront sections. Presets are
+// fetched once into state.filterPresets (loadFilterPresets) rather than
+// per-build, since buildCategories has to stay synchronous.
+function filterPresetCategories(settings) {
+  if (!settings || !settings.playnite_filter_sections) return [];
+  if ((settings.game_import_source || "playnite") !== "playnite") return [];
+  return (state.filterPresets || []).map((p, i) => ({
+    id: `pnfilter_${p.id}`,
+    label: p.name,
+    kind: "game_grid",
+    store: "pnfilter",
+    preset: p.id,
+    color: PALETTE[i % PALETTE.length],
+  }));
+}
+
 function buildCategories(settings) {
   return [
     ...FIXED_CATEGORIES,
+    ...filterPresetCategories(settings),
     { id: "settings", label: "Settings", kind: "settings", color: "var(--accent-settings)" },
   ];
+}
+
+async function loadFilterPresets(settings) {
+  if (settings && settings.playnite_filter_sections && (settings.game_import_source || "playnite") === "playnite") {
+    try {
+      state.filterPresets = (await api().playnite_filter_presets()) || [];
+    } catch (e) {
+      state.filterPresets = [];
+    }
+  } else {
+    state.filterPresets = [];
+  }
 }
 
 function iconFor(catId) {
@@ -190,9 +248,14 @@ function iconFor(catId) {
 
 const categoryElements = new Map(); // id -> persistent DOM node, so transitions can animate
 
+function currentHighlightIndex() {
+  return state.radialFocus === "sections" ? state.sectionsBrowseIndex : state.catIndex;
+}
+
 function computeDisplayOrder() {
   const n = state.categories.length;
-  const start = state.catIndex <= CAROUSEL_ANCHOR ? 0 : state.catIndex - CAROUSEL_ANCHOR;
+  const anchor = currentHighlightIndex();
+  const start = anchor <= CAROUSEL_ANCHOR ? 0 : anchor - CAROUSEL_ANCHOR;
   const order = [];
   for (let i = 0; i < n; i++) order.push((start + i) % n);
   return order;
@@ -224,6 +287,7 @@ function renderCategories() {
   }
 
   const order = computeDisplayOrder();
+  const highlightIdx = currentHighlightIndex();
 
   // FLIP part 1: record where each visible element currently sits
   const oldRects = new Map();
@@ -238,13 +302,37 @@ function renderCategories() {
   order.forEach((realIdx) => {
     const cat = state.categories[realIdx];
     const wrap = ensureCategoryElement(cat);
-    wrap.classList.toggle("active", realIdx === state.catIndex);
+    wrap.classList.toggle("active", realIdx === highlightIdx);
+    wrap.classList.toggle("pending-confirm", realIdx === highlightIdx && highlightIdx !== state.catIndex);
     frag.appendChild(wrap);
   });
   row.innerHTML = "";
   row.appendChild(frag);
 
-  // FLIP part 2: animate from the old position to the new one
+  // CyberRadial: the active category is always pinned to angle 0 (the
+  // fixed point straight out from the hub's center, pill pointing back
+  // in) — everything else's angle is just "how many positions away from
+  // active", so moving up/down rotates neighbors into that fixed spot.
+  // Harmless no-op in NightHorizon (angle unused there).
+  const activePos = order.indexOf(highlightIdx);
+  const ORBIT_STEP_DEG = 20;
+  const ORBIT_FADE_RANGE = 5; // matches where clamping kicks in (90/20=4.5) so nothing visible ever shares a clamped angle
+  order.forEach((realIdx, i) => {
+    const cat = state.categories[realIdx];
+    const elx = categoryElements.get(cat.id);
+    const offset = i - activePos;
+    const angle = Math.max(-90, Math.min(90, offset * ORBIT_STEP_DEG));
+    const fade = Math.max(0, 1 - Math.abs(offset) / ORBIT_FADE_RANGE);
+    elx.style.setProperty("--orbit-angle", angle + "deg");
+    elx.style.setProperty("--orbit-fade", fade.toFixed(3));
+  });
+
+  // FLIP part 2: animate from the old position to the new one. CyberRadial
+  // positions categories via CSS left/top (transitioned in the stylesheet)
+  // driven by --orbit-angle, so this transform-based trick is skipped
+  // there — an inline transform would clobber the orbit's own positioning
+  // transform.
+  if (isCyberRadial()) return;
   order.forEach((realIdx) => {
     const cat = state.categories[realIdx];
     const elx = categoryElements.get(cat.id);
@@ -252,12 +340,13 @@ function renderCategories() {
     if (!oldRect) { elx.style.transition = ""; elx.style.transform = ""; return; }
     const newRect = elx.getBoundingClientRect();
     const dx = oldRect.left - newRect.left;
-    if (Math.abs(dx) > 0.5) {
+    const dy = oldRect.top - newRect.top;
+    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
       elx.style.transition = "none";
-      elx.style.transform = `translateX(${dx}px)`;
+      elx.style.transform = `translate(${dx}px, ${dy}px)`;
       requestAnimationFrame(() => {
         elx.style.transition = "transform 320ms ease";
-        elx.style.transform = "translateX(0)";
+        elx.style.transform = "translate(0, 0)";
       });
     } else {
       elx.style.transition = "";
@@ -280,6 +369,100 @@ function alignCategoryRowToList() {
 
 function applyAccent() {
   document.documentElement.style.setProperty("--active-accent", state.categories[state.catIndex].color);
+  applyLayoutClass();
+}
+
+// Layout mode: "night_horizon" (default) is the hub/orbit sidebar look;
+// "cyber_radial" rearranges the same DOM into the orbital-arc variant.
+// Purely a CSS concern driven by one body class — see style.css. The
+// grid's own left/right/up/down navigation (handleDirectionalLeft etc.)
+// is unchanged either way — CyberRadial here is a visual reflow only.
+function isCyberRadial() {
+  return !!(state.settings && state.settings.layout === "cyber_radial");
+}
+function isDawningHorizon() {
+  return !!(state.settings && (state.settings.layout === "dawning_horizon" || !state.settings.layout));
+}
+// ---------------- Dawning Horizon: primary theme color ----------------
+// "original" leaves the stylesheet's values alone. Anything else is
+// "<palette>:<hue>": the background is re-tinted to that hue in that
+// palette's saturation/lightness, and the per-section accents are
+// reassigned as a ROYGBIV rainbow rotated to start at the background's
+// complement — so the sections always read against the background rather
+// than dissolving into it. All computed here and applied as inline CSS
+// custom properties on <body>, which out-specifies the
+// body.layout-dawninghorizon class block without touching the stylesheet.
+
+const DAWNING_HUES = [
+  ["red", 0], ["orange", 28], ["yellow", 52], ["green", 125],
+  ["blue", 215], ["indigo", 255], ["violet", 285],
+];
+
+// Per-palette recipe: background stops, accent chroma, and whether the
+// background is light enough to need dark text swapped in.
+const DAWNING_PALETTES = {
+  light:     { bg0: [40, 90], bg1: [46, 82], accent: [72, 38], lightBg: true },
+  dark:      { bg0: [55, 6],  bg1: [50, 13], accent: [78, 64], lightBg: false },
+  neon:      { bg0: [95, 5],  bg1: [100, 15], accent: [100, 60], lightBg: false },
+  primary:   { bg0: [85, 26], bg1: [92, 40], accent: [95, 68], lightBg: false },
+  pastel:    { bg0: [55, 91], bg1: [60, 84], accent: [52, 48], lightBg: true },
+  bubblegum: { bg0: [82, 80], bg1: [90, 70], accent: [88, 42], lightBg: true },
+};
+
+function parseDawningThemeColor(settings) {
+  const raw = (settings && settings.dawning_theme_color) || "original";
+  if (raw === "original") return null;
+  const [palette, hueName] = raw.split(":");
+  const pal = DAWNING_PALETTES[palette];
+  const hueEntry = DAWNING_HUES.find(([name]) => name === hueName);
+  if (!pal || !hueEntry) return null;
+  return { palette: pal, hue: hueEntry[1] };
+}
+
+function applyDawningThemeColor(settings) {
+  const body = document.body;
+  const clear = () => {
+    ["--bg-0", "--bg-1", "--text-hi", "--text-lo", "--panel", "--line"].forEach((v) => body.style.removeProperty(v));
+    DAWNING_ACCENT_VARS.forEach((name) => body.style.removeProperty(`--accent-${name}`));
+  };
+  const theme = isDawningHorizon() ? parseDawningThemeColor(settings) : null;
+  if (!theme) { clear(); return; }
+
+  const { palette: pal, hue } = theme;
+  const hsl = (h, s, l) => `hsl(${((h % 360) + 360) % 360}, ${s}%, ${l}%)`;
+  body.style.setProperty("--bg-0", hsl(hue, pal.bg0[0], pal.bg0[1]));
+  body.style.setProperty("--bg-1", hsl(hue, pal.bg1[0], pal.bg1[1]));
+
+  // Light backgrounds need the text/panel/hairline colors flipped too, or
+  // the original light-on-dark text vanishes.
+  if (pal.lightBg) {
+    body.style.setProperty("--text-hi", hsl(hue, 30, 12));
+    body.style.setProperty("--text-lo", hsl(hue, 18, 34));
+    body.style.setProperty("--panel", "rgba(255, 255, 255, 0.55)");
+    body.style.setProperty("--line", "rgba(15, 23, 42, 0.18)");
+  }
+
+  // ROYGBIV accents, rotated so the rainbow starts at the background's
+  // complementary hue and cycles from there.
+  const shift = hue + 180 - DAWNING_HUES[0][1];
+  DAWNING_ACCENT_VARS.forEach((name, i) => {
+    const base = DAWNING_HUES[i % DAWNING_HUES.length][1];
+    body.style.setProperty(`--accent-${name}`, hsl(base + shift, pal.accent[0], pal.accent[1]));
+  });
+}
+
+// Every per-section accent variable the Dawning stylesheet defines, in the
+// order they get rainbow hues. --active-accent itself follows whichever of
+// these the selected category points at, so it needs no direct handling.
+const DAWNING_ACCENT_VARS = [
+  "steam", "gog", "epic", "amazon", "other", "settings", "music",
+];
+
+function applyLayoutClass() {
+  document.body.classList.toggle("layout-cyberradial", isCyberRadial());
+  document.body.classList.toggle("layout-dawninghorizon", isDawningHorizon());
+  document.body.classList.toggle("layout-nighthorizon", !isCyberRadial() && !isDawningHorizon());
+  applyDawningThemeColor(state.settings);
 }
 
 // ---------------- category selection (always live, no separate "enter" step) ----------------
@@ -288,6 +471,8 @@ function selectCategory(i) {
   state.catIndex = i;
   state.selected = 0;
   state.gridFocus = "list";
+  state.radialFocus = "sections";
+  state.sectionsBrowseIndex = i;
   applyAccent();
   renderCategories();
   refreshItemPanel();
@@ -298,13 +483,6 @@ function moveCategory(delta) {
   selectCategory(next);
 }
 
-// Normal XMB rule everywhere else: Left/Right always changes category,
-// Up/Down always browses the list. game_grid sections add one more stop
-// in between: Left from the game list moves focus to the filter sidebar
-// instead of changing category; from the filter sidebar, Left continues
-// on to the previous category (and Right comes back to the game list,
-// same category). Up/Down on the filter sidebar cycles the three filter
-// options instead of browsing games.
 function isGameGridCategory() {
   const cat = state.categories[state.catIndex];
   return !!cat && cat.kind === "game_grid";
@@ -313,66 +491,83 @@ function isGameGridCategory() {
 // Must match the grid's column count in style.css (.channel-grid's
 // grid-template-columns: repeat(5, 1fr)) — if that ever changes, update
 // this too so Up/Down keep landing in the same visual column.
-const GRID_COLUMNS = 5;
+function GRID_COLUMNS_NOW() { return (state.settings && state.settings.games_per_row) || 5; }
 
 function currentGridRowBounds() {
-  const rowStart = Math.floor(state.selected / GRID_COLUMNS) * GRID_COLUMNS;
-  const rowEnd = Math.min(rowStart + GRID_COLUMNS - 1, state.items.length - 1);
+  const rowStart = Math.floor(state.selected / GRID_COLUMNS_NOW()) * GRID_COLUMNS_NOW();
+  const rowEnd = Math.min(rowStart + GRID_COLUMNS_NOW() - 1, state.items.length - 1);
   return { rowStart, rowEnd };
 }
 
-// Up/Down/Left/Right all move within the grid itself now. Left/Right
-// still double as the way in and out of it, the same idea as before: run
-// off the left edge of a row and you land on the filter sidebar instead
-// of wrapping to the previous row; run off the right edge and you move to
-// the next section instead of wrapping to the next row — the grid's own
-// edges are where the "zoom out" to filter/section navigation lives.
+// Up/down always browses whichever level has focus: sections (browse-only,
+// confirm to load), or the game grid/filter sidebar once a section is
+// loaded. Left/right only move within the grid now — they no longer
+// change sections or jump to the filter sidebar; that's Y/\ (forward) and
+// B/Space (back) exclusively, so there's one predictable way to reach
+// each panel instead of several overlapping ones.
 function handleDirectionalLeft() {
-  if (isGameGridCategory()) {
-    if (state.gridFocus === "filter") {
-      moveCategory(-1); // already on the filter sidebar — continue on to the previous section
-      return;
-    }
+  if (state.radialFocus === "sections") return;
+  if (isGameGridCategory() && state.gridFocus === "list") {
     const { rowStart } = currentGridRowBounds();
-    if (state.selected > rowStart) {
-      moveSelection(-1);
-    } else {
-      state.gridFocus = "filter";
-      renderGameFilterSidebar(state.categories[state.catIndex]);
-    }
+    if (state.selected > rowStart) moveSelection(-1);
     return;
   }
-  moveCategory(-1);
 }
-
 function handleDirectionalRight() {
-  if (isGameGridCategory()) {
-    if (state.gridFocus === "filter") {
-      state.gridFocus = "list";
-      renderGameFilterSidebar(state.categories[state.catIndex]);
-      return;
-    }
+  if (state.radialFocus === "sections") return;
+  if (isGameGridCategory() && state.gridFocus === "list") {
     const { rowEnd } = currentGridRowBounds();
-    if (state.selected < rowEnd) {
-      moveSelection(1);
-    } else {
-      moveCategory(1);
-    }
+    if (state.selected < rowEnd) moveSelection(1);
     return;
   }
-  moveCategory(1);
 }
-
 function handleDirectionalUp() {
+  if (state.radialFocus === "sections") {
+    const n = state.categories.length;
+    state.sectionsBrowseIndex = (state.sectionsBrowseIndex - 1 + n) % n;
+    renderCategories();
+    return;
+  }
   if (isGameGridCategory() && state.gridFocus === "filter") { moveFilterSelection(-1); return; }
-  if (isGameGridCategory() && state.gridFocus === "list") { moveSelection(-GRID_COLUMNS); return; }
+  if (isGameGridCategory() && state.gridFocus === "list") { moveSelection(-GRID_COLUMNS_NOW()); return; }
   moveSelection(-1);
 }
-
 function handleDirectionalDown() {
+  if (state.radialFocus === "sections") {
+    const n = state.categories.length;
+    state.sectionsBrowseIndex = (state.sectionsBrowseIndex + 1) % n;
+    renderCategories();
+    return;
+  }
   if (isGameGridCategory() && state.gridFocus === "filter") { moveFilterSelection(1); return; }
-  if (isGameGridCategory() && state.gridFocus === "list") { moveSelection(GRID_COLUMNS); return; }
+  if (isGameGridCategory() && state.gridFocus === "list") { moveSelection(GRID_COLUMNS_NOW()); return; }
   moveSelection(1);
+}
+
+// Confirm out of "sections": load the browsed-to section only if it's
+// different from what's already loaded (going back to sections and
+// re-confirming the same one shouldn't refetch/rebuild anything).
+function commitBrowsedSection() {
+  if (state.sectionsBrowseIndex !== state.catIndex) {
+    state.catIndex = state.sectionsBrowseIndex;
+    state.selected = 0;
+    state.gridFocus = "list";
+    applyAccent();
+    renderCategories();
+    refreshItemPanel();
+  }
+  state.radialFocus = "options";
+  renderCategories();
+}
+
+// Y (quick press) / \ key: jump to the filter sidebar, same idea as
+// Meridian Launcher's jump-to-subfolder.
+function handleJumpToSubfolder() {
+  if (state.radialFocus === "sections") return;
+  if (isGameGridCategory() && state.gridFocus !== "filter") {
+    state.gridFocus = "filter";
+    renderGameFilterSidebar(state.categories[state.catIndex]);
+  }
 }
 
 function moveSelection(delta) {
@@ -622,7 +817,22 @@ function renderGameFilterSidebar(cat) {
 async function refreshGameGridPanel(cat) {
   const settings = state.settings || (await api().get_settings());
   state.settings = settings;
-  const cfg = STORE_CONFIG[cat.store];
+  const cfg = storeConfigFor(cat);
+
+  // Playnite filter-preset section: same grid, same filter sidebar, but
+  // the entries come from pnfilter_get_library(preset id). Re-read on
+  // every visit — it's a local file read, effectively instant.
+  if (cat.preset != null) {
+    const res = await api().pnfilter_get_library(cat.preset);
+    const entries = (res && res.entries) || [];
+    state.gameLibraryFull[cat.id] = entries;
+    const filtered = applyGameFilter(cat.id, entries);
+    state.items = filtered.length ? filtered : [{ __empty: true, message: `No games match the "${cat.label}" Playnite filter yet \u2014 adjust the preset in Playnite, then re-export.` }];
+    state.selected = Math.min(state.selected, state.items.length - 1);
+    renderGameFilterSidebar(cat);
+    renderItemList(cat);
+    return;
+  }
 
   if (!cfg.loggedInCheck(settings)) {
     el("subfolder-nav").classList.add("hidden");
@@ -699,15 +909,15 @@ function rowContentFor(cat, item, i) {
       <div class="tile-meta"><span style="font-size:12px;color:var(--text-lo);">${cfg.loginSubtext || "Press confirm to log in and import your library"}</span></div>`;
   }
   if (cat.kind === "game_grid") {
-    const cfg = STORE_CONFIG[cat.store];
+    const cfg = storeConfigFor(cat);
     // item.art is already a ready-to-use URL (http, or the app's own local
     // media server for local files) by the time it reaches the frontend —
     // see main.py's _entries_with_media_urls. Raw file:// paths aren't
     // reliable in this webview backend, so the backend never sends one.
     const artHtml = item.art ? `<img src="${item.art}" alt="" data-fallback-icon>` : iconFor(cat.id);
     return `
-      <div class="tile-art">${artHtml}</div>
-      <div class="tile-title">${escapeHtml(item.title)}</div>
+      <div class="tile-art${item.hidden ? " tile-art-hidden" : ""}">${artHtml}</div>
+      <div class="tile-title">${escapeHtml(item.title)}${item.hidden ? ' <span class="hidden-badge">hidden</span>' : ""}</div>
       <div class="tile-meta">
         <span class="channel-badge ${item.installed ? "installed" : "not-installed"}">${item.installed ? "Installed" : "Not installed"}</span>
         <button class="channel-action" data-store-secondary="${escapeHtml(item.id)}">
@@ -742,10 +952,16 @@ function rowContentFor(cat, item, i) {
   return "";
 }
 
+function getDisplayType(storeId) {
+  const map = (state.settings && state.settings.display_type) || {};
+  return map[storeId] || "gallery"; // games default to gallery, matching how this app has always looked
+}
+
 function renderItemList(cat) {
-  const isGrid = cat.kind === "game_grid";
+  const isGrid = cat.kind === "game_grid" && getDisplayType(cat.store || cat.id) === "gallery";
   const wrap = document.createElement("div");
   wrap.className = isGrid ? "channel-grid" : "item-list";
+  if (isGrid) wrap.style.setProperty("--games-per-row", (state.settings && state.settings.games_per_row) || 5);
   state.items.forEach((item, i) => {
     const row = document.createElement("div");
     const isEmpty = !!item.__empty || !!item.__browsingEmpty || !!item.__storeLogin;
@@ -782,7 +998,7 @@ function renderItemList(cat) {
 // ---------------- activating whatever is currently selected ----------------
 
 async function activateGameGridSecondary(cat, item) {
-  const cfg = STORE_CONFIG[cat.store];
+  const cfg = storeConfigFor(cat);
   playChime();
   if (item.installed) {
     // Labeled "Play Game" now, so it should actually launch — same action
@@ -799,6 +1015,7 @@ async function activateGameGridSecondary(cat, item) {
 }
 
 async function activateCurrentSelection() {
+  if (state.radialFocus === "sections") { commitBrowsedSection(); return; }
   const cat = state.categories[state.catIndex];
   if (cat.kind === "direct") {
     const res = await api().open_web();
@@ -821,7 +1038,7 @@ async function activateCurrentSelection() {
   else if (cat.kind === "system_list") activateSystemItem(item);
   else if (cat.kind === "file_list") activateFileItem(item);
   else if (cat.kind === "game_grid") {
-    const cfg = STORE_CONFIG[cat.store];
+    const cfg = storeConfigFor(cat);
     playChime();
     if (item.installed) { await api()[cfg.api.launch](item.id); }
     else { await api()[cfg.api.install](item.id); showToast(cfg.installingText(item.title)); }
@@ -1048,10 +1265,19 @@ function buildToggleBlock(title, isOn, onChange, note) {
 async function renderSettings() {
   const settings = await api().get_settings();
   state.settings = settings;
+  applyLayoutClass();
   const panel = el("item-panel");
   panel.innerHTML = "";
   panel.classList.remove("wide");
   const c = document.createElement("div");
+
+  // controller controls quick reference — always the first settings block
+  const controlsBlock = document.createElement("div");
+  controlsBlock.className = "settings-block";
+  controlsBlock.innerHTML = `<h3>Controller controls</h3>
+    <p class="settings-note">What each controller button does in Meridian Game Library. Confirm/Back/directions can be remapped in controller_controls.json; combos always use the physical buttons listed. Keyboard: Enter confirm, Space back, arrow keys navigate, the \\ key opens the side panel, Tab opens the Start menu, Escape quits.</p>
+    <div class="controls-grid"><div class="controls-row"><span class="controls-btn">A</span><span class="controls-desc">Confirm / launch the selected game</span></div><div class="controls-row"><span class="controls-btn">B</span><span class="controls-desc">Back / close menus and overlays</span></div><div class="controls-row"><span class="controls-btn">D-pad / Left stick</span><span class="controls-desc">Navigate — up/down through games, left/right across sections</span></div><div class="controls-row"><span class="controls-btn">Y (tap)</span><span class="controls-desc">Jump to the Show filter side panel (All / Installed / Not Installed)</span></div><div class="controls-row"><span class="controls-btn">Start</span><span class="controls-desc">Open the Start menu — hide/unhide games, rename titles, show hidden games, close the program</span></div><div class="controls-row"><span class="controls-btn">Start + Back (together)</span><span class="controls-desc">Bring Meridian Game Library to the foreground</span></div><div class="controls-row"><span class="controls-btn">L3 + R3 (click both sticks)</span><span class="controls-desc">Quit the app instantly</span></div></div>`;
+  c.appendChild(controlsBlock);
 
   // One shared connection now — Playnite itself. Steam/GOG/Epic/Luna are
   // just filtered views into whatever Playnite's library export contains.
@@ -1072,6 +1298,140 @@ async function renderSettings() {
   });
   winBlock.appendChild(radioWrap);
   c.appendChild(winBlock);
+
+  // layout mode
+  const layoutBlock = document.createElement("div");
+  layoutBlock.className = "settings-block";
+  layoutBlock.innerHTML = `<h3>Layouts</h3>`;
+  const layoutRadioWrap = document.createElement("div");
+  layoutRadioWrap.className = "radio-group";
+  [["dawning_horizon", "DawningHorizon"], ["night_horizon", "Verticular Blobs"], ["cyber_radial", "CyberRadial"]].forEach(([mode, label]) => {
+    const pill = document.createElement("div");
+    pill.className = "radio-pill" + ((settings.layout || "dawning_horizon") === mode ? " active" : "");
+    pill.textContent = label;
+    pill.addEventListener("click", async () => { await api().set_layout(mode); renderSettings(); });
+    layoutRadioWrap.appendChild(pill);
+  });
+  layoutBlock.appendChild(layoutRadioWrap);
+  c.appendChild(layoutBlock);
+
+  // Dawning Horizon primary theme color
+  const themeBlock = document.createElement("div");
+  themeBlock.className = "settings-block";
+  themeBlock.innerHTML = `<h3>Dawning Horizon theme color</h3>`;
+  const themeNote = document.createElement("p");
+  themeNote.className = "settings-note";
+  themeNote.textContent = "Re-tints the DawningHorizon background to a chosen hue; section colors follow as a complementary ROYGBIV rainbow. Only affects the DawningHorizon layout.";
+  themeBlock.appendChild(themeNote);
+  const currentThemeColor = settings.dawning_theme_color || "original";
+  const pickThemeColor = async (value) => {
+    await api().set_dawning_theme_color(value);
+    state.settings = await api().get_settings();
+    applyDawningThemeColor(state.settings);
+    renderSettings();
+  };
+  const origWrap = document.createElement("div");
+  origWrap.className = "radio-group";
+  const origPill = document.createElement("div");
+  origPill.className = "radio-pill" + (currentThemeColor === "original" ? " active" : "");
+  origPill.textContent = "Original";
+  origPill.addEventListener("click", () => pickThemeColor("original"));
+  origWrap.appendChild(origPill);
+  themeBlock.appendChild(origWrap);
+  [["light", "Light"], ["dark", "Dark"], ["neon", "Neon"], ["primary", "Primary"], ["pastel", "Pastel"], ["bubblegum", "Bubblegum"]].forEach(([pal, label]) => {
+    const row = document.createElement("div");
+    row.className = "theme-swatch-row";
+    const lab = document.createElement("span");
+    lab.className = "theme-swatch-label";
+    lab.textContent = label;
+    row.appendChild(lab);
+    DAWNING_HUES.forEach(([hueName, hueDeg]) => {
+      const value = `${pal}:${hueName}`;
+      const sw = document.createElement("button");
+      sw.type = "button";
+      sw.className = "theme-swatch" + (currentThemeColor === value ? " active" : "");
+      const rec = DAWNING_PALETTES[pal];
+      sw.style.background = `hsl(${hueDeg}, ${rec.bg1[0]}%, ${rec.bg1[1]}%)`;
+      sw.title = `${label} \u2014 ${hueName}`;
+      sw.addEventListener("click", () => pickThemeColor(value));
+      row.appendChild(sw);
+    });
+    themeBlock.appendChild(row);
+  });
+  c.appendChild(themeBlock);
+
+  // games per row (gallery grid), applies across all layouts/themes
+  const perRowBlock = document.createElement("div");
+  perRowBlock.className = "settings-block";
+  perRowBlock.innerHTML = `<h3>Games Per Row</h3>`;
+  const perRowWrap = document.createElement("div");
+  perRowWrap.className = "radio-group";
+  [3, 4, 5].forEach((n) => {
+    const pill = document.createElement("div");
+    pill.className = "radio-pill" + ((settings.games_per_row || 5) === n ? " active" : "");
+    pill.textContent = String(n);
+    pill.addEventListener("click", async () => { await api().set_games_per_row(n); renderSettings(); if (isGameGridCategory()) refreshItemPanel(); });
+    perRowWrap.appendChild(pill);
+  });
+  perRowBlock.appendChild(perRowWrap);
+  c.appendChild(perRowBlock);
+
+  // per-store List Style vs Gallery Style
+  Object.entries(STORE_CONFIG).forEach(([storeId, cfg]) => {
+    const dtBlock = document.createElement("div");
+    dtBlock.className = "settings-block";
+    dtBlock.innerHTML = `<h3>${cfg.label} display</h3>`;
+    const dtWrap = document.createElement("div");
+    dtWrap.className = "radio-group";
+    [["gallery", "Gallery Style"], ["list", "List Style"]].forEach(([type, label]) => {
+      const pill = document.createElement("div");
+      pill.className = "radio-pill" + (getDisplayType(storeId) === type ? " active" : "");
+      pill.textContent = label;
+      pill.addEventListener("click", async () => { await api().set_display_type(storeId, type); renderSettings(); });
+      dtWrap.appendChild(pill);
+    });
+    dtBlock.appendChild(dtWrap);
+    c.appendChild(dtBlock);
+  });
+
+  // game library import source — Playnite or Heroic, never both
+  const importBlock = document.createElement("div");
+  importBlock.className = "settings-block";
+  importBlock.innerHTML = `<h3>Import titles from</h3>`;
+  const importRadioWrap = document.createElement("div");
+  importRadioWrap.className = "radio-group";
+  [["playnite", "Playnite"], ["heroic", "Heroic Games Launcher"]].forEach(([source, label]) => {
+    const pill = document.createElement("div");
+    pill.className = "radio-pill" + ((settings.game_import_source || "playnite") === source ? " active" : "");
+    pill.textContent = label;
+    pill.addEventListener("click", async () => {
+      await api().set_game_import_source(source);
+      await refreshAfterSettingsChange();
+    });
+    importRadioWrap.appendChild(pill);
+  });
+  importBlock.appendChild(importRadioWrap);
+  const importNote = document.createElement("p");
+  importNote.className = "settings-note";
+  importNote.textContent = settings.game_import_source === "heroic"
+    ? "Reading your Epic/GOG/sideloaded library from Heroic Games Launcher. Steam and Luna aren't something Heroic manages, so those sections will show as not connected."
+    : "Reading your library from Playnite (via the MeridianExporter extension). Switch to Heroic Games Launcher above if that's what you use instead.";
+  importBlock.appendChild(importNote);
+  c.appendChild(importBlock);
+
+  // Playnite filter-preset sections
+  const pfBlock = buildToggleBlock(
+    "Playnite filter sections",
+    settings.playnite_filter_sections,
+    async () => {
+      await api().set_playnite_filter_sections(!settings.playnite_filter_sections);
+      await refreshAfterSettingsChange();
+    },
+    settings.playnite_filter_sections
+      ? `Your saved Playnite filter presets show as their own sections${state.filterPresets && state.filterPresets.length ? ` (${state.filterPresets.length} found)` : " (none found yet \u2014 re-run the Meridian export in Playnite after updating the extension)"}.`
+      : "Off \u2014 turn on to pull your saved Playnite filter presets in as similarly named sections.",
+  );
+  c.appendChild(pfBlock);
 
   // battery indicator
   c.appendChild(buildToggleBlock(
@@ -1144,6 +1504,13 @@ async function renderSettings() {
   });
   dataBlock.appendChild(dataBtn);
   c.appendChild(dataBlock);
+
+
+  // credit footer — always the very last thing in the settings box
+  const creditBlock = document.createElement("div");
+  creditBlock.className = "settings-block settings-credit";
+  creditBlock.innerHTML = `<p>Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026; This is open source software. Donations Appreciated, but Money Not Required.</p>`;
+  c.appendChild(creditBlock);
 
   panel.appendChild(c);
   alignCategoryRowToList();
@@ -1308,6 +1675,7 @@ async function buildMacroSectionBlock() {
 async function refreshAfterSettingsChange() {
   const settings = await api().get_settings();
   state.settings = settings;
+  await loadFilterPresets(settings);
   state.categories = buildCategories(settings);
   if (state.catIndex >= state.categories.length) state.catIndex = state.categories.length - 1;
   renderCategories();
@@ -1474,6 +1842,17 @@ function handleBack() {
   if (cat && cat.kind === "media" && state.settings && state.settings.load_subfolders === false) {
     const stack = state.folderStack[cat.id];
     if (stack && stack.length > 1) { goUpFolder(cat.id); return; }
+  }
+  if (state.radialFocus !== "sections") {
+    if (isGameGridCategory() && state.gridFocus === "filter") {
+      state.gridFocus = "list";
+      renderGameFilterSidebar(cat);
+      return;
+    }
+    state.radialFocus = "sections";
+    state.sectionsBrowseIndex = state.catIndex;
+    renderCategories();
+    return;
   }
   // Nothing else to "back" out of — the category bar is always visible.
 }
@@ -1648,14 +2027,222 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
+  if (isStartMenuOpen()) {
+    if (kc && e.key === kc.up) handleStartMenuInput("up");
+    else if (kc && e.key === kc.down) handleStartMenuInput("down");
+    else if (kc && e.key === kc.confirm && !e.repeat) handleStartMenuInput("confirm");
+    else if ((kc && e.key === kc.back && !e.repeat) || e.key === "Tab") handleStartMenuInput("back");
+    if (e.key === "Tab") e.preventDefault();
+    return;
+  }
+  if (e.key === "Tab") { e.preventDefault(); if (!e.repeat) toggleStartMenu(); return; }
+
   if (!kc) return;
   if (e.key === kc.confirm) { if (!e.repeat) activateCurrentSelection(); }
   else if (e.key === kc.back) { if (!e.repeat) handleBack(); }
+  else if (e.key === "\\") { if (!e.repeat) handleJumpToSubfolder(); }
   else if (e.key === kc.up) handleDirectionalUp();
   else if (e.key === kc.down) handleDirectionalDown();
   else if (e.key === kc.left) handleDirectionalLeft();
   else if (e.key === kc.right) handleDirectionalRight();
 });
+
+
+// ---------------- Start menu (controller Start button / Tab key) ----------------
+// A contextual quick menu: game-management actions when the selection is a
+// game tile, plus global entries. Options are rebuilt every time it opens
+// so hidden/unhidden state is always current.
+
+let startMenuState = null; // {options: [{id,label}], index} when open
+
+function isStartMenuOpen() { return startMenuState !== null; }
+
+function currentGameItemForStartMenu() {
+  const cat = state.categories[state.catIndex];
+  if (!cat || cat.kind !== "game_grid") return null;
+  const item = state.items[state.selected];
+  if (!item || item.__empty || item.__storeLogin || item.__browsingEmpty || !item.id) return null;
+  return { cat, item };
+}
+
+function buildStartMenuOptions() {
+  const opts = [];
+  const sel = currentGameItemForStartMenu();
+  if (sel) {
+    const { item } = sel;
+    if (!item.hidden) opts.push({ id: "hide", label: `Hide "${item.title}"` });
+    if (item.hidden) opts.push({ id: "unhide", label: `Unhide "${item.title}"` });
+    opts.push({ id: "rename", label: `Rename "${item.title}"` });
+  }
+  // "Unhide hidden games" normally; flips to "Hide hidden games" only while
+  // hidden titles are being shown.
+  const showingHidden = !!(state.settings && state.settings.show_hidden_games);
+  opts.push({ id: "toggle_hidden", label: showingHidden ? "Hide hidden games" : "Unhide hidden games" });
+  opts.push({ id: "close_program", label: "Close program" });
+  return opts;
+}
+
+function ensureStartMenuDom() {
+  if (el("start-menu-overlay")) return;
+  const overlay = document.createElement("div");
+  overlay.id = "start-menu-overlay";
+  overlay.className = "overlay hidden";
+  overlay.innerHTML = `
+    <div id="start-menu-box">
+      <h3 id="start-menu-title">Start</h3>
+      <div id="start-menu-list"></div>
+      <p id="start-menu-hint">Confirm to select \u00b7 Back or Start to close</p>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeStartMenu(); });
+}
+
+function renderStartMenu() {
+  const list = el("start-menu-list");
+  list.innerHTML = "";
+  startMenuState.options.forEach((opt, i) => {
+    const row = document.createElement("div");
+    row.className = "start-menu-row" + (i === startMenuState.index ? " selected" : "");
+    row.textContent = opt.label;
+    row.addEventListener("click", () => { startMenuState.index = i; activateStartMenuOption(); });
+    list.appendChild(row);
+  });
+}
+
+function openStartMenu() {
+  ensureStartMenuDom();
+  startMenuState = { options: buildStartMenuOptions(), index: 0 };
+  renderStartMenu();
+  el("start-menu-overlay").classList.remove("hidden");
+}
+
+function closeStartMenu() {
+  startMenuState = null;
+  const overlay = el("start-menu-overlay");
+  if (overlay) overlay.classList.add("hidden");
+}
+
+function toggleStartMenu() {
+  if (isStartMenuOpen()) closeStartMenu();
+  else openStartMenu();
+}
+
+async function activateStartMenuOption() {
+  const opt = startMenuState && startMenuState.options[startMenuState.index];
+  if (!opt) return;
+  const sel = currentGameItemForStartMenu();
+
+  if (opt.id === "hide" && sel) {
+    // in-menu confirmation step instead of a separate dialog
+    startMenuState = {
+      options: [
+        { id: "hide_confirm", label: `Yes, hide "${sel.item.title}"` },
+        { id: "cancel", label: "Cancel" },
+      ],
+      index: 0,
+    };
+    renderStartMenu();
+    return;
+  }
+  if (opt.id === "hide_confirm" && sel) {
+    state.settings = await api().set_game_hidden(sel.item.id, true);
+    closeStartMenu();
+    showToast(`Hidden "${sel.item.title}" \u2014 unhide it any time from the Start menu.`);
+    await refreshItemPanel();
+    return;
+  }
+  if (opt.id === "unhide" && sel) {
+    state.settings = await api().set_game_hidden(sel.item.id, false);
+    closeStartMenu();
+    showToast(`"${sel.item.title}" is visible again.`);
+    await refreshItemPanel();
+    return;
+  }
+  if (opt.id === "rename" && sel) {
+    closeStartMenu();
+    openRenameModal(sel.item);
+    return;
+  }
+  if (opt.id === "toggle_hidden") {
+    const next = !(state.settings && state.settings.show_hidden_games);
+    state.settings = await api().set_show_hidden_games(next);
+    closeStartMenu();
+    showToast(next ? "Hidden games are now shown (dimmed)." : "Hidden games are hidden again.");
+    await refreshItemPanel();
+    return;
+  }
+  if (opt.id === "cancel") {
+    startMenuState = { options: buildStartMenuOptions(), index: 0 };
+    renderStartMenu();
+    return;
+  }
+  if (opt.id === "close_program") {
+    await api().quit_app();
+  }
+}
+
+function handleStartMenuInput(action) {
+  if (!startMenuState) return;
+  const n = startMenuState.options.length;
+  if (action === "up") startMenuState.index = (startMenuState.index - 1 + n) % n;
+  else if (action === "down") startMenuState.index = (startMenuState.index + 1) % n;
+  else if (action === "confirm") { activateStartMenuOption(); return; }
+  else if (action === "back" || action === "start_menu") { closeStartMenu(); return; }
+  renderStartMenu();
+}
+
+// ---------------- rename modal (Start menu -> Rename Title) ----------------
+
+let renameTargetItem = null;
+
+function ensureRenameDom() {
+  if (el("rename-overlay")) return;
+  const overlay = document.createElement("div");
+  overlay.id = "rename-overlay";
+  overlay.className = "overlay hidden";
+  overlay.innerHTML = `
+    <div id="modal-box">
+      <h3 id="rename-title">Rename title</h3>
+      <input id="rename-input" type="text" placeholder="Display name" maxlength="80" />
+      <p class="settings-note">Leave empty and save to restore the original title. Only changes how it shows here \u2014 Playnite is untouched.</p>
+      <div id="modal-actions">
+        <button id="rename-cancel">Cancel</button>
+        <button id="rename-confirm">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  el("rename-cancel").addEventListener("click", closeRenameModal);
+  el("rename-confirm").addEventListener("click", async () => {
+    if (!renameTargetItem) { closeRenameModal(); return; }
+    const name = el("rename-input").value.trim();
+    state.settings = await api().set_game_rename(renameTargetItem.id, name);
+    const target = renameTargetItem;
+    closeRenameModal();
+    showToast(name ? `Renamed to "${name}".` : "Restored the original title.");
+    await refreshItemPanel();
+  });
+  el("rename-input").addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") el("rename-confirm").click();
+    if (e.key === "Escape") closeRenameModal();
+  });
+}
+
+function openRenameModal(item) {
+  ensureRenameDom();
+  renameTargetItem = item;
+  el("rename-overlay").classList.remove("hidden");
+  const input = el("rename-input");
+  input.value = item.title || "";
+  input.focus(); // focusin handler pops the on-screen keyboard for controller text entry
+}
+
+function closeRenameModal() {
+  renameTargetItem = null;
+  const overlay = el("rename-overlay");
+  if (overlay) { overlay.classList.add("hidden"); }
+  hideOsk();
+}
 
 // ---------------- controller bridge (called from Python via evaluate_js) ----------------
 // Note: confirm/back are already edge-triggered on the Python side (XInput
@@ -1664,6 +2251,12 @@ document.addEventListener("keydown", (e) => {
 window.handleControllerInput = function (action) {
   if (!state.introDismissed) return;
   if (isOskCapturing()) { handleOskControllerInput(action); return; }
+  if (isStartMenuOpen()) { handleStartMenuInput(action); return; }
+  if (el("rename-overlay") && !el("rename-overlay").classList.contains("hidden")) {
+    if (action === "back") closeRenameModal();
+    return;
+  }
+  if (action === "start_menu") { toggleStartMenu(); return; }
   if (!el("video-overlay").classList.contains("hidden")) { handleVideoControllerInput(action); return; }
   if (isOverlayOpen()) {
     if (action === "left" && !el("photo-overlay").classList.contains("hidden")) el("photo-prev").click();
@@ -1673,6 +2266,7 @@ window.handleControllerInput = function (action) {
   }
   if (action === "confirm") activateCurrentSelection();
   else if (action === "back") handleBack();
+  else if (action === "y_subfolder") handleJumpToSubfolder();
   else if (action === "up") handleDirectionalUp();
   else if (action === "down") handleDirectionalDown();
   else if (action === "left") handleDirectionalLeft();
@@ -1685,12 +2279,176 @@ window.handleControllerAny = function () {
 
 // ---------------- boot ----------------
 
+// ---------------- Verticular Blobs: animated blob background ----------------
+// Same system as Meridian Launcher's NightHorizon — see that app.js for the
+// fuller comment. Runs behind "Verticular Blobs" (this app's renamed
+// night_horizon layout); fades out when CyberRadial is active.
+let blobState = null;
+function hexToRgbString(hex) {
+  const m = hex.trim().replace("#", "");
+  const full = m.length === 3 ? m.split("").map((c) => c + c).join("") : m;
+  const n = parseInt(full, 16);
+  if (Number.isNaN(n)) return "150,255,120";
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+}
+function initBlobBackground() {
+  if (blobState) return;
+  const canvas = document.createElement("canvas");
+  canvas.id = "blob-canvas";
+  canvas.style.cssText = "position:fixed;inset:0;z-index:0;pointer-events:none;transition:opacity 500ms ease;filter:blur(20px) contrast(34) saturate(1.4);";
+  const horizon = el("horizon-glow");
+  horizon.insertAdjacentElement("afterend", canvas);
+  const ctx = canvas.getContext("2d");
+
+  const BLOB_COUNT = 16;
+  const SPEED = 2.4; // 6x the original 0.4
+  const blobs = Array.from({ length: BLOB_COUNT }, () => ({
+    x: Math.random() * window.innerWidth,
+    y: Math.random() * window.innerHeight,
+    vx: (Math.random() - 0.5) * SPEED,
+    vy: (Math.random() - 0.5) * SPEED,
+    r: 40 + Math.random() * 60,
+    shade: 0.75 + Math.random() * 0.5, // per-blob brightness variance around the accent color
+    spin: Math.random() * Math.PI * 2,
+    spinSpeed: (Math.random() < 0.5 ? -1 : 1) * (0.04 + Math.random() * 0.08),
+  }));
+
+  function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function step() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const accentRgb = hexToRgbString(getComputedStyle(document.documentElement).getPropertyValue("--active-accent") || "#a6e83f");
+
+    for (const b of blobs) {
+      b.x += b.vx; b.y += b.vy;
+      b.spin += b.spinSpeed;
+      if (b.x - b.r < 0 || b.x + b.r > w) { b.vx *= -1; b.x = Math.max(b.r, Math.min(w - b.r, b.x)); }
+      if (b.y - b.r < 0 || b.y + b.r > h) { b.vy *= -1; b.y = Math.max(b.r, Math.min(h - b.r, b.y)); }
+    }
+
+    for (const b of blobs) {
+      const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+      g.addColorStop(0, `rgba(${accentRgb},${0.9 * b.shade})`);
+      g.addColorStop(1, `rgba(${accentRgb},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+
+      // spinning swirl: a brighter core orbiting inside the blob, spinning
+      // around it as it drifts and bounces
+      const sx = b.x + Math.cos(b.spin) * b.r * 0.42;
+      const sy = b.y + Math.sin(b.spin) * b.r * 0.42;
+      const sr = b.r * 0.32;
+      const g2 = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+      g2.addColorStop(0, `rgba(255,255,255,${0.35 * b.shade})`);
+      g2.addColorStop(1, `rgba(${accentRgb},0)`);
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.fill();
+    }
+
+    canvas.style.opacity = (!isCyberRadial() && !isDawningHorizon()) ? "0.6" : "0";
+    blobState.raf = requestAnimationFrame(step);
+  }
+
+  blobState = { canvas, blobs, raf: null };
+  step();
+}
+
+// ---------------- Dawning Horizon: dancing silk threads ---------------
+// Several glowing threads sweep out from the left-center of the screen in
+// slow, waving arcs (silk-in-the-wind motion via a growing sine wave along
+// each thread's length), colored with the active section's accent. Sparks
+// occasionally break off and drift up/down and rightward, fading as they
+// go. Runs only behind Dawning Horizon; fades out otherwise, same
+// stay-alive-but-invisible approach as the blob canvas.
+let threadState = null;
+function initSilkThreads() {
+  if (threadState) return;
+  const canvas = document.createElement("canvas");
+  canvas.id = "silk-canvas";
+  canvas.style.cssText = "position:fixed;inset:0;z-index:0;pointer-events:none;transition:opacity 500ms ease;";
+  const horizon = el("horizon-glow");
+  horizon.insertAdjacentElement("afterend", canvas);
+  const ctx = canvas.getContext("2d");
+
+  const THREAD_COUNT = 7;
+  const threads = Array.from({ length: THREAD_COUNT }, (_, i) => ({
+    phase: Math.random() * Math.PI * 2,
+    speed: 0.006 + Math.random() * 0.006,
+    ampY: 36 + Math.random() * 56,
+    yOffset: (i - (THREAD_COUNT - 1) / 2) * 24,
+    length: 0.55 + Math.random() * 0.35,
+  }));
+  let particles = [];
+
+  function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function threadPoint(t, thr, w, h) {
+    const originY = h / 2 + thr.yOffset;
+    const x = t * w * thr.length;
+    const wave = Math.sin(t * Math.PI * 2.2 + thr.phase) * thr.ampY * t; // amplitude grows with distance from the origin, like a swaying strand
+    return { x, y: originY + wave };
+  }
+
+  function step() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const accentRgb = hexToRgbString(getComputedStyle(document.documentElement).getPropertyValue("--active-accent") || "#fbbf24");
+
+    threads.forEach((thr) => {
+      thr.phase += thr.speed;
+      ctx.beginPath();
+      const segments = 40;
+      for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const p = threadPoint(t, thr, w, h);
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.strokeStyle = `rgba(${accentRgb},0.5)`;
+      ctx.lineWidth = 1.6;
+      ctx.shadowColor = `rgba(${accentRgb},0.85)`;
+      ctx.shadowBlur = 9;
+      ctx.stroke();
+
+      if (Math.random() < 0.06) {
+        const t = Math.random();
+        const p = threadPoint(t, thr, w, h);
+        particles.push({ x: p.x, y: p.y, vx: 0.3 + Math.random() * 0.6, vy: (Math.random() - 0.5) * 1.2, life: 1, rgb: accentRgb });
+      }
+    });
+    ctx.shadowBlur = 0;
+
+    particles.forEach((p) => { p.x += p.vx; p.y += p.vy; p.vy += 0.01; p.life -= 0.012; });
+    particles = particles.filter((p) => p.life > 0 && p.x < w + 20);
+    particles.forEach((p) => {
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${p.rgb},${p.life})`;
+      ctx.shadowColor = `rgba(${p.rgb},0.9)`;
+      ctx.shadowBlur = 6;
+      ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.shadowBlur = 0;
+
+    canvas.style.opacity = isDawningHorizon() ? "0.8" : "0";
+    threadState.raf = requestAnimationFrame(step);
+  }
+
+  threadState = { canvas, threads, raf: null };
+  step();
+}
 async function boot() {
   tickClock();
   buildOsk();
   const [settings, kc] = await Promise.all([api().get_settings(), api().get_keyboard_controls()]);
   state.settings = settings;
   state.keyboardControls = kc;
+  await loadFilterPresets(settings);
   state.categories = buildCategories(settings);
 
   el("hint-confirm").textContent = `${kc.confirm} select`;
@@ -1702,6 +2460,8 @@ async function boot() {
   await applyOverlay(settings);
   await updateBatteryIndicator();
   await refreshItemPanel(); // show the first category's content immediately, live
+  initBlobBackground();
+  initSilkThreads();
 
   await playIntroIfConfigured();
 }

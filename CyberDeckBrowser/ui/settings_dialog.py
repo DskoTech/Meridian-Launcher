@@ -74,8 +74,8 @@ class SettingsDialog(QWidget):
         )
 
         self.resize(
-            440,
-            520
+            480,
+            740
         )
 
 
@@ -84,6 +84,45 @@ class SettingsDialog(QWidget):
 
         layout.addWidget(
             QLabel("SETTINGS")
+        )
+
+
+        #
+        # Controller controls quick reference - what every
+        # button and combo does, kept at the very top so
+        # it's the first thing the settings window shows.
+        #
+
+        controls_label = QLabel(
+            "<b>CONTROLLER CONTROLS</b><br>"
+            "<table cellspacing='0' cellpadding='2'>"
+            "<tr><td><b>Left stick</b></td><td>Move the cursor</td></tr>"
+            "<tr><td><b>LT / RT (hold)</b></td><td>Cursor speed boost while held</td></tr>"
+            "<tr><td><b>L3 (click left stick)</b></td><td>Reset page zoom</td></tr>"
+            "<tr><td><b>Right stick up/down</b></td><td>Scroll the page</td></tr>"
+            "<tr><td><b>Right stick left/right</b></td><td>Zoom out / in</td></tr>"
+            "<tr><td><b>A</b></td><td>Left click / select (keyboard key, menu item)</td></tr>"
+            "<tr><td><b>B</b></td><td>Right click; closes menus and the virtual keyboard</td></tr>"
+            "<tr><td><b>D-pad</b></td><td>Navigate the virtual keyboard and popup menus; "
+            "on a page: up/down scroll, left/right send arrow keys</td></tr>"
+            "<tr><td><b>LB / RB</b></td><td>Previous / next browser tab</td></tr>"
+            "<tr><td><b>Y</b></td><td>Browser menu (History, Downloads, Bookmarks, "
+            "Translate, Settings, Find In Page)</td></tr>"
+            "<tr><td><b>X</b></td><td>Tools menu</td></tr>"
+            "<tr><td><b>Start</b></td><td>Open the search window</td></tr>"
+            "<tr><td><b>Select / Back</b></td><td>Launch the Windows on-screen keyboard (osk.bat)</td></tr>"
+            "</table>"
+        )
+
+        controls_label.setWordWrap(True)
+
+        controls_label.setStyleSheet(
+            "font-size:12px; color:#9fe8ff; border:1px solid #00ffff;"
+            "border-radius:4px; padding:8px; background:#0c0c1c;"
+        )
+
+        layout.addWidget(
+            controls_label
         )
 
 
@@ -221,6 +260,29 @@ class SettingsDialog(QWidget):
 
         layout.addLayout(
             button_row
+        )
+
+
+        #
+        # Credit footer - always the last thing in the
+        # settings box.
+        #
+
+        credit_label = QLabel(
+            'Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026; '
+            "This is open source software. "
+            "Donations Appreciated, but Money Not Required."
+        )
+
+        credit_label.setWordWrap(True)
+
+        credit_label.setStyleSheet(
+            "font-size:11px; color:#5fb8c8; font-style:italic;"
+            "border-top:1px solid #00ffff; padding-top:8px;"
+        )
+
+        layout.addWidget(
+            credit_label
         )
 
 

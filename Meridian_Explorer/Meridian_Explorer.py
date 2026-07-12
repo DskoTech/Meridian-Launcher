@@ -13,6 +13,14 @@ import collections
 # and stops receiving controller/keyboard input until manually restored.
 os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
 import pygame
+# GameInput backend (fixes Windows 11 Xbox fullscreen experience, where
+# SDL/pygame joysticks can receive no input at all). SDLJoystickShim exposes
+# the pygame.joystick.Joystick read API, so handle_controller() is unchanged.
+try:
+    from gameinput_api import open_gamepad, SDLJoystickShim
+except ImportError:
+    open_gamepad = None
+    SDLJoystickShim = None
 # --------------------------------------------------------------------------- #
 # CONFIG
 # --------------------------------------------------------------------------- #
@@ -316,10 +324,23 @@ class MeridianExplorer:
         self.text_input_current = None
         self._last_click_time = 0
         self._last_click_pos = None
-        pygame.joystick.init()
-        self.joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
-        for j in self.joysticks:
-            j.init()
+        # Controller: prefer the Windows GameInput API (required for input
+        # inside the Xbox fullscreen experience; also survives hot-plugging),
+        # fall back to classic pygame/SDL joysticks, then legacy XInput.
+        self.joysticks = []
+        if open_gamepad is not None:
+            pad = open_gamepad(prefer=("gameinput",))
+            if pad is not None:
+                self.joysticks = [SDLJoystickShim(pad)]
+        if not self.joysticks:
+            pygame.joystick.init()
+            self.joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
+            for j in self.joysticks:
+                j.init()
+        if not self.joysticks and open_gamepad is not None:
+            pad = open_gamepad(prefer=("xinput",))
+            if pad is not None:
+                self.joysticks = [SDLJoystickShim(pad)]
         self.running = True
     # ------------------------------------------------------------------ #
     # STATE PERSISTENCE

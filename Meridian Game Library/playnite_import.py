@@ -97,7 +97,24 @@ def _entry_from_game(game):
         "installed": bool(game.get("IsInstalled")),
         "art": cover if cover and os.path.isfile(cover) else None,
         "playtime_minutes": int((game.get("Playtime") or 0) / 60),
+        "last_activity": game.get("LastActivity"),  # ISO datetime string from Playnite, or None if never played / not exported
     }
+
+
+def get_recently_played(playnite_settings, limit=5):
+    """Games with a LastActivity timestamp, most recent first. Used by both
+    this app's own UI and by Meridian Launcher (which imports this module
+    directly from its sibling install folder — see Launcher's main.py) so
+    "recently played" means the same thing, sourced from the same place,
+    in both apps rather than Launcher keeping its own separate history.
+    Returns [] (not None) when the export isn't available, since callers
+    generally want a safe empty list to iterate rather than a None check."""
+    raw = _load_raw_export(playnite_settings)
+    if not raw:
+        return []
+    played = [g for g in raw if g.get("LastActivity")]
+    played.sort(key=lambda g: g.get("LastActivity"), reverse=True)
+    return [_entry_from_game(g) for g in played[:limit]]
 
 
 def get_library(store_key, playnite_settings):
@@ -113,6 +130,61 @@ def get_library(store_key, playnite_settings):
         return None
 
     entries = [_entry_from_game(g) for g in raw if _matches_store(g.get("Source"), store_key)]
+    entries.sort(key=lambda e: (not e["installed"], e["title"].lower()))
+    return entries
+
+
+def filter_presets_path(playnite_settings):
+    # Always a sibling of the main export, whatever that path is — the
+    # exporter writes both files into the same folder, so following the
+    # (possibly user-overridden) export path keeps the pair together.
+    return str(Path(get_export_path(playnite_settings)).with_name("playnite_filter_presets.json"))
+
+
+def get_filter_presets(playnite_settings):
+    """
+    Saved Playnite filter presets, as exported by Export-MeridianFilterPresets:
+    [{"id": ..., "name": ..., "game_ids": [...]}]. Membership was resolved
+    inside Playnite (its own GetFilteredGames), so this never evaluates
+    filter rules itself. Returns [] when the presets file doesn't exist —
+    which just means the exporter predates this feature or hasn't run yet,
+    not an error.
+    """
+    path = filter_presets_path(playnite_settings)
+    try:
+        with open(path, encoding="utf-8-sig") as f:  # -sig: PowerShell BOM, same as the main export
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(raw, dict):  # ConvertTo-Json collapses a 1-element array to a bare object
+        raw = [raw]
+    presets = []
+    for p in raw or []:
+        if not isinstance(p, dict) or not p.get("Name"):
+            continue
+        presets.append({
+            "id": str(p.get("Id") or p.get("Name")),
+            "name": p.get("Name"),
+            "game_ids": [str(g) for g in (p.get("GameIds") or [])],
+        })
+    return presets
+
+
+def get_filter_library(preset_id, playnite_settings):
+    """
+    Entries for one filter-preset section: the main export's games,
+    narrowed to the ids Playnite said match that preset. Returns None
+    (like get_library) if the main export isn't available, so callers can
+    tell "not connected" apart from "connected but empty".
+    """
+    raw = _load_raw_export(playnite_settings)
+    if raw is None:
+        return None
+    preset = next((p for p in get_filter_presets(playnite_settings) if p["id"] == str(preset_id)), None)
+    if preset is None:
+        return []
+    wanted = set(preset["game_ids"])
+    entries = [_entry_from_game(g) for g in raw if str(g.get("Id")) in wanted]
     entries.sort(key=lambda e: (not e["installed"], e["title"].lower()))
     return entries
 

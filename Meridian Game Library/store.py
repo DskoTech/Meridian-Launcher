@@ -85,10 +85,30 @@ def default_settings():
         "overlay_image": None,
         "opening_video": None,
         "window_mode": "fullscreen",  # fullscreen | windowed
+        "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
+        # Dawning Horizon background hue: "original", or "<palette>:<hue>"
+        # where palette is light|dark|neon|primary|pastel|bubblegum and hue
+        # is red|orange|yellow|green|blue|indigo|violet. Purely a frontend
+        # concern (app.js computes and applies the actual colors).
+        "dawning_theme_color": "original",
+        # When on, each saved Playnite filter preset (exported by the
+        # MeridianExporter extension) becomes its own section in the
+        # category row, named after the preset.
+        "playnite_filter_sections": False,
+        # Start-menu game management: hidden titles are dropped from every
+        # game section unless show_hidden_games is on; renames replace the
+        # displayed title without touching Playnite's own data.
+        "hidden_games": [],  # [playnite game id, ...]
+        "game_renames": {},  # {game id: custom display name}
+        "show_hidden_games": False,
         "load_subfolders": True,
         "video_fullscreen": False,
         "battery_indicator": True,
+        "games_per_row": 5,  # 3 | 4 | 5
+        "display_type": {},  # per-store-id: "gallery" (default) | "list"
+        "pull_custom_sections_from_playnite": False,
         "playnite": {"export_path": None, "executable_path": None},
+        "game_import_source": "playnite",  # "playnite" | "heroic" — never both at once
     }
 
 

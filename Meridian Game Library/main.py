@@ -37,6 +37,7 @@ import store
 import system_actions
 import playnite_import
 import playnite_sync
+import heroic_import
 from controller_input import ControllerListener
 
 try:
@@ -468,6 +469,8 @@ class Api:
     def get_settings(self):
         SETTINGS.setdefault("playnite", {"export_path": None})
         SETTINGS["playnite"]["export_available"] = playnite_import.export_file_available(SETTINGS["playnite"])
+        SETTINGS["heroic_available"] = heroic_import.export_file_available()
+        SETTINGS.setdefault("game_import_source", "playnite")
         return SETTINGS
 
     def get_keyboard_controls(self):
@@ -515,11 +518,18 @@ class Api:
         """Manual 'sync now' from Settings — runs the same silent background sync as startup, but blocking so the UI can show a result."""
         return {"synced": playnite_sync.silent_sync(self._playnite_settings(), timeout=90)}
 
+    def get_recently_played_games(self):
+        return playnite_import.get_recently_played(self._playnite_settings())
+
     def _store_login(self, store_key):
         # There's no real per-store "login" anymore — connection state is
-        # just "does the Playnite export file exist yet". Kept as a method
-        # per store so the frontend's existing login-prompt flow (built for
-        # the old per-store auth) still works without changes.
+        # just "does the Playnite export / Heroic cache exist yet". Kept
+        # as a method per store so the frontend's existing login-prompt
+        # flow (built for the old per-store auth) still works unchanged.
+        if self._import_source() == "heroic":
+            if heroic_import.export_file_available():
+                return {"success": True}
+            return {"success": False, "error": "Heroic Games Launcher isn't installed, or hasn't synced a library yet."}
         cfg = self._playnite_settings()
         if playnite_import.export_file_available(cfg):
             return {"success": True}
@@ -535,29 +545,105 @@ class Api:
         # why the existing music/photos/video code already routes local
         # files through the tokenized media server instead of file:// —
         # reusing that same proven path here rather than a raw file URL).
+        #
+        # This is also the one choke point every game section's entries
+        # flow through (storefronts, Heroic, and filter-preset sections
+        # alike), so the Start-menu user prefs — hides and renames — are
+        # applied here too rather than per-source.
+        entries = self._apply_user_game_prefs(entries)
         for entry in entries:
             if entry.get("art"):
                 entry["art"] = media_url(entry["art"])
         return entries
 
+    def _apply_user_game_prefs(self, entries):
+        hidden = set(SETTINGS.get("hidden_games") or [])
+        renames = SETTINGS.get("game_renames") or {}
+        show_hidden = bool(SETTINGS.get("show_hidden_games"))
+        out = []
+        for entry in entries:
+            gid = str(entry.get("id"))
+            is_hidden = gid in hidden
+            if is_hidden and not show_hidden:
+                continue
+            entry["hidden"] = is_hidden
+            if gid in renames and renames[gid]:
+                entry["title"] = renames[gid]
+            out.append(entry)
+        return out
+
+    # ---------------- Start-menu game management ----------------
+
+    def set_game_hidden(self, game_id, hidden):
+        gid = str(game_id)
+        current = set(SETTINGS.get("hidden_games") or [])
+        if hidden:
+            current.add(gid)
+        else:
+            current.discard(gid)
+        SETTINGS["hidden_games"] = sorted(current)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_game_rename(self, game_id, name):
+        gid = str(game_id)
+        renames = dict(SETTINGS.get("game_renames") or {})
+        name = (name or "").strip()
+        if name:
+            renames[gid] = name
+        else:
+            renames.pop(gid, None)  # empty name = revert to the real title
+        SETTINGS["game_renames"] = renames
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_show_hidden_games(self, enabled):
+        SETTINGS["show_hidden_games"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def _import_source(self):
+        return SETTINGS.get("game_import_source", "playnite")
+
+    def set_game_import_source(self, source):
+        if source not in ("playnite", "heroic"):
+            return SETTINGS
+        SETTINGS["game_import_source"] = source
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
     def _store_get_library(self, store_key):
-        entries = playnite_import.get_library(store_key, self._playnite_settings())
+        if self._import_source() == "heroic":
+            entries = heroic_import.get_library(store_key)
+        else:
+            entries = playnite_import.get_library(store_key, self._playnite_settings())
         return {"entries": self._entries_with_media_urls(entries or [])}
 
     def _store_sync_library(self, store_key, force=False):
-        # "Sync" is just "re-read the export file" now — no network calls,
-        # so this is effectively instant. The actual freshness of the data
-        # depends on when the Playnite extension last wrote the file.
-        entries = playnite_import.get_library(store_key, self._playnite_settings())
+        # "Sync" is just "re-read the export/cache file(s)" for both
+        # sources — no network calls, so this is effectively instant. The
+        # actual freshness of the data depends on when Playnite/Heroic
+        # last wrote their own files.
+        if self._import_source() == "heroic":
+            entries = heroic_import.get_library(store_key)
+        else:
+            entries = playnite_import.get_library(store_key, self._playnite_settings())
         if entries is None:
             return {"error": "not_logged_in"}
         return {"entries": self._entries_with_media_urls(entries)}
 
-    def _store_launch(self, game_id):
-        playnite_import.launch_game(game_id, self._playnite_settings())
+    def _store_launch(self, game_id, store_key=None):
+        if self._import_source() == "heroic":
+            runner = {"epic": "legendary", "gog": "gog", "other": "sideload"}.get(store_key, "legendary")
+            heroic_import.launch_game(game_id, runner=runner)
+        else:
+            playnite_import.launch_game(game_id, self._playnite_settings())
 
     def _store_install_or_uninstall(self, game_id):
-        playnite_import.show_in_playnite(game_id)
+        if self._import_source() == "heroic":
+            heroic_import.show_in_launcher(game_id)
+        else:
+            playnite_import.show_in_playnite(game_id)
 
     def steam_login(self):
         return self._store_login("steam")
@@ -605,19 +691,19 @@ class Api:
         return self._store_sync_library("other", force)
 
     def steam_launch(self, game_id):
-        self._store_launch(game_id)
+        self._store_launch(game_id, "steam")
 
     def gog_launch(self, game_id):
-        self._store_launch(game_id)
+        self._store_launch(game_id, "gog")
 
     def epic_launch(self, game_id):
-        self._store_launch(game_id)
+        self._store_launch(game_id, "epic")
 
     def amazon_launch(self, game_id):
-        self._store_launch(game_id)
+        self._store_launch(game_id, "amazon")
 
     def other_launch(self, game_id):
-        self._store_launch(game_id)
+        self._store_launch(game_id, "other")
 
     def steam_install(self, game_id):
         self._store_install_or_uninstall(game_id)
@@ -942,6 +1028,20 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    def set_games_per_row(self, n):
+        if n not in (3, 4, 5):
+            return SETTINGS
+        SETTINGS["games_per_row"] = n
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_display_type(self, store_id, display_type):
+        if display_type not in ("list", "gallery"):
+            return SETTINGS
+        SETTINGS.setdefault("display_type", {})[store_id] = display_type
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
     def set_window_mode(self, mode):
         SETTINGS["window_mode"] = mode
         store.save_settings(SETTINGS)
@@ -962,6 +1062,68 @@ class Api:
         except Exception:
             pass
         return SETTINGS
+
+    def set_layout(self, mode):
+        """UI layout mode: 'night_horizon' (default) or 'cyber_radial'. Purely
+        a frontend concern — the frontend toggles a body class off this and
+        does all the actual layout work; the backend just persists it."""
+        if mode not in ("dawning_horizon", "night_horizon", "cyber_radial"):
+            return SETTINGS
+        SETTINGS["layout"] = mode
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_dawning_theme_color(self, value):
+        """Dawning Horizon primary theme color: "original", or
+        "<palette>:<hue>". Like set_layout, the backend only validates and
+        persists — the frontend computes the actual HSL values."""
+        if value != "original":
+            parts = str(value).split(":")
+            if len(parts) != 2:
+                return SETTINGS
+            palette, hue = parts
+            if palette not in ("light", "dark", "neon", "primary", "pastel", "bubblegum"):
+                return SETTINGS
+            if hue not in ("red", "orange", "yellow", "green", "blue", "indigo", "violet"):
+                return SETTINGS
+        SETTINGS["dawning_theme_color"] = value
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    # ---------------- Playnite filter-preset sections ----------------
+    # Saved Playnite filter presets, surfaced as their own sections. The
+    # membership is resolved inside Playnite itself (see the exporter's
+    # Export-MeridianFilterPresets) so Meridian never has to reimplement
+    # Playnite's filter logic — it just reads name + matching game ids.
+
+    def set_playnite_filter_sections(self, enabled):
+        SETTINGS["playnite_filter_sections"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def playnite_filter_presets(self):
+        """[{id, name, count}] for every saved preset in the export, or []
+        if the presets file isn't there yet (older exporter, or Playnite
+        hasn't synced since installing the updated one)."""
+        presets = playnite_import.get_filter_presets(self._playnite_settings())
+        return [{"id": p["id"], "name": p["name"], "count": len(p.get("game_ids") or [])} for p in presets]
+
+    def pnfilter_get_library(self, preset_id):
+        entries = playnite_import.get_filter_library(preset_id, self._playnite_settings())
+        return {"entries": self._entries_with_media_urls(entries or [])}
+
+    def pnfilter_launch(self, game_id):
+        # A game in a filter section is still just a Playnite game — same
+        # launch path as the storefront sections.
+        playnite_import.launch_game(game_id, self._playnite_settings())
+
+    def pnfilter_install(self, game_id):
+        playnite_import.show_in_playnite(game_id)
+
+    def pnfilter_touch(self, force=False):
+        # No-op stand-in for the storefront syncLibrary hook: filter
+        # sections re-read the export on every panel refresh anyway.
+        return {"ok": True}
 
     # ---------------- settings: app data folder ----------------
     def open_app_data_folder(self):
