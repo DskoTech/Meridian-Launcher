@@ -9,6 +9,99 @@ keyboard, mouse, or game controller.
 hibernate, and XInput controller support — are Windows-specific, so there's
 no meaningful cross-platform version of this particular feature set.
 
+## This revision
+
+Renamed the program (internally and externally) from **Meridian** to
+**Meridian Launcher** — window title, app title, build output
+(`Meridian Launcher.exe`), and docs.
+
+- **Kiosk mode is now a real lock**, not just a window style. Turning it on
+  from Settings shows a controller-selectable confirmation prompt that
+  discloses all three ways back out, and once it's on, **Settings and
+  System both disappear from the category row entirely** (so there's no
+  "toggle it back off" button sitting right there). The only ways out:
+  hand-editing `window_mode` in `settings.json`, holding the controller's
+  **Y** button for **45 seconds**, or entering the unlock code — **D-pad
+  Up, Up, Down, Down, Left, Right, Left, Right, B, A** on a controller, or
+  **Up, Up, Down, Down, Left, Right, Left, Right, B, A** (literal keys) on
+  a keyboard. Both codes work off the raw physical button/key, independent
+  of whatever confirm/back are remapped to. A toast confirms
+  `kiosk mode disabled` once any of these succeed.
+- **Removed the auto-launch of `onscreenmenu.exe` at startup.** In its
+  place: a **"Launch with onscreenmenu?"** toggle (on by default) on each
+  of Apps/Games/Emulators/Chat/Streaming/custom sections — when on,
+  launching anything from that section's list also runs `osm.bat` from the
+  app's folder. A second global toggle, **"Launch External System features
+  with onscreenmenu?"** (also on by default), does the same for Task
+  Manager, Control Panel, Recycle Bin, Uninstall Apps, and "Open Windows
+  Bluetooth settings" from the System section.
+- **Web's CyberDeck Browser option now launches `CyberDeckBrowser.exe`**
+  (was `CyberDeck.exe`).
+- **Games gets a permanent "Game Library" entry** pinned at the top of the
+  list, launching `Meridian Game Library.exe` from the app's folder.
+- **Battery indicator shows a full battery on desktops.** If the OS reports
+  no battery hardware at all (the normal case on a desktop), the indicator
+  — when enabled — now shows a full charge instead of hiding itself.
+- **Revert to factory settings**, the very last option in Settings, clears
+  every saved user modification back to defaults behind a controller
+  selectable Yes/No confirmation.
+- New `install_dependencies.bat` and `compile.bat` for a from-scratch
+  Windows build without typing any commands by hand.
+
+## This revision — built on your uploaded files
+
+Started from the zip you uploaded (which turned out to be my build from two
+turns back, plus your style.css edits) and kept every one of your changes
+exactly: the horizon glow line at `top: 76px`, the category row `gap: 86px`,
+and the preview pane's `transform: translateX(-100px)`. Your real
+`settings.json`, `.cache`, `keyboard_controls.json`, and
+`controller_controls.json` were left untouched too — only the source files
+changed.
+
+**Category row no longer bleeds into the clock area.** The row was
+previously clipped by `overflow: hidden` on itself, but since it's also the
+element that gets transformed (for carousel sliding and list-icon
+alignment), the clipping boundary moved along with it — so far-right
+slides could visually push icons/labels past where they should've been cut
+off, into the clock's space. Fixed by wrapping it in a stable
+`#category-viewport` that never moves; the inner `#category-row` still
+transforms freely, but now clips against a fixed boundary, so anything
+sliding toward the clock disappears right at the boundary and reappears
+correctly once it slides back.
+
+**Settings is now controller/keyboard navigable**, same as every other
+section: Up/Down moves a highlighted-outline cursor over its buttons/
+toggles/radio-pills in visual order, confirm clicks whichever one is
+highlighted. Left/Right still change category as usual. Text inputs (add
+custom section, Wi-Fi password) aren't part of this cursor — they get real
+focus directly when their modal opens, same as before.
+
+**Item list is now pinned at a fixed horizontal position** — `margin-left:
+25vw`, which computes to exactly 480px at 1920px-wide (1080p) and scales
+proportionally at other resolutions, rather than staying centered based on
+whatever else happens to be on screen. The subfolder sidebar and preview
+pane became absolutely positioned (left/right edges) so they no longer
+compete with the list for flex space.
+
+**Web, restructured** the same way Files was: now a two-item list —
+**CyberDeck Browser** (launches `CyberDeckBrowser.exe` from the app's own
+folder, same pattern as Meridian Explorer) sits above **Default Browser**
+(the previous single-action behavior).
+
+Wi-Fi/Bluetooth name listings in System, and the folder-focus Left/Right
+navigation for Music/Photos/Videos, were both already present in your
+uploaded checkpoint (from two turns back) and are confirmed still working
+here — re-verified rather than rebuilt.
+
+Verified with a headless-DOM regression pass across all prior test suites
+(carousel ordering/direction, Files restructure, System ordering, on-screen
+keyboard, video controls, folder-focus navigation, battery indicator) plus
+new tests confirming: Web's restructure and both its launch paths, and
+Settings' cursor starting at index 0, moving correctly with Up/Down, and
+confirm correctly activating whatever control it's currently on. The fixed
+480px/25vw positioning and the clock-area clipping are structurally
+correct and consistent, but pixel-exact visual verification needs a real
+browser — this sandbox can't render real CSS layout.
 
 ## Sections
 
@@ -71,6 +164,20 @@ From Settings you can set:
 - The app auto-detects your screen resolution at boot and sizes itself to
   match.
 
+## Startup behavior
+
+- If a file named `Meridian_Explorer.exe` exists in the same folder,
+  selecting "Meridian Explorer" from the Files section launches it
+  on-demand (not at startup). If it's missing, that option reports a clear
+  error instead of failing silently.
+- The same applies to `CyberDeckBrowser.exe` (Web section's "CyberDeck
+  Browser") and `Meridian Game Library.exe` (Games section's "Game
+  Library" entry, pinned at the top of the list).
+- `osm.bat`, if present in the app's folder, is launched alongside items
+  from exe-list sections and alongside certain System features — see
+  "Launch with onscreenmenu?" in Settings — rather than being auto-launched
+  at startup the way `onscreenmenu.exe` previously was.
+- If an opening video is configured, it plays before anything else.
 
 ## Safety note on "Macros -> All Other Programs"
 
@@ -144,7 +251,7 @@ types or icon formats can trip it up), it falls back to a generic icon for
 that section instead of breaking anything. (This is separate from the
 app's own icon — see `icon.ico` above.)
 
-## style redesign (this revision)
+## XMB-style redesign (this revision)
 
 Rebuilt the navigation model to match genuine Xross Media Bar behavior
 instead of trying to patch the old one:
@@ -271,8 +378,53 @@ subfolder browsing returns correct non-recursive listings, and all the new
 Windows-only actions (Recycle Bin, Uninstall Apps, Wi-Fi, Bluetooth) fail
 gracefully rather than crash when run outside Windows.
 
+## Bugfix pass (earlier revision)
+
+Found and fixed by re-tracing every code path and actually exercising the
+Python logic with the Windows-only pieces mocked out:
+
+- **Macros could never launch `.bat` files.** Windows can't `CreateProcess`
+  a `.bat` directly the way we were calling it — it needs to go through
+  `cmd.exe`, same as double-clicking would. Now uses `os.startfile`, which
+  resolves file associations correctly for both `.exe` and `.bat`.
+- **The overlay feature would silently never appear.** It reads pixel data
+  from the overlay image via canvas, which requires a CORS header from our
+  local media server; that header was missing, so the image load was
+  rejected outright. Added `Access-Control-Allow-Origin: *`.
+- **`macros_whitelist` was structurally nested inside `sections`**, a dict
+  that's otherwise assumed to only contain `{"items": [...]}` objects —
+  latent crash risk. Moved to its own top-level settings key, with a
+  migration path that preserves any custom whitelist entries from a
+  previous install instead of discarding them.
+- **Settings could randomly kick you back to the category row** on a Down
+  press, depending on leftover cursor state from whatever section you were
+  in before. Settings now always ignores directional nav instead of
+  sometimes falling through to it.
+- **Icon extraction had a GDI double-release bug** (`DeleteDC` called on a
+  DC that should only ever be `ReleaseDC`'d), which risked corrupting
+  Windows' GDI handle table over a long kiosk session with lots of icon
+  extraction. Fixed to release each DC the correct way exactly once.
+- **System actions (shutdown/sleep/hibernate/Control Panel/Task
+  Manager/Web/Files) had no error handling** — if one ever failed (blocked
+  by policy, not on PATH), the exception vanished into an unhandled promise
+  rejection with zero user feedback. They now report success/failure and
+  the UI shows a toast on failure.
+- Hardened the XInput binding with explicit `argtypes`/`restype` instead of
+  relying on ctypes to guess the calling convention.
+- Recognized keys (confirm/back/up/down/left/right) now call
+  `preventDefault()`, so the browser's own space-bar-scrolls-the-page and
+  arrow-key-scrolls-a-div behaviors can't visually fight the app's own
+  navigation.
+
+Verified with a mocked-`webview`/mocked-`win32` test harness exercising
+settings persistence, folder management, exe-section CRUD, custom sections,
+macros, and the process-whitelist logic (confirmed core OS processes and
+the app's own process always survive "All Other Programs," and everything
+else gets closed). Still worth a real smoke test on Windows hardware,
+particularly controller polling and window-mode switching, since this
+sandbox can't run pywebview/XInput/win32 for real.
 
 ## Scope notes
 
-- This is an original UI - no proprietary code, artwork, or branding is used
+- This is an original UI - no Sony code, artwork, or branding is used
   anywhere in it.

@@ -24,6 +24,7 @@ RAW_CODE_BUTTONS = {"DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "A", "B"}
 
 # How long Y must be held continuously to disable kiosk mode.
 Y_HOLD_SECONDS = 45.0
+X_HOLD_SECONDS = 3  # hold X this long on an open-programs bar item to close it
 
 DEFAULT_CONTROLS = {
     "confirm": "A",
@@ -41,7 +42,9 @@ DEFAULT_CONTROLS = {
 
 class ControllerListener:
     def __init__(self, controls, on_action, on_any, on_quit_combo, on_foreground_combo,
-                 on_raw_button=None, on_y_hold_complete=None):
+                 on_raw_button=None, on_y_hold_complete=None, foreground_trigger_getter=None,
+                 cooldown_scale_getter=None,
+                 prefer_xinput=False):
         """
         controls: dict following DEFAULT_CONTROLS shape (from controller_controls.json)
         on_action(action_name): called for confirm/back/up/down/left/right
@@ -54,7 +57,10 @@ class ControllerListener:
         on_y_hold_complete(): called once after Y has been held continuously
             for Y_HOLD_SECONDS — another kiosk-mode exit path.
         """
-        self.gamepad = open_gamepad()
+        # prefer_xinput forces the XInput backend; otherwise GameInput is
+        # tried first and falls back to XInput on its own.
+        self.gamepad = open_gamepad(prefer=("xinput",) if prefer_xinput else None)
+        self.prefer_xinput = bool(prefer_xinput)
         self.controls = controls
         self.on_action = on_action
         self.on_any = on_any
@@ -63,11 +69,30 @@ class ControllerListener:
         self.on_raw_button = on_raw_button
         self.on_y_hold_complete = on_y_hold_complete
         self._stop = threading.Event()
+        self.last_connected = False  # did the most recent poll see a controller?
         self._last_fire = {}
         self._prev_buttons = 0
         self._combo_latch = {"quit": False, "foreground": False, "shoulders": False}
         self._y_hold_start = None
         self._y_fired = False
+        self._x_hold_start = None
+        self._x_fired = False
+        # returns "start_select" | "xbox" | "off" — how to bring the app to
+        # the foreground. Read fresh each poll so Settings changes apply live.
+        self._fg_getter = foreground_trigger_getter
+        # optional callable -> float; scales the directional cooldown live
+        # (e.g. 0.77 to make a section's navigation ~1.3x faster).
+        self._cooldown_scale_getter = cooldown_scale_getter
+
+    def status(self):
+        """Which input backend this listener is using and whether a
+        controller is currently talking to it — for the settings screen's
+        diagnostic line (e.g. to see whether GameInput is actually the
+        active path in a fullscreen experience)."""
+        return {
+            "backend": getattr(self.gamepad, "backend", None) if self.gamepad else None,
+            "connected": bool(self.gamepad) and self.last_connected,
+        }
 
     def start(self):
         if self.gamepad is None:
@@ -86,6 +111,13 @@ class ControllerListener:
 
     def _can_fire(self, action):
         cooldown = self.controls.get("cooldown_ms", 200) / 1000.0
+        if self._cooldown_scale_getter:
+            try:
+                scale = float(self._cooldown_scale_getter())
+                if scale > 0:
+                    cooldown *= scale
+            except Exception:
+                pass
         now = time.time()
         last = self._last_fire.get(action, 0)
         if now - last >= cooldown:
@@ -103,13 +135,23 @@ class ControllerListener:
                 snap = self.gamepad.poll()
             except Exception:
                 snap = None
+            self.last_connected = snap is not None
             if snap is not None:  # controller connected
                 pressed = self._button_names(snap.buttons)
                 rising = pressed - self._button_names(self._prev_buttons)
 
                 # combos
                 quit_combo = set(self.controls.get("quit_combo", ["LEFT_THUMB", "RIGHT_THUMB"]))
-                fg_combo = set(self.controls.get("foreground_combo", ["START", "BACK"]))
+                # Foreground trigger is a user setting: Start+Select
+                # together, the Guide/Xbox button, or off. (BACK is the
+                # physical "Select"/"View" button in XInput terms.)
+                fg_mode = self._fg_getter() if self._fg_getter else "start_select"
+                if fg_mode == "xbox":
+                    fg_combo = {"GUIDE"}
+                elif fg_mode == "off":
+                    fg_combo = set()
+                else:
+                    fg_combo = {"START", "BACK"}
                 if quit_combo and quit_combo.issubset(pressed):
                     if not self._combo_latch["quit"]:
                         self._combo_latch["quit"] = True
@@ -157,6 +199,35 @@ class ControllerListener:
                 # the subfolder/filter panel, same idea as the \ key
                 if "Y" in rising:
                     self.on_action("y_subfolder")
+
+                # X: quick press (release before X_HOLD_SECONDS) -> jump
+                # to / away from the open-programs bar; held for
+                # X_HOLD_SECONDS while on a bar item -> close that task.
+                # Same press-vs-hold split as the Y handling above.
+                if "X" in pressed:
+                    if self._x_hold_start is None:
+                        self._x_hold_start = time.time()
+                        self._x_fired = False
+                    elif not self._x_fired and (time.time() - self._x_hold_start) >= X_HOLD_SECONDS:
+                        self._x_fired = True
+                        self.on_action("x_taskbar_hold")
+                else:
+                    if self._x_hold_start is not None and not self._x_fired:
+                        self.on_action("x_taskbar")
+                    self._x_hold_start = None
+                    self._x_fired = False
+
+                # Left Trigger: toggle the overlay. The triggers are the only
+                # controller inputs the suite doesn't already use (every face
+                # button, shoulder, stick-click, Start/Back and Guide are
+                # spoken for), so LT is the free one. Edge-triggered via a
+                # latch so holding it doesn't strobe the overlay.
+                if snap.lt > 0.6:
+                    if not self._combo_latch.get("lt_overlay"):
+                        self._combo_latch["lt_overlay"] = True
+                        self.on_action("toggle_overlay")
+                else:
+                    self._combo_latch["lt_overlay"] = False
 
                 # shoulders: single press = prev/next track, both held at
                 # once = random track (edge-triggered, same latch pattern

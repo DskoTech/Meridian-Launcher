@@ -1,0 +1,6 @@
+{
+  "id": "start",
+  "label": "Start",
+  "version": "1.0",
+  "description": "Lists shortcuts from the Windows Start Menu (both the per-user and all-users folders) as a simple launchable list, with Run... pinned at the top."
+}

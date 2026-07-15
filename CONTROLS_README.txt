@@ -22,6 +22,13 @@ Controller:
   D-pad or Left stick ... Navigate: up/down through lists, left/right across
                           sections and panels
   Y (tap) ............... Jump to the subfolder / filter side panel
+  X (tap) ............... Jump to / away from the open-programs bar (a
+                          controller taskbar replacement, in every theme). On the bar: navigate
+                          along it, A refocuses the highlighted program,
+                          B returns to the sections bar
+  X (hold 3 seconds) .... Close the highlighted task on the open-programs
+                          bar (asks for confirmation unless the "Close
+                          tasks without prompt" setting is on)
   LB .................... Previous music track
   RB .................... Next music track
   LB + RB (together) .... Play a random track
@@ -38,6 +45,8 @@ Keyboard:
   Space ................. Back
   Arrow keys ............ Navigate
   \ (backslash) ......... Jump to the subfolder / filter side panel
+  Shift ................. Jump to / away from the open-programs bar
+  Delete ................ Close the highlighted task on the open-programs bar
   Kiosk code ............ Up, Up, Down, Down, Left, Right, Left, Right, B, A
                           (arrow keys plus the literal B and A keys)
 
@@ -172,6 +181,37 @@ Keyboard:
   S ..................... Multi-select mode
   R ..................... Rename
   Mouse ................. Left click select/open, right click back/cancel
+
+Meridian Explorer options menu (Y) now also offers:
+  View...   Text / List / Icon / Gallery view modes, plus a day/night
+            theme (System follows Windows' own light/dark setting).
+  Sort...   Sort by Name / Size / Type / Date, Ascending or Descending.
+  Search    Type a name fragment; jumps to the first match in the pane.
+  Select All  Selects everything in the pane (B then selects none).
+  Undo Move / Redo Move  Reverses or re-applies the last move operation.
+  Properties  Windows-like info for the highlighted item.
+  Set as Background  (images only) Stretch or Center; sets the Meridian
+            Launcher background.
+  Switch Pane Modes  Cycles Dual-pane -> Single-pane -> Quick Access
+            (a Windows-style shortcut rail plus a wide main pane).
+
+In Icon/Gallery view, left/right moves within a grid row and only switches
+pane at the row edge; up/down steps a whole row.
+
+Built-in Text Editor / Hex Editor (from the Y options menu: Edit / Hex
+Edit). The screen splits into two dedicated boxes: the document on top
+(scrolls internally, never covered) and a prominent virtual keyboard
+below with a wide VOICE INPUT button on its bottom row:
+  D-pad / Left stick .... Move the virtual-keyboard cursor
+  A ..................... Press the highlighted key
+  B ..................... Backspace (text) / Delete byte (hex)
+  Y ..................... Shift (text editor, one-shot)
+  LB / RB ............... Move the document cursor left / right
+  LT / RT ............... Move the document cursor up / down
+  Start ................. Save
+  Select ................ Voice input (triggers Windows voice typing, Win+H)
+  Physical keyboard ..... Types directly; arrows move, Ctrl+S saves,
+                          Esc exits (twice to discard unsaved changes)
 
 ================================================================================
  Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026

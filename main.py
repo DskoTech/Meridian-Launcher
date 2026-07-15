@@ -11,6 +11,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import time
 import shutil
 import subprocess
 import sys
@@ -21,9 +22,26 @@ from urllib.parse import urlparse, parse_qs
 
 import webview
 
+
+# pywebview renamed its dialog constants: webview.OPEN_DIALOG and
+# webview.FOLDER_DIALOG are deprecated in favor of webview.FileDialog.OPEN
+# and .FOLDER. Resolve them once here so we use the new names where they
+# exist and still run on older pywebview builds.
+try:
+    _DLG_OPEN = webview.FileDialog.OPEN
+    _DLG_FOLDER = webview.FileDialog.FOLDER
+except AttributeError:  # pywebview < 5.x
+    _DLG_OPEN = getattr(webview, "OPEN_DIALOG")
+    _DLG_FOLDER = getattr(webview, "FOLDER_DIALOG")
+
 import store
 import system_actions
+import tasks_win
+import explorer_shell
+import user_themes
+import theme_assets
 import updater
+import plugin_manager
 from controller_input import ControllerListener
 
 # Recently-played games are sourced from Game Library's own Playnite
@@ -87,6 +105,8 @@ MUSIC_EXT = {".mp3", ".flac", ".wav", ".m4a", ".ogg", ".wma", ".aac"}
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".m4v"}
 IMAGE_FILE_TYPES = ("Image Files (*.png;*.jpg;*.jpeg;*.bmp;*.webp)",)
+# Backgrounds also accept animated .gif (shown on a CSS layer that animates).
+BACKGROUND_FILE_TYPES = ("Image Files (*.png;*.jpg;*.jpeg;*.bmp;*.webp;*.gif)",)
 VIDEO_FILE_TYPES = ("Video Files (*.mp4;*.webm;*.mov;*.mkv;*.avi)",)
 EXE_FILE_TYPES = ("Executable Files (*.exe)",)
 BAT_FILE_TYPES = ("Batch Files (*.bat)",)
@@ -94,6 +114,31 @@ SCRIPT_FILE_TYPES = ("Scripts (*.bat;*.ps1)",)
 
 SETTINGS = store.load_settings()
 store.ensure_controls_files()
+
+_explorer_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian FileBrowse instance, if any
+_browser_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian NetBrowse instance, if any
+
+
+def _rescan_plugins():
+    """Discover Plugins/ folders and merge them into SETTINGS["plugins"],
+    preserving each existing plugin's visibility flag and adding new ones
+    hidden by default. Called once at startup and again from the Settings
+    > Plugins "Rescan" button."""
+    discovered = plugin_manager.scan_plugins()
+    existing = SETTINGS.get("plugins", {})
+    merged = {}
+    for info in discovered:
+        pid = info["id"]
+        merged[pid] = {
+            "label": info["label"],
+            "visible": bool(existing.get(pid, {}).get("visible", False)),
+        }
+    SETTINGS["plugins"] = merged
+    store.save_settings(SETTINGS)
+    return discovered
+
+
+_rescan_plugins()
 
 
 # --------------------------------------------------------------------------
@@ -113,8 +158,60 @@ class MediaHandler(BaseHTTPRequestHandler):
     def log_message(self, *_a):
         pass
 
+    def _handle_open_explorer(self, parsed):
+        """Local-only endpoint used by the 'Make Meridian FileBrowse the
+        default shell browser' trampoline: brings Meridian Launcher to the
+        foreground, switches it to the Explorer section, and loads the
+        requested folder into Meridian FileBrowse there."""
+        qs = parse_qs(parsed.query)
+        path = qs.get("path", [""])[0]
+        try:
+            _bring_to_foreground()
+            escaped = path.replace("\\", "\\\\").replace("'", "\\'")
+            webview.windows[0].evaluate_js(
+                f"window.__meridianOpenPathInExplorer && window.__meridianOpenPathInExplorer('{escaped}')"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        except Exception:
+            try:
+                self.send_error(500)
+            except Exception:
+                pass
+
+    def _handle_open_browser(self, parsed):
+        """Local-only endpoint used by the 'Make Meridian NetBrowse the
+        default system web browser' trampoline: brings Meridian Launcher
+        to the foreground, switches it to the Browser section, and loads
+        the requested URL into Meridian NetBrowse there."""
+        qs = parse_qs(parsed.query)
+        url = qs.get("url", [""])[0]
+        try:
+            _bring_to_foreground()
+            escaped = url.replace("\\", "\\\\").replace("'", "\\'")
+            webview.windows[0].evaluate_js(
+                f"window.__meridianOpenUrlInBrowser && window.__meridianOpenUrlInBrowser('{escaped}')"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        except Exception:
+            try:
+                self.send_error(500)
+            except Exception:
+                pass
+
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/internal/open-explorer":
+            self._handle_open_explorer(parsed)
+            return
+        if parsed.path == "/internal/open-browser":
+            self._handle_open_browser(parsed)
+            return
         if parsed.path != "/media":
             self.send_error(404)
             return
@@ -176,6 +273,10 @@ def start_media_server():
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), MediaHandler)
     port = httpd.server_address[1]
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        (store.DATA_DIR / "internal_port.txt").write_text(str(port), encoding="utf-8")
+    except Exception:
+        pass
     return port
 
 
@@ -481,9 +582,10 @@ def _scan_desktop_folder():
     shortcuts, exes, files, folders — re-scanned fresh every time the
     Desktop section is opened rather than cached, since this reflects
     live desktop contents, not a curated Meridian list. Hidden/system
-    files (desktop.ini etc.) are skipped; folders are included so they
-    can still be opened via the normal launch path (Explorer handles
-    that fine)."""
+    files (desktop.ini etc.) are skipped. Folders are included (tagged
+    "is_dir": True) so they can be routed to the Explorer section /
+    Meridian Explorer / Windows Explorer instead of launch_path (which
+    requires os.path.isfile())."""
     desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
     if not desktop.exists():
         return []
@@ -493,11 +595,10 @@ def _scan_desktop_folder():
             if entry.name.startswith(".") or entry.name.lower() == "desktop.ini":
                 continue
             try:
-                # Files/shortcuts only — launch_path requires os.path.isfile(),
-                # so folders are skipped rather than risk changing that shared
-                # function (used by every other section's launch path too).
-                if entry.is_file():
-                    items.append({"path": str(entry), "name": store.display_name(str(entry))})
+                if entry.is_dir():
+                    items.append({"path": str(entry), "name": entry.name, "is_dir": True})
+                elif entry.is_file():
+                    items.append({"path": str(entry), "name": store.display_name(str(entry)), "is_dir": False})
             except OSError:
                 continue
     except OSError:
@@ -549,7 +650,7 @@ def _with_icons(items):
 
 def _open_file_dialog(file_types):
     window = webview.windows[0]
-    result = window.create_file_dialog(webview.OPEN_DIALOG, file_types=file_types, allow_multiple=True)
+    result = window.create_file_dialog(_DLG_OPEN, file_types=file_types, allow_multiple=True)
     return list(result) if result else []
 
 
@@ -713,7 +814,7 @@ class Api:
 
     # ---------------- media folders ----------------
     def pick_folder(self):
-        result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+        result = webview.windows[0].create_file_dialog(_DLG_FOLDER)
         return result[0] if result else None
 
     def add_folder(self, kind, path):
@@ -786,6 +887,16 @@ class Api:
         return _with_icons(sec["items"])
 
     def launch_exe(self, path, section_id=None):
+        # Folder shortcuts are first-class launchable items: a directory
+        # path opens in Meridian Explorer (when the routing setting is on
+        # and it's installed alongside) or Windows Explorer otherwise.
+        if path and os.path.isdir(path):
+            ok, err = _open_folder_routed(path)
+            if ok and section_id:
+                sec = _section_store(section_id)
+                if sec is not None and sec.get("launch_with_osm", True):
+                    _maybe_launch_osm()
+            return {"ok": ok, "error": err}
         ok, err = system_actions.launch_path(path)
         if ok and section_id:
             sec = _section_store(section_id)
@@ -826,6 +937,16 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    def set_explorer_section_enabled(self, enabled):
+        SETTINGS["explorer_section_enabled"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_browser_section_enabled(self, enabled):
+        SETTINGS["browser_section_enabled"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
     def set_display_type(self, section_id, display_type):
         """Per-section 'List Style' vs 'Gallery Style' — same generic toggle
         for any section (media or exe-list). Purely a frontend rendering
@@ -859,6 +980,37 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    # ---------------- Plugins (auto-discovered custom sections) ----------------
+    def rescan_plugins(self):
+        """Re-scan Plugins/ on demand (Settings > Plugins > Rescan)."""
+        for pid in list(SETTINGS.get("plugins", {}).keys()):
+            plugin_manager.unload_backend(pid)
+        _rescan_plugins()
+        return SETTINGS
+
+    def list_plugins(self):
+        """Ordered list of discovered plugins with their visibility, in the
+        order they should appear after the last custom section."""
+        discovered = plugin_manager.scan_plugins()
+        out = []
+        for info in discovered:
+            pid = info["id"]
+            entry = SETTINGS.get("plugins", {}).get(pid, {"visible": False})
+            out.append({"id": pid, "label": info["label"], "visible": bool(entry.get("visible", False))})
+        return out
+
+    def set_plugin_visible(self, plugin_id, visible):
+        SETTINGS.setdefault("plugins", {}).setdefault(plugin_id, {"visible": False})
+        SETTINGS["plugins"][plugin_id]["visible"] = bool(visible)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def list_plugin_items(self, plugin_id):
+        return plugin_manager.list_items(plugin_id)
+
+    def activate_plugin_item(self, plugin_id, item_id):
+        return plugin_manager.activate_item(plugin_id, item_id)
+
     # ---------------- macros ----------------
     def list_macro_items(self):
         builtin = [
@@ -869,6 +1021,44 @@ class Api:
             builtin.append({
                 "type": "builtin", "id": "toggle_default_shell",
                 "name": "Make / Unmake Meridian The Default Shell",
+            })
+        cdb = BASE_DIR / "CyberDeckBrowser.exe"
+        if cdb.exists():
+            builtin.append({
+                "type": "builtin", "id": "cdb_default_browser",
+                "name": "Make CyberDeckBrowser the default browser",
+            })
+        mx = BASE_DIR / "Meridian Explorer.exe"
+        if mx.exists():
+            installed = explorer_shell.context_menu_installed()
+            builtin.append({
+                "type": "builtin", "id": "mx_context_menu",
+                "name": ("Remove 'Open in Meridian Explorer' from context menus"
+                         if installed else
+                         "Add 'Open in Meridian Explorer' to context menus"),
+            })
+            builtin.append({
+                "type": "builtin", "id": "mx_default_handler",
+                "name": "Make Meridian Explorer the default folder handler",
+            })
+            builtin.append({
+                "type": "builtin", "id": "mx_restore_handler",
+                "name": "Restore Windows Explorer as default folder handler",
+            })
+        fb_trampoline = BASE_DIR / "Meridian FileBrowse Shell Handler.exe"
+        if fb_trampoline.exists():
+            fb_installed = explorer_shell.filebrowse_default_handler_installed()
+            builtin.append({
+                "type": "builtin", "id": "fb_default_shell_browser",
+                "name": ("Unmake Meridian FileBrowse the default shell browser"
+                         if fb_installed else
+                         "Make Meridian FileBrowse the default shell browser"),
+            })
+        nb_trampoline = BASE_DIR / "Meridian NetBrowse Shell Handler.exe"
+        if nb_trampoline.exists():
+            builtin.append({
+                "type": "builtin", "id": "nb_default_shell_browser",
+                "name": "Make Meridian NetBrowse the default system web browser",
             })
         scripts = _with_icons(SETTINGS["sections"]["macros"]["items"])
         for s in scripts:
@@ -902,6 +1092,56 @@ class Api:
             return system_actions.close_all_except(whitelist)
         if macro_id == "toggle_default_shell":
             return self.run_ps1_file(str(BASE_DIR / "MakeUnmakeShell.ps1"))
+        if macro_id == "cdb_default_browser":
+            cdb = BASE_DIR / "CyberDeckBrowser.exe"
+            if not cdb.exists():
+                return {"ok": False, "error": "CyberDeckBrowser.exe not found."}
+            try:
+                subprocess.Popen([str(cdb), "--register-default-browser"], cwd=str(BASE_DIR))
+                return {"ok": True, "message": ("Registered CyberDeckBrowser as a browser. "
+                        "Windows may ask you to confirm it as the default in "
+                        "Settings > Default apps.")}
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        if macro_id in ("mx_context_menu", "mx_default_handler", "mx_restore_handler"):
+            mx = str(BASE_DIR / "Meridian Explorer.exe")
+            if macro_id == "mx_context_menu":
+                if explorer_shell.context_menu_installed():
+                    ok, err = explorer_shell.remove_context_menu()
+                    msg = "Removed 'Open in Meridian Explorer' from context menus."
+                else:
+                    ok, err = explorer_shell.add_context_menu(mx)
+                    msg = "Added 'Open in Meridian Explorer' to folder/drive context menus."
+            elif macro_id == "mx_default_handler":
+                ok, err = explorer_shell.set_default_handler(mx)
+                msg = ("Meridian Explorer is now the default folder handler. "
+                       "(Browsing inside an already-open Windows Explorer window is unaffected.)")
+            else:
+                ok, err = explorer_shell.restore_default_handler()
+                msg = "Windows Explorer is the default folder handler again."
+            return {"ok": ok, "error": err, "message": msg if ok else None}
+        if macro_id == "fb_default_shell_browser":
+            fb_trampoline = BASE_DIR / "Meridian FileBrowse Shell Handler.exe"
+            if not fb_trampoline.exists():
+                return {"ok": False, "error": "Meridian FileBrowse Shell Handler.exe not found."}
+            if explorer_shell.filebrowse_default_handler_installed():
+                ok, err = explorer_shell.restore_filebrowse_default_handler()
+                msg = "Windows Explorer is the default folder handler again."
+            else:
+                ok, err = explorer_shell.set_filebrowse_default_handler(str(fb_trampoline))
+                msg = ("Folders now open through Meridian Launcher's Explorer section "
+                       "(Meridian FileBrowse). If Meridian Launcher isn't running, opening "
+                       "a folder launches it first.")
+            return {"ok": ok, "error": err, "message": msg if ok else None}
+        if macro_id == "nb_default_shell_browser":
+            nb_trampoline = BASE_DIR / "Meridian NetBrowse Shell Handler.exe"
+            if not nb_trampoline.exists():
+                return {"ok": False, "error": "Meridian NetBrowse Shell Handler.exe not found."}
+            ok, err = system_actions.register_netbrowse_default_browser(str(nb_trampoline))
+            msg = ("Registered — links now route through Meridian Launcher's Browser section "
+                   "(Meridian NetBrowse). Windows may ask you to confirm it as the default in "
+                   "Settings > Default apps.")
+            return {"ok": ok, "error": err, "message": msg if ok else None}
         return {"ok": False, "error": "Unknown macro"}
 
     def run_ps1_file(self, path):
@@ -1002,6 +1242,30 @@ class Api:
             _maybe_launch_osm()
         return {"ok": ok, "error": err}
 
+    def system_command_prompt(self):
+        ok, err = system_actions.open_command_prompt()
+        if ok and SETTINGS.get("launch_system_with_osm", True):
+            _maybe_launch_osm()
+        return {"ok": ok, "error": err}
+
+    def system_powershell(self):
+        ok, err = system_actions.open_powershell()
+        if ok and SETTINGS.get("launch_system_with_osm", True):
+            _maybe_launch_osm()
+        return {"ok": ok, "error": err}
+
+    def system_microsoft_store(self):
+        ok, err = system_actions.open_microsoft_store()
+        if ok and SETTINGS.get("launch_system_with_osm", True):
+            _maybe_launch_osm()
+        return {"ok": ok, "error": err}
+
+    def system_windows_update(self):
+        ok, err = system_actions.open_windows_update()
+        if ok and SETTINGS.get("launch_system_with_osm", True):
+            _maybe_launch_osm()
+        return {"ok": ok, "error": err}
+
     def get_battery_status(self):
         return system_actions.get_battery_status()
 
@@ -1045,7 +1309,123 @@ class Api:
         ok, err = system_actions.launch_path(str(exe))
         return {"ok": ok, "error": err}
 
+    def open_desktop_entry(self, path, is_dir):
+        """Called when the user activates a Desktop-section entry. Files
+        keep going through the normal launch path; folders are routed:
+        Explorer section visible -> tell the frontend to switch to it and
+        load Meridian Explorer boxed into that section's box; Explorer
+        section hidden -> open standalone Meridian Explorer (windowed, not
+        fullscreen); Meridian Explorer missing -> fall back to Windows
+        Explorer."""
+        if not is_dir:
+            ok, err = system_actions.launch_path(path)
+            return {"ok": ok, "error": err, "route": "launched"}
+
+        if SETTINGS.get("explorer_section_enabled", False):
+            return {"ok": True, "error": None, "route": "explorer_section", "path": path}
+
+        exe = BASE_DIR / "Meridian Explorer.exe"
+        if exe.exists():
+            ok, err = system_actions.launch_path(str(exe), args=[path])
+            return {"ok": ok, "error": err, "route": "meridian_explorer"}
+        ok, err = system_actions.open_folder(path)
+        return {"ok": ok, "error": err, "route": "windows_explorer"}
+
+    def load_explorer_box(self, path, x, y, w, h):
+        """Launch (or relaunch, for a new path) Meridian FileBrowse — the
+        Explorer-section-embedded fork of Meridian Explorer, kept in its
+        own separate source files (Meridian_FileBrowse/) — sized/positioned
+        via its --box=X,Y,W,H arg to sit inside the Explorer section's
+        list-frame box. Never OS fullscreen. Meridian Launcher's own
+        controller bindings are suspended for the duration; a background
+        watcher notices when the user exits Meridian FileBrowse (its
+        Start/Escape "Exit Program" action) and hands focus + controls
+        back to Meridian Launcher automatically."""
+        global _explorer_box_proc
+        exe = BASE_DIR / "Meridian FileBrowse.exe"
+        if not exe.exists():
+            return {"ok": False, "error": "Meridian FileBrowse.exe not found in the app folder."}
+        self.unload_explorer_box()
+        try:
+            args = [str(exe), path, f"--box={int(x)},{int(y)},{int(w)},{int(h)}"]
+            _explorer_box_proc = subprocess.Popen(args, cwd=str(BASE_DIR))
+            suspend_main_controls(True)
+            threading.Thread(target=_watch_explorer_box_exit, args=(_explorer_box_proc,), daemon=True).start()
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def unload_explorer_box(self):
+        """Terminate the boxed Meridian Explorer process, if any, so it
+        doesn't keep running in the background once the user leaves the
+        Explorer section, and hand Meridian Launcher's own controls back."""
+        global _explorer_box_proc
+        if _explorer_box_proc is not None:
+            try:
+                if _explorer_box_proc.poll() is None:
+                    _explorer_box_proc.terminate()
+            except Exception:
+                pass
+            _explorer_box_proc = None
+        suspend_main_controls(False)
+        return {"ok": True, "error": None}
+
     # ---------------- Web section ----------------
+    def open_web_link(self, url):
+        """Called when the user activates an internally-launched URL (a
+        Web-section shortcut, etc). Routes it: Browser section visible ->
+        tell the frontend to switch to it and load Meridian NetBrowse boxed
+        into that section's box; Browser section hidden -> open standalone
+        CyberDeckBrowser; CyberDeckBrowser missing -> system default
+        browser; that failing too -> caller shows a toast and moves on."""
+        if SETTINGS.get("browser_section_enabled", False):
+            return {"ok": True, "error": None, "route": "browser_section", "url": url}
+
+        cdb = BASE_DIR / "CyberDeckBrowser.exe"
+        if cdb.exists():
+            args = [WINDOW_MODE_REQUEST_FLAG] + ([url] if url else [])
+            ok, err = system_actions.launch_path(str(cdb), args=args)
+            return {"ok": ok, "error": err, "route": "cyberdeck"}
+
+        ok, err = system_actions.open_default_browser(url or "https://www.google.com")
+        return {"ok": ok, "error": err, "route": "system_browser"}
+
+    def load_browser_box(self, url, x, y, w, h):
+        """Launch (or relaunch, for a new URL) Meridian NetBrowse — the
+        Browser-section-embedded fork of CyberDeck Browser, kept in its
+        own separate source files (Meridian_NetBrowse/) — sized/positioned
+        via its --box=X,Y,W,H arg to sit inside the Browser section's
+        list-frame box. Never OS fullscreen. Same controller suspend/
+        watcher pattern as Meridian FileBrowse."""
+        global _browser_box_proc
+        exe = BASE_DIR / "Meridian NetBrowse.exe"
+        if not exe.exists():
+            return {"ok": False, "error": "Meridian NetBrowse.exe not found in the app folder."}
+        self.unload_browser_box()
+        try:
+            args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}"] + ([url] if url else [])
+            _browser_box_proc = subprocess.Popen(args, cwd=str(BASE_DIR))
+            suspend_main_controls(True)
+            threading.Thread(target=_watch_browser_box_exit, args=(_browser_box_proc,), daemon=True).start()
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def unload_browser_box(self):
+        """Terminate the boxed Meridian NetBrowse process, if any, so it
+        doesn't keep running in the background once the user leaves the
+        Browser section, and hand Meridian Launcher's own controls back."""
+        global _browser_box_proc
+        if _browser_box_proc is not None:
+            try:
+                if _browser_box_proc.poll() is None:
+                    _browser_box_proc.terminate()
+            except Exception:
+                pass
+            _browser_box_proc = None
+        suspend_main_controls(False)
+        return {"ok": True, "error": None}
+
     def launch_cyberdeck(self, url=None):
         """Launch CyberDeckBrowser, optionally straight to a URL (used by
         the Web section's user-added shortcuts). Assumes CyberDeckBrowser
@@ -1078,15 +1458,40 @@ class Api:
         os._exit(0)
 
     # ---------------- appearance ----------------
+    # Background & overlay are now per-theme (keyed by the active layout),
+    # so each theme can carry its own look. An unset theme falls back to
+    # that theme's rendered placeholder (theme_assets). Backgrounds accept
+    # animated .gif too — the frontend shows them on a CSS layer that
+    # animates, unlike the keyed overlay canvas.
+
+    def _layout_key(self):
+        return SETTINGS.get("layout", "dawning_horizon")
+
+    def theme_asset_urls(self):
+        """Placeholder background+overlay URLs for the current theme, so the
+        frontend has something to show when the user hasn't picked one."""
+        assets = str(store.ASSETS_DIR)
+        layout = self._layout_key()
+        bg = theme_assets.placeholder_background(assets, "launcher", layout)
+        ov = theme_assets.placeholder_overlay(assets, "launcher", layout)
+        return {
+            "background": media_url(bg) if bg else None,
+            "overlay": media_url(ov) if ov else None,
+        }
+
     def set_background(self):
-        paths = _open_file_dialog(IMAGE_FILE_TYPES)
+        # IMAGE_FILE_TYPES is a tuple of pywebview filter STRINGS; build the
+        # background filter the same way (including .gif for animated
+        # backgrounds). Concatenating a list of tuples here raises TypeError
+        # and the dialog never opens.
+        paths = _open_file_dialog(BACKGROUND_FILE_TYPES)
         if paths:
-            SETTINGS["background_image"] = paths[0]
+            SETTINGS.setdefault("background_by_theme", {})[self._layout_key()] = paths[0]
             store.save_settings(SETTINGS)
         return SETTINGS
 
     def clear_background(self):
-        SETTINGS["background_image"] = None
+        SETTINGS.setdefault("background_by_theme", {}).pop(self._layout_key(), None)
         store.save_settings(SETTINGS)
         return SETTINGS
 
@@ -1095,23 +1500,25 @@ class Api:
         if paths:
             try:
                 from PIL import Image
-                im = Image.open(paths[0]).convert("RGBA")
-                im.save(store.OVERLAY_FILE, "PNG")
-                SETTINGS["overlay_image"] = str(store.OVERLAY_FILE)
-                SETTINGS["overlay_enabled"] = True
+                layout = self._layout_key()
+                dest = store.DATA_DIR / f"overlay_{layout}.png"
+                Image.open(paths[0]).convert("RGBA").save(dest, "PNG")
+                SETTINGS.setdefault("overlay_by_theme", {})[layout] = str(dest)
+                SETTINGS.setdefault("overlay_enabled_by_theme", {})[layout] = True
             except Exception:
                 pass
             store.save_settings(SETTINGS)
         return SETTINGS
 
     def set_overlay_enabled(self, enabled):
-        SETTINGS["overlay_enabled"] = bool(enabled)
+        SETTINGS.setdefault("overlay_enabled_by_theme", {})[self._layout_key()] = bool(enabled)
         store.save_settings(SETTINGS)
         return SETTINGS
 
     def clear_overlay(self):
-        SETTINGS["overlay_image"] = None
-        SETTINGS["overlay_enabled"] = False
+        layout = self._layout_key()
+        SETTINGS.setdefault("overlay_by_theme", {}).pop(layout, None)
+        SETTINGS.setdefault("overlay_enabled_by_theme", {})[layout] = False
         store.save_settings(SETTINGS)
         return SETTINGS
 
@@ -1187,9 +1594,168 @@ class Api:
         """UI layout mode: 'night_horizon' (default) or 'cyber_radial'. Purely
         a frontend concern — the frontend toggles a body class off this and
         does all the actual layout work; the backend just persists it."""
-        if mode not in ("dawning_horizon", "night_horizon", "cyber_radial"):
+        # Built-in layouts, or any discovered user theme ("user-<slug>").
+        valid = mode in ("dawning_horizon", "night_horizon", "cyber_radial")
+        if not valid and mode.startswith("user-"):
+            valid = user_themes.get_theme(BASE_DIR, mode) is not None
+        if not valid:
             return SETTINGS
         SETTINGS["layout"] = mode
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def list_user_themes(self):
+        """User themes discovered in the themes/ folder next to the app.
+        The frontend adds these to the theme picker and injects each theme's
+        CSS on top of its chosen base layout. Safe to call anytime; returns
+        [] when the folder is empty or missing."""
+        try:
+            return user_themes.discover_themes(BASE_DIR)
+        except Exception:
+            return []
+
+    def get_user_theme_css(self, layout_value):
+        """The CSS + base layout for one user theme, by its 'user-<slug>'
+        settings value. Returns None if it's not a user theme or is gone."""
+        try:
+            t = user_themes.get_theme(BASE_DIR, layout_value)
+            if not t:
+                return None
+            return {"css": t["css"], "base": t["base"], "name": t["name"]}
+        except Exception:
+            return None
+
+    # ---------------- open-programs bar (taskbar replacement) ----------------
+
+    def list_open_tasks(self):
+        return tasks_win.list_open_tasks()
+
+    def focus_task(self, hwnd):
+        return {"ok": tasks_win.focus_task(hwnd)}
+
+    def close_task(self, hwnd):
+        return {"ok": tasks_win.close_task(hwnd)}
+
+    def set_prefer_xinput(self, enabled):
+        """Switch the input backend live. XInput is the proven path;
+        GameInput adds Guide-button reporting. Restarts the listener so the
+        change takes effect without relaunching the app."""
+        SETTINGS["prefer_xinput"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        restart_controller()
+        return SETTINGS
+
+    def controller_debug(self):
+        """Deep diagnostics for the Settings controller debugger: which
+        backend is live, what GameInput is doing poll-by-poll, and the raw
+        state the pad is reporting right now."""
+        import gameinput_api
+        out = {
+            "prefer_xinput": bool(SETTINGS.get("prefer_xinput", False)),
+            "env_override": os.environ.get("MERIDIAN_INPUT_BACKEND", "") or None,
+            "backend": None,
+            "connected": False,
+            "backend_errors": dict(getattr(gameinput_api, "LAST_BACKEND_ERRORS", {}) or {}),
+            "diag": dict(getattr(gameinput_api, "DIAG", {}) or {}),
+            "last_action": _LAST_CONTROLLER_ACTION[0],
+            "last_action_age": (
+                round(time.time() - _LAST_CONTROLLER_ACTION[1], 1)
+                if _LAST_CONTROLLER_ACTION[1] else None
+            ),
+            "foreground": None,
+        }
+        listener = _CONTROLLER_LISTENER
+        if listener is not None:
+            st = listener.status()
+            out["backend"] = st.get("backend")
+            out["connected"] = st.get("connected")
+            out["gamepad_slot"] = getattr(listener.gamepad, "gamepad_state_slot", None)
+        try:
+            out["foreground"] = self.is_foreground()
+        except Exception:
+            pass
+        return out
+
+    def reset_controller_debug(self):
+        import gameinput_api
+        gameinput_api.reset_diag()
+        return True
+
+    def controller_status(self):
+        """Diagnostic for the settings screen: which controller backend is
+        active (GameInput / XInput / none) and whether a pad is currently
+        connected. Helps confirm whether GameInput is really the path in
+        use when debugging fullscreen-experience input problems."""
+        env = os.environ.get("MERIDIAN_INPUT_BACKEND", "").strip() or None
+        listener = _CONTROLLER_LISTENER
+        if listener is None:
+            return {"backend": None, "connected": False, "override": env}
+        st = listener.status()
+        st["override"] = env
+        # which IGameInputReading::GetGamepadState vtable slot is in use —
+        # confirms GameInput is actually reading the pad, not just loaded.
+        try:
+            st["gamepad_slot"] = getattr(listener.gamepad, "gamepad_state_slot", None)
+        except Exception:
+            st["gamepad_slot"] = None
+        # why any preferred backend (e.g. GameInput) was rejected, if it was
+        try:
+            import gameinput_api
+            st["backend_errors"] = dict(getattr(gameinput_api, "LAST_BACKEND_ERRORS", {}) or {})
+        except Exception:
+            st["backend_errors"] = {}
+        return st
+
+    def set_icon_size(self, size):
+        if size not in ("small", "medium", "large", "xl"):
+            return SETTINGS
+        SETTINGS["icon_size"] = size
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def meridian_explorer_available(self):
+        """Whether Meridian Explorer.exe sits next to this app — the folder-
+        routing toggle is only meaningful when it does."""
+        return (BASE_DIR / "Meridian Explorer.exe").exists()
+
+    def set_route_folders_to_meridian_explorer(self, enabled):
+        # Only allow enabling when the Explorer exe is actually present.
+        if enabled and not (BASE_DIR / "Meridian Explorer.exe").exists():
+            SETTINGS["route_folders_to_meridian_explorer"] = False
+            store.save_settings(SETTINGS)
+            return SETTINGS
+        SETTINGS["route_folders_to_meridian_explorer"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_foreground_trigger(self, mode):
+        if mode not in ("start_select", "xbox", "off"):
+            return SETTINGS
+        SETTINGS["foreground_trigger"] = mode
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_nav_speed_fast(self, fast):
+        """Frontend toggles this on while the Settings list is focused so its
+        cursor moves ~1.3x faster than normal navigation."""
+        _NAV_COOLDOWN_SCALE[0] = (1.0 / 1.3) if fast else 1.0
+        return True
+
+    def is_foreground(self):
+        """Whether this app's window is the OS foreground window right now.
+        The frontend uses this to gate controller navigation: input is still
+        received in the background (so the foreground combo works), but it
+        shouldn't move the cursor or open menus until the app is focused."""
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            our = ctypes.windll.user32.FindWindowW(None, APP_TITLE)
+            return bool(hwnd and our and hwnd == our)
+        except Exception:
+            return True  # non-Windows or failure: don't gate
+
+    def set_close_tasks_without_prompt(self, enabled):
+        SETTINGS["close_tasks_without_prompt"] = bool(enabled)
         store.save_settings(SETTINGS)
         return SETTINGS
 
@@ -1202,9 +1768,14 @@ class Api:
             if len(parts) != 2:
                 return SETTINGS
             palette, hue = parts
-            if palette not in ("light", "dark", "neon", "primary", "pastel", "bubblegum"):
+            if palette not in ("light", "dark", "neon", "primary", "pastel", "bubblegum", "hex"):
                 return SETTINGS
-            if hue not in ("red", "orange", "yellow", "green", "blue", "indigo", "violet"):
+            if palette == "hex":
+                # Custom color from the grid selector: "hex:#rrggbb".
+                h = hue.lstrip("#")
+                if len(h) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in h):
+                    return SETTINGS
+            elif hue not in ("red", "orange", "yellow", "green", "blue", "indigo", "violet"):
                 return SETTINGS
         SETTINGS["dawning_theme_color"] = value
         store.save_settings(SETTINGS)
@@ -1254,7 +1825,7 @@ class Api:
         """Opens %LOCALAPPDATA%\\Meridian Launcher\\ in Explorer, then makes
         sure onscreenmenu is running (launched if it wasn't already) so a
         controller can be used to navigate the folder."""
-        ok, err = system_actions.open_folder(str(store.DATA_DIR))
+        ok, err = _open_folder_routed(str(store.DATA_DIR))
         if ok:
             _maybe_launch_onscreenmenu()
         return {"ok": ok, "error": err}
@@ -1302,7 +1873,85 @@ def _quit_via_combo():
     os._exit(0)
 
 
+
+# [action_name, timestamp] of the most recent controller action to reach the
+# app — the settings debugger uses it to prove input is (or isn't) arriving.
+_LAST_CONTROLLER_ACTION = [None, 0.0]
+
+# True while a boxed sub-app (Meridian FileBrowse / Meridian NetBrowse) has
+# its own window focused and its own controller polling active — Meridian
+# Launcher's own listener still runs (so the quit combo always works as a
+# safety net) but stops forwarding normal navigation actions/raw buttons to
+# the frontend, so the two don't fight over the same physical controller.
+_controller_suspended_for_plugin = False
+
+
+def suspend_main_controls(suspended=True):
+    global _controller_suspended_for_plugin
+    _controller_suspended_for_plugin = bool(suspended)
+
+
+def _watch_explorer_box_exit(proc):
+    """Runs in a background thread for as long as a boxed Meridian
+    FileBrowse process lives. When the user picks its "Exit Program"
+    action (Start/Escape), the process simply exits; this notices and
+    tells the frontend to move the section selector back to the Sections
+    bar, then restores Meridian Launcher's own controls. If the user
+    instead navigates Meridian Launcher away from the Explorer section
+    first, unload_explorer_box() will already have replaced
+    _explorer_box_proc / cleared the suspend flag, so this becomes a
+    no-op once it notices proc is no longer the active one."""
+    proc.wait()
+    if _explorer_box_proc is not proc:
+        return  # already unloaded via normal navigation; nothing to do
+    suspend_main_controls(False)
+    try:
+        webview.windows[0].evaluate_js(
+            "window.onEmbeddedPluginExited && window.onEmbeddedPluginExited('explorer')"
+        )
+    except Exception:
+        pass
+
+
+def _watch_browser_box_exit(proc):
+    """Same as _watch_explorer_box_exit, for the boxed Meridian NetBrowse
+    process in the Browser section."""
+    proc.wait()
+    if _browser_box_proc is not proc:
+        return
+    suspend_main_controls(False)
+    try:
+        webview.windows[0].evaluate_js(
+            "window.onEmbeddedPluginExited && window.onEmbeddedPluginExited('browser')"
+        )
+    except Exception:
+        pass
+
+
+def restart_controller():
+    """Stop the running listener and start a fresh one, so a backend change
+    (prefer_xinput) applies without relaunching the app."""
+    global _CONTROLLER_LISTENER
+    try:
+        if _CONTROLLER_LISTENER is not None:
+            _CONTROLLER_LISTENER.stop()
+    except Exception:
+        pass
+    _CONTROLLER_LISTENER = None
+    try:
+        import gameinput_api
+        gameinput_api.reset_diag()
+    except Exception:
+        pass
+    return start_controller()
+
+
 def _controller_action(action_name):
+    if _controller_suspended_for_plugin:
+        return
+    # record it for the settings debugger before dispatching
+    _LAST_CONTROLLER_ACTION[0] = action_name
+    _LAST_CONTROLLER_ACTION[1] = time.time()
     try:
         webview.windows[0].evaluate_js(f"window.handleControllerInput && window.handleControllerInput('{action_name}')")
     except Exception:
@@ -1310,6 +1959,8 @@ def _controller_action(action_name):
 
 
 def _controller_any():
+    if _controller_suspended_for_plugin:
+        return
     try:
         webview.windows[0].evaluate_js("window.handleControllerAny && window.handleControllerAny()")
     except Exception:
@@ -1320,6 +1971,8 @@ def _controller_raw_button(name):
     """Forwards raw DPAD/A/B rising edges to the frontend, independent of
     whatever the user has confirm/back remapped to — used only to watch for
     the kiosk-mode secret unlock sequence."""
+    if _controller_suspended_for_plugin:
+        return
     try:
         webview.windows[0].evaluate_js(f"window.handleRawControllerButton && window.handleRawControllerButton('{name}')")
     except Exception:
@@ -1338,7 +1991,38 @@ def _on_y_hold_complete():
         pass
 
 
+# Settings navigation runs 1.3x faster than the global cooldown; the
+# frontend flips this to 0.77 while the Settings section is focused and back
+# to 1.0 elsewhere, via set_nav_speed_fast().
+_NAV_COOLDOWN_SCALE = [1.0]
+
+
+def _open_folder_routed(path):
+    """Open a folder, honoring the "Open folders in Meridian Explorer"
+    setting: routed to Meridian Explorer.exe (sitting next to this exe in
+    the shared DskoTech folder) with the path as its argument, or the
+    regular Windows Explorer open when the setting is off or the exe is
+    missing. Creates the folder first, matching open_folder's behavior."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception as e:
+        return False, str(e)
+    if SETTINGS.get("route_folders_to_meridian_explorer"):
+        exe = BASE_DIR / "Meridian Explorer.exe"
+        if exe.exists():
+            try:
+                subprocess.Popen([str(exe), str(path)], cwd=str(BASE_DIR))
+                return True, None
+            except Exception:
+                pass  # fall through to the normal Explorer open
+    return system_actions.open_folder(path)
+
+
+_CONTROLLER_LISTENER = None  # kept for the settings screen's controller_status()
+
+
 def start_controller():
+    global _CONTROLLER_LISTENER
     controls = store.load_controller_controls()
     listener = ControllerListener(
         controls,
@@ -1346,9 +2030,13 @@ def start_controller():
         on_any=_controller_any,
         on_quit_combo=_quit_via_combo,
         on_foreground_combo=_bring_to_foreground,
+        foreground_trigger_getter=lambda: SETTINGS.get("foreground_trigger", "start_select"),
+        prefer_xinput=bool(SETTINGS.get("prefer_xinput", False)),
+        cooldown_scale_getter=lambda: _NAV_COOLDOWN_SCALE[0],
         on_raw_button=_controller_raw_button,
         on_y_hold_complete=_on_y_hold_complete,
     )
+    _CONTROLLER_LISTENER = listener
     listener.start()
     return listener
 

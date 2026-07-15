@@ -66,6 +66,12 @@ XI_BUTTONS = {
     "LEFT_THUMB": 0x0040, "RIGHT_THUMB": 0x0080,
     "LEFT_SHOULDER": 0x0100, "RIGHT_SHOULDER": 0x0200,
     "A": 0x1000, "B": 0x2000, "X": 0x4000, "Y": 0x8000,
+    # Guide / Xbox button. Not reported by the public XInputGetState, only
+    # by the undocumented XInputGetStateEx (ordinal 100). Whether it's
+    # populated depends on which entry point the active backend calls; when
+    # it isn't available this bit simply never sets, and the Start+Select
+    # fallback covers that case.
+    "GUIDE": 0x0400,
 }
 
 
@@ -134,6 +140,10 @@ _GI_TO_XI = (
     (0x00000800, 0x0200),  # RightShoulder
     (0x00001000, 0x0040),  # LeftThumbstick  -> LEFT_THUMB
     (0x00002000, 0x0080),  # RightThumbstick -> RIGHT_THUMB
+    # GameInputGamepadGuide -> our synthetic GUIDE bit. GameInput reports
+    # the Guide/Xbox button natively (unlike the public XInput API), so the
+    # "Xbox button to foreground" setting works on the GameInput path.
+    (0x00004000, 0x0400),  # Guide           -> GUIDE
 )
 
 
@@ -147,6 +157,109 @@ class _GameInputGamepadState(ctypes.Structure):
         ("rightThumbstickX", ctypes.c_float),
         ("rightThumbstickY", ctypes.c_float),
     ]
+
+
+# IGameInputReading::GetGamepadState vtable slots to try, best first.
+#
+# The docs put GetGamepadState at slot 22 (0-2 IUnknown, 3 GetInputKind,
+# 4 GetSequenceNumber, 5 GetTimestamp, 6 GetDevice, 7 GetRawReport, 8-13
+# controller axis/button/switch, 14-15 keys, 16 mouse, 17-18 touch,
+# 19 motion, 20 arcade stick, 21 flight stick, 22 gamepad).
+#
+# In the field, though, the in-box Windows 11 gameinput.dll ACCESS VIOLATES
+# on slot 22 and answers correctly on 23 — its vtable carries an extra entry
+# ahead of the state getters. So 23 is tried first: it's the layout that
+# actually ships, and it means the crashing slot is never touched on the
+# machines that matter. 22 stays as a fallback for DLLs that match the docs.
+# ctypes surfaces an access violation as OSError, so a wrong guess is caught
+# by the probe's try/except rather than taking the app down.
+GAMEPAD_STATE_SLOTS = (23, 22, 24)
+
+
+# Live diagnostics for the Settings > Controller debugger. Cheap counters
+# updated on every poll so a user can see exactly where GameInput stops.
+DIAG = {
+    "polls": 0,          # poll() calls
+    "readings": 0,       # GetCurrentReading gave us a reading
+    "no_reading": 0,     # ...and how often it didn't
+    "states": 0,         # GetGamepadState filled a plausible state
+    "state_false": 0,    # ...and how often it returned False
+    "last_hr": None,     # last GetCurrentReading HRESULT
+    "slot": None,        # the vtable slot that won
+    "slot_probe": {},    # {slot: what happened}
+    "stage": "not started",
+    "last_state": None,   # last raw state, for the live readout
+    "buttons_seen": 0,    # OR of every button mask ever decoded
+    "stick_moved": False, # any stick pushed past 0.3
+    "trigger_moved": False,
+    "nonzero_states": 0,  # states where any button was down
+}
+
+
+def reset_diag():
+    DIAG.update({
+        "polls": 0, "readings": 0, "no_reading": 0, "states": 0,
+        "state_false": 0, "last_hr": None, "slot": None,
+        "slot_probe": {}, "stage": "not started", "last_state": None,
+        "buttons_seen": 0, "stick_moved": False, "trigger_moved": False,
+        "nonzero_states": 0,
+    })
+
+
+def _record_state(state):
+    DIAG["last_state"] = {
+        "buttons": "0x%08X" % state.buttons,
+        "lt": round(state.leftTrigger, 3), "rt": round(state.rightTrigger, 3),
+        "lx": round(state.leftThumbstickX, 3), "ly": round(state.leftThumbstickY, 3),
+        "rx": round(state.rightThumbstickX, 3), "ry": round(state.rightThumbstickY, 3),
+    }
+    # Accumulate every button bit and any stick/trigger movement ever seen.
+    # This is the decisive test for "is this vtable slot actually reading the
+    # pad?" — a wrong-but-plausible slot returns zeros forever, which looks
+    # identical to an idle controller in a single sample. Press every button
+    # and waggle the sticks: if these stay empty, the slot is wrong.
+    DIAG["buttons_seen"] |= state.buttons
+    if (abs(state.leftThumbstickX) > 0.3 or abs(state.leftThumbstickY) > 0.3 or
+            abs(state.rightThumbstickX) > 0.3 or abs(state.rightThumbstickY) > 0.3):
+        DIAG["stick_moved"] = True
+    if state.leftTrigger > 0.2 or state.rightTrigger > 0.2:
+        DIAG["trigger_moved"] = True
+    if state.buttons:
+        DIAG["nonzero_states"] += 1
+
+
+def _why_implausible(state):
+    for label, v in (("lx", state.leftThumbstickX), ("ly", state.leftThumbstickY),
+                     ("rx", state.rightThumbstickX), ("ry", state.rightThumbstickY)):
+        if v != v:
+            return "%s is NaN" % label
+        if not (-1.05 <= v <= 1.05):
+            return "%s out of range (%.3g)" % (label, v)
+    for label, v in (("lt", state.leftTrigger), ("rt", state.rightTrigger)):
+        if v != v:
+            return "%s is NaN" % label
+        if not (-0.05 <= v <= 1.05):
+            return "%s out of range (%.3g)" % (label, v)
+    return "buttons=0x%08X" % state.buttons
+
+
+def _plausible_gamepad_state(state):
+    """Sanity-check a filled gamepad state, so calling the wrong vtable slot
+    is detected instead of feeding garbage into the input system.
+
+    Only the float ranges are checked. The button mask deliberately is NOT
+    validated against a known-bit list: a controller reporting a bit we
+    haven't mapped is perfectly legal, and rejecting the whole state for that
+    would turn an unknown button into total input loss.
+    """
+    for v in (state.leftThumbstickX, state.leftThumbstickY,
+              state.rightThumbstickX, state.rightThumbstickY):
+        if v != v or not (-1.05 <= v <= 1.05):  # v != v catches NaN
+            return False
+    for v in (state.leftTrigger, state.rightTrigger):
+        if v != v or not (-0.05 <= v <= 1.05):
+            return False
+    return True
 
 
 def _com_method(obj_ptr, slot, restype, *argtypes):
@@ -210,23 +323,25 @@ class GameInputGamepad:
             ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p),
         )
         self._gi = ctypes.c_void_p()
-        self._reading_gamepad_slot = None
+        self._gi_version = None
 
-        for iid_str, gamepad_slot in (
-            (_IID_IGameInput_V1, 17),  # v1 IGameInputReading::GetGamepadState
-            (_IID_IGameInput_V0, 22),  # v0 IGameInputReading::GetGamepadState
+        for iid_str, version in (
+            (_IID_IGameInput_V1, "v1"),  # in-box Win11 + newer redists
+            (_IID_IGameInput_V0, "v0"),  # older redist
         ):
             iid = _GUID.from_string(iid_str)
             out = ctypes.c_void_p()
-            if qi(ctypes.byref(iid), ctypes.byref(out)) == 0 and out.value:
+            # COM: the interface pointer is the first (this) argument.
+            if qi(raw, ctypes.byref(iid), ctypes.byref(out)) == 0 and out.value:
                 self._gi = out
-                self._reading_gamepad_slot = gamepad_slot
+                self._gi_version = version
                 break
 
         # Release the original pointer from GameInputCreate (QI added a ref).
-        _com_method(raw, 2, ctypes.c_ulong)()
+        # COM methods take the interface pointer as their first (this) arg.
+        _com_method(raw, 2, ctypes.c_ulong)(raw)
 
-        if self._reading_gamepad_slot is None:
+        if self._gi_version is None:
             raise RuntimeError("gameinput.dll exposes no supported IGameInput version")
 
         # IGameInput::GetCurrentReading — slot 4 in both v0 and v1.
@@ -246,27 +361,31 @@ class GameInputGamepad:
         # is wasteful; the vtable is shared, so cache after first reading).
         self._reading_get_state = None
         self._reading_release = None
+        # which GAMEPAD_STATE_SLOTS entry actually worked (set on first poll);
+        # surfaced in the settings status line for diagnosis.
+        self.gamepad_state_slot = None
 
     def poll(self):
         """Return a GamepadSnapshot, or None if no gamepad is connected."""
+        DIAG["polls"] += 1
         reading = ctypes.c_void_p()
+        # COM: self._gi is the (this) pointer for IGameInput methods.
         hr = self._get_current_reading(
-            _GAMEINPUT_KIND_GAMEPAD, None, ctypes.byref(reading)
+            self._gi, _GAMEINPUT_KIND_GAMEPAD, None, ctypes.byref(reading)
         )
+        DIAG["last_hr"] = hr
         if hr < 0 or not reading.value:
+            DIAG["no_reading"] += 1
+            DIAG["stage"] = "GetCurrentReading returned no reading (HRESULT=0x%08X)" % (hr & 0xFFFFFFFF)
             return None  # no gamepad reading available (disconnected)
+        DIAG["readings"] += 1
 
         try:
-            if self._reading_get_state is None:
-                self._reading_get_state = _com_method(
-                    reading, self._reading_gamepad_slot, ctypes.c_bool,
-                    ctypes.POINTER(_GameInputGamepadState),
-                )
+            if self._reading_release is None:
                 self._reading_release = _com_method(reading, 2, ctypes.c_ulong)
 
-            state = _GameInputGamepadState()
-            ok = self._reading_get_state(reading, ctypes.byref(state))
-            if not ok:
+            state = self._read_gamepad_state(reading)
+            if state is None:
                 return None
 
             mask = 0
@@ -287,6 +406,55 @@ class GameInputGamepad:
         finally:
             # Every reading returned by GetCurrentReading holds a reference.
             self._reading_release(reading)
+
+    def _read_gamepad_state(self, reading):
+        """Call IGameInputReading::GetGamepadState on the reading.
+
+        The slot is 22 in the documented IGameInputReading vtable (slot 17 is
+        GetTouchCount — calling that instead is why a "working" GameInput can
+        report no input at all). Because vtable layouts aren't something we
+        can verify at build time, the first successful slot is discovered
+        empirically from GAMEPAD_STATE_SLOTS and then cached, so a layout
+        difference degrades to "try the next candidate" rather than silently
+        producing dead input.
+        """
+        if self._reading_get_state is not None:
+            state = _GameInputGamepadState()
+            if self._reading_get_state(reading, ctypes.byref(state)):
+                DIAG["states"] += 1
+                DIAG["stage"] = "ok"
+                _record_state(state)
+                return state
+            DIAG["state_false"] += 1
+            DIAG["stage"] = "GetGamepadState (slot %s) returned False" % self.gamepad_state_slot
+            return None
+
+        for slot in GAMEPAD_STATE_SLOTS:
+            try:
+                fn = _com_method(
+                    reading, slot, ctypes.c_bool,
+                    ctypes.POINTER(_GameInputGamepadState),
+                )
+                state = _GameInputGamepadState()
+                ok = fn(reading, ctypes.byref(state))
+                plausible = ok and _plausible_gamepad_state(state)
+                DIAG["slot_probe"][str(slot)] = (
+                    "accepted" if plausible else
+                    ("returned False" if not ok else "implausible state (%s)" % _why_implausible(state))
+                )
+                if plausible:
+                    self._reading_get_state = fn
+                    self.gamepad_state_slot = slot
+                    DIAG["slot"] = slot
+                    DIAG["states"] += 1
+                    DIAG["stage"] = "ok"
+                    _record_state(state)
+                    return state
+            except Exception as e:
+                DIAG["slot_probe"][str(slot)] = "raised %s: %s" % (type(e).__name__, e)
+                continue
+        DIAG["stage"] = "no vtable slot produced a plausible gamepad state"
+        return None
 
     def close(self):
         if getattr(self, "_gi", None) and self._gi.value:
@@ -326,23 +494,35 @@ class XInputGamepad:
         if not IS_WINDOWS:
             raise OSError("XInput is Windows-only")
         lib = None
+        self._get_state = None
         for name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
             try:
                 lib = getattr(ctypes.windll, name)
-                lib.XInputGetState.argtypes = [
-                    ctypes.c_uint, ctypes.POINTER(_XINPUT_STATE)
-                ]
-                lib.XInputGetState.restype = ctypes.c_uint
+                # Ordinal 100 is XInputGetStateEx, which additionally reports
+                # the Guide/Xbox button (bit 0x0400). It's undocumented but
+                # present in xinput1_3/1_4; fall back to the public function
+                # when it can't be resolved.
+                try:
+                    ex = lib[100]
+                    ex.argtypes = [ctypes.c_uint, ctypes.POINTER(_XINPUT_STATE)]
+                    ex.restype = ctypes.c_uint
+                    self._get_state = ex
+                except Exception:
+                    lib.XInputGetState.argtypes = [
+                        ctypes.c_uint, ctypes.POINTER(_XINPUT_STATE)
+                    ]
+                    lib.XInputGetState.restype = ctypes.c_uint
+                    self._get_state = lib.XInputGetState
                 break
             except (OSError, AttributeError):
                 lib = None
-        if lib is None:
+        if lib is None or self._get_state is None:
             raise OSError("no XInput DLL available")
         self._lib = lib
         self._state = _XINPUT_STATE()
 
     def poll(self):
-        if self._lib.XInputGetState(0, ctypes.byref(self._state)) != 0:
+        if self._get_state(0, ctypes.byref(self._state)) != 0:
             return None  # ERROR_DEVICE_NOT_CONNECTED etc.
         pad = self._state.Gamepad
         return GamepadSnapshot(
@@ -383,6 +563,11 @@ def open_gamepad(prefer=None, log=None):
     elif prefer is None:
         prefer = ("gameinput", "xinput")
 
+    # Record why each backend was rejected, so the settings screen can show
+    # *why* GameInput fell back to XInput (e.g. missing DLL vs. create fail).
+    global LAST_BACKEND_ERRORS
+    LAST_BACKEND_ERRORS = {}
+
     for name in prefer:
         try:
             if name == "gameinput":
@@ -395,9 +580,16 @@ def open_gamepad(prefer=None, log=None):
                 log("gamepad backend: %s" % pad.backend)
             return pad
         except Exception as e:
+            LAST_BACKEND_ERRORS[name] = "%s: %s" % (type(e).__name__, e)
             if log:
                 log("gamepad backend %s unavailable: %s" % (name, e))
     return None
+
+
+# Populated by open_gamepad(): {backend_name: "why it failed"} for backends
+# that were tried and rejected. Surfaced in the controller-status settings
+# line so a GameInput->XInput fallback is diagnosable in the field.
+LAST_BACKEND_ERRORS = {}
 
 
 # ---------------------------------------------------------------------------

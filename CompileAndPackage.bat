@@ -26,7 +26,7 @@ echo  Meridian Ecosystem - Compile All ^& Package
 echo ============================================================
 echo.
 
-echo [1/5] Building Meridian Launcher...
+echo [1/7] Building Meridian Launcher...
 call "%ROOT%buildMeridianLauncher.bat" < NUL
 if not exist "%ROOT%dist\MeridianLauncher.exe" (
     echo   [ERROR] Build did not produce dist\MeridianLauncher.exe
@@ -36,7 +36,7 @@ if not exist "%ROOT%dist\MeridianLauncher.exe" (
 )
 echo.
 
-echo [2/5] Building CyberDeckBrowser...
+echo [2/7] Building CyberDeckBrowser...
 pushd "%ROOT%CyberDeckBrowser"
 call "buildCyberDeckBrowser.bat" < NUL
 popd
@@ -48,7 +48,7 @@ if not exist "%ROOT%CyberDeckBrowser\dist\CyberDeckBrowser\CyberDeckBrowser.exe"
 )
 echo.
 
-echo [3/5] Building Meridian Explorer...
+echo [3/7] Building Meridian Explorer...
 pushd "%ROOT%Meridian_Explorer"
 call "Build_Meridian_Explorer.bat" < NUL
 popd
@@ -60,7 +60,31 @@ if not exist "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" (
 )
 echo.
 
-echo [4/5] Building onscreenmenu...
+echo [4/7] Building Meridian FileBrowse...
+pushd "%ROOT%Meridian_FileBrowse"
+call "Build_Meridian_FileBrowse.bat" < NUL
+popd
+if not exist "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" (
+    echo   [ERROR] Build did not produce Meridian_FileBrowse\dist\Meridian FileBrowse.exe
+    set "FAILED=1"
+) else (
+    echo   OK - Meridian_FileBrowse\dist\Meridian FileBrowse.exe
+)
+echo.
+
+echo [5/7] Building Meridian NetBrowse...
+pushd "%ROOT%Meridian_NetBrowse"
+call "buildMeridianNetBrowse.bat" < NUL
+popd
+if not exist "%ROOT%Meridian_NetBrowse\dist\Meridian NetBrowse\Meridian NetBrowse.exe" (
+    echo   [ERROR] Build did not produce "Meridian_NetBrowse\dist\Meridian NetBrowse\Meridian NetBrowse.exe"
+    set "FAILED=1"
+) else (
+    echo   OK - "Meridian_NetBrowse\dist\Meridian NetBrowse\Meridian NetBrowse.exe"
+)
+echo.
+
+echo [6/7] Building onscreenmenu...
 pushd "%ROOT%onscreenmenu"
 call "buildonscreenmenu.bat" < NUL
 popd
@@ -72,7 +96,7 @@ if not exist "%ROOT%onscreenmenu\dist\onscreenmenu.exe" (
 )
 echo.
 
-echo [5/5] Building Meridian Game Library...
+echo [7/7] Building Meridian Game Library...
 pushd "%ROOT%Meridian Game Library"
 call "build_MeridianGameLibrary.bat" < NUL
 popd
@@ -94,11 +118,13 @@ if defined FAILED (
 )
 
 echo ============================================================
-echo  All 5 apps compiled. Each app's output is sitting in its
+echo  All 7 apps compiled. Each app's output is sitting in its
 echo  own "dist" folder inside its project folder:
 echo    dist\MeridianLauncher.exe
 echo    CyberDeckBrowser\dist\CyberDeckBrowser\
 echo    Meridian_Explorer\dist\
+echo    Meridian_FileBrowse\dist\
+echo    Meridian_NetBrowse\dist\Meridian NetBrowse\
 echo    onscreenmenu\dist\
 echo    "Meridian Game Library\dist\Meridian Game Library\"
 echo ============================================================
@@ -144,7 +170,7 @@ if %ERRORLEVEL% GEQ 8 (
 echo.
 echo ============================================================
 echo  SUCCESS
-echo    - All 5 apps compiled to their own dist\ folders.
+echo    - All 7 apps compiled to their own dist\ folders.
 echo    - osm.bat and osk.bat staged in DskoTech\.
 echo    - DskoTech\ copied to C:\Program Files\DskoTech\.
 echo ============================================================

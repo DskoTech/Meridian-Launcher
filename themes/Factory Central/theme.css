@@ -1,0 +1,413 @@
+/* ============================================================
+   FACTORY CENTRAL — a Meridian Launcher user theme
+   Base: cyber_radial (see theme.json)
+
+   The whole section selector reads as one big industrial gear,
+   centered on screen, built from three concentric layers:
+
+     1. GEAR TEETH   — a notched ring on the OUTSIDE, made with a
+                       repeating-conic-gradient masked to an annulus.
+     2. GEAR BODY    — the flat rim the teeth sit on.
+     3. INNER HUB    — a thick, hollow cylinder wall in the middle.
+
+   The section buttons orbit a full 360 degrees between the hub and
+   the teeth, so rotating through sections turns the gear.
+
+   Everything here is layered on top of CyberRadial, so all of that
+   theme's behavior (confirm-to-load sections, the options focus
+   cycle, the taskbar placement) is inherited unchanged.
+   ============================================================ */
+
+body.layout-user-factory-central {
+  /* --- geometry ------------------------------------------------
+     One shared center for every ring: the middle of the screen,
+     rather than CyberRadial's left-edge arc. */
+  --hub-cx: 50%;
+  --hub-cy: 50%;
+  --orbit-r: 190px;        /* where the section buttons ride */
+
+  /* ring radii, from the middle outwards */
+  --hub-r-inner: 78px;     /* hollow bore of the inner cylinder */
+  --hub-r-outer: 122px;    /* outer wall of the inner cylinder  */
+  --rim-r-inner: 236px;    /* gear body starts past the buttons */
+  --rim-r-outer: 268px;
+  --teeth-r-inner: 262px;  /* teeth overlap the rim slightly     */
+  --teeth-r-outer: 300px;
+  --tooth-count: 24;
+
+  /* Tell app.js to spread the sections around the whole circle
+     instead of CyberRadial's default -90..+90 arc. */
+  --orbit-full: 1;
+
+  /* --- palette: oiled steel + hazard amber -------------------- */
+  --bg-0: #0b0d10;
+  --bg-1: #141820;
+  --steel-dark: #2a3038;
+  --steel: #454f5c;
+  --steel-hi: #6b7889;
+  --grease: #0e1116;
+  --amber: #ffb020;
+}
+
+/* ---------- backdrop: dark shop floor with a warm pool of light ---------- */
+body.layout-user-factory-central #horizon-glow {
+  background:
+    radial-gradient(720px 720px at 50% 50%,
+      color-mix(in srgb, var(--amber) 10%, transparent), transparent 62%),
+    radial-gradient(1400px 900px at 50% 120%, #1b2029, transparent 70%),
+    linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 60%, var(--bg-0) 100%);
+  animation: none;
+}
+/* the faint plate seams of a factory floor */
+body.layout-user-factory-central #horizon-glow::after {
+  content: "";
+  position: absolute; inset: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 118px,
+      color-mix(in srgb, var(--steel) 22%, transparent) 118px 120px),
+    repeating-linear-gradient(90deg, transparent 0 118px,
+      color-mix(in srgb, var(--steel) 22%, transparent) 118px 120px);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ---------- layer 1 + 2: gear teeth and the rim they sit on ---------- */
+/* Drawn on #category-row::before, which CyberRadial hides — reclaimed here
+   as the gear's outer body so the ::after glow stays free. */
+body.layout-user-factory-central #category-row::before {
+  content: "";
+  display: block;
+  position: absolute;
+  left: var(--hub-cx); top: var(--hub-cy);
+  width: calc(var(--teeth-r-outer) * 2);
+  height: calc(var(--teeth-r-outer) * 2);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 0;
+  /* TEETH: alternating wedges, masked to a thin outer annulus so only the
+     tips show — that's what gives the notched gear silhouette. */
+  background:
+    repeating-conic-gradient(from calc(180deg / var(--tooth-count)),
+      var(--steel) 0deg calc(180deg / var(--tooth-count)),
+      transparent calc(180deg / var(--tooth-count)) calc(360deg / var(--tooth-count)));
+  -webkit-mask: radial-gradient(circle at 50% 50%,
+      transparent 0 var(--teeth-r-inner),
+      #000 var(--teeth-r-inner) var(--teeth-r-outer),
+      transparent var(--teeth-r-outer));
+  mask: radial-gradient(circle at 50% 50%,
+      transparent 0 var(--teeth-r-inner),
+      #000 var(--teeth-r-inner) var(--teeth-r-outer),
+      transparent var(--teeth-r-outer));
+  filter: drop-shadow(0 0 14px color-mix(in srgb, #000 70%, transparent));
+}
+
+/* GEAR BODY: the solid rim the teeth are cut into. */
+body.layout-user-factory-central #category-viewport::before {
+  content: "";
+  position: absolute;
+  left: var(--hub-cx); top: var(--hub-cy);
+  width: calc(var(--rim-r-outer) * 2);
+  height: calc(var(--rim-r-outer) * 2);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    conic-gradient(from 210deg,
+      var(--steel-hi) 0deg, var(--steel) 70deg,
+      var(--steel-dark) 150deg, var(--steel) 250deg,
+      var(--steel-hi) 340deg, var(--steel-hi) 360deg);
+  -webkit-mask: radial-gradient(circle at 50% 50%,
+      transparent 0 var(--rim-r-inner),
+      #000 var(--rim-r-inner) var(--rim-r-outer),
+      transparent var(--rim-r-outer));
+  mask: radial-gradient(circle at 50% 50%,
+      transparent 0 var(--rim-r-inner),
+      #000 var(--rim-r-inner) var(--rim-r-outer),
+      transparent var(--rim-r-outer));
+}
+
+/* ---------- layer 3: the thick hollow cylinder at the center ---------- */
+/* #top-bar spans the selector area, so its ::before/::after become the
+   inner hub's wall and bore. */
+body.layout-user-factory-central #top-bar::before,
+body.layout-user-factory-central #top-bar::after {
+  display: block !important;  /* CyberRadial hides these; we want them */
+  content: "";
+  position: absolute;
+  left: var(--hub-cx); top: var(--hub-cy);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+}
+/* the cylinder wall — thick, machined, catching the light */
+body.layout-user-factory-central #top-bar::before {
+  width: calc(var(--hub-r-outer) * 2);
+  height: calc(var(--hub-r-outer) * 2);
+  z-index: 1;
+  background:
+    conic-gradient(from 30deg,
+      var(--steel-hi) 0deg, var(--steel-dark) 90deg,
+      var(--steel-hi) 180deg, var(--steel-dark) 270deg,
+      var(--steel-hi) 360deg);
+  -webkit-mask: radial-gradient(circle at 50% 50%,
+      transparent 0 var(--hub-r-inner),
+      #000 var(--hub-r-inner) var(--hub-r-outer),
+      transparent var(--hub-r-outer));
+  mask: radial-gradient(circle at 50% 50%,
+      transparent 0 var(--hub-r-inner),
+      #000 var(--hub-r-inner) var(--hub-r-outer),
+      transparent var(--hub-r-outer));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, #000 60%, transparent),
+    0 0 26px color-mix(in srgb, #000 80%, transparent);
+}
+/* the bore: an actual hole, showing the greasy dark underneath */
+body.layout-user-factory-central #top-bar::after {
+  width: calc(var(--hub-r-inner) * 2);
+  height: calc(var(--hub-r-inner) * 2);
+  z-index: 1;
+  background: radial-gradient(circle at 50% 45%, #1d232c 0%, var(--grease) 70%);
+  box-shadow:
+    inset 0 6px 18px rgba(0, 0, 0, 0.85),
+    inset 0 -2px 6px color-mix(in srgb, var(--steel-hi) 25%, transparent);
+}
+
+/* ---------- the focus glow, re-tinted as hot amber ---------- */
+/* CyberRadial already centers a round glow on the hub via ::after; keep the
+   behavior, change the color so a focused gear looks lit from within. */
+body.layout-user-factory-central #category-viewport::after {
+  width: calc((var(--orbit-r) + 120px) * 2);
+  height: calc((var(--orbit-r) + 120px) * 2);
+  background: radial-gradient(circle,
+    color-mix(in srgb, var(--amber) 26%, transparent) 0%,
+    color-mix(in srgb, var(--amber) 14%, transparent) 55%,
+    transparent 72%);
+  z-index: 0;
+}
+
+/* ---------- section buttons: bolt heads riding the gear ---------- */
+body.layout-user-factory-central .category {
+  z-index: 2;
+}
+body.layout-user-factory-central .category .icon-ring {
+  background: radial-gradient(circle at 35% 30%, var(--steel-hi), var(--steel-dark));
+  border: 2px solid color-mix(in srgb, #000 55%, transparent);
+  box-shadow:
+    inset 0 1px 2px color-mix(in srgb, #fff 22%, transparent),
+    0 2px 6px rgba(0, 0, 0, 0.7);
+}
+body.layout-user-factory-central .category.active .icon-ring {
+  background: radial-gradient(circle at 35% 30%,
+    color-mix(in srgb, var(--amber) 85%, #fff), var(--amber));
+  border-color: color-mix(in srgb, var(--amber) 60%, #000);
+  box-shadow:
+    0 0 12px color-mix(in srgb, var(--amber) 70%, transparent),
+    0 0 26px color-mix(in srgb, var(--amber) 35%, transparent);
+}
+/* the label pill: a stamped steel plate */
+body.layout-user-factory-central .category .label {
+  background: linear-gradient(180deg, var(--steel), var(--steel-dark));
+  border: 1px solid color-mix(in srgb, #000 50%, transparent);
+  color: #e8edf3;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+body.layout-user-factory-central .category.active .label {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--amber) 92%, #fff), var(--amber));
+  color: #241703;
+  border-color: color-mix(in srgb, var(--amber) 50%, #000);
+}
+
+/* ---------- panels: bolted plate ---------- */
+body.layout-user-factory-central #item-panel,
+body.layout-user-factory-central #subfolder-nav {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--steel-dark) 82%, transparent),
+    color-mix(in srgb, var(--grease) 88%, transparent));
+  border: 2px solid var(--steel);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--steel-hi) 40%, transparent);
+}
+body.layout-user-factory-central .item-row.selected {
+  background: color-mix(in srgb, var(--amber) 20%, transparent);
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+/* ---------- clock + taskbar: hazard-striped machine fascia ---------- */
+body.layout-user-factory-central #clock {
+  color: var(--amber);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--amber) 45%, transparent);
+}
+body.layout-user-factory-central #task-bar {
+  background: linear-gradient(180deg, var(--steel-dark), var(--grease));
+  border-color: var(--steel);
+}
+body.layout-user-factory-central #task-bar.focused {
+  border-color: var(--amber);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--amber) 40%, transparent);
+}
+
+/* ============================================================
+   LAYOUT — everything below repositions the CyberRadial furniture
+   around the centered gear.
+
+     gear .............. dead center
+     options list ...... top-right, slides in from the right edge
+     thumbnail ......... top-LEFT  (swapped with the subfolder bar)
+     subfolder bar ..... top-left, beside the thumbnail
+     open-programs bar . horizontal, bottom-left, stopping before
+                         the clock/battery block
+   ============================================================ */
+
+/* The selector fills the screen so the gear can sit at true center. */
+body.layout-user-factory-central #top-bar {
+  position: fixed; inset: 0;
+  width: 100vw; height: 100vh;
+  padding: 0;
+  z-index: 1;
+}
+body.layout-user-factory-central #category-viewport,
+body.layout-user-factory-central #category-row {
+  position: absolute; inset: 0;
+}
+
+/* ---- section names rotate with the gear ----
+   Each label is counter-positioned by its orbit angle so the text rides
+   around the rim like a stamped marking rather than staying upright. */
+body.layout-user-factory-central .category .label {
+  transform: rotate(var(--orbit-angle, 0deg));
+  transform-origin: center;
+  transition: transform 320ms ease;
+}
+
+/* ---- content area: free-floating panels over the gear ---- */
+body.layout-user-factory-central #content-area {
+  position: fixed; inset: 0;
+  display: block;
+  padding: 0;
+  pointer-events: none;   /* the gear beneath stays hittable */
+  z-index: 3;
+}
+body.layout-user-factory-central #item-panel,
+body.layout-user-factory-central #subfolder-nav,
+body.layout-user-factory-central #preview-pane { pointer-events: auto; }
+
+/* ---- thumbnail: TOP-LEFT (swapped with the subfolder bar) ---- */
+body.layout-user-factory-central #preview-pane {
+  position: fixed;
+  top: 24px; left: 24px;
+  width: 300px; height: 300px;
+  margin: 0;
+  z-index: 4;
+}
+
+/* ---- subfolder bar: top-left, immediately right of the thumbnail ---- */
+body.layout-user-factory-central #subfolder-nav {
+  position: fixed;
+  top: 24px; left: 340px;
+  width: 260px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
+  z-index: 4;
+}
+
+/* ---- options list: top-right, sawtooth-edged, slides in ----
+   Wide enough to reach past the gear's leftmost point (50% - orbit - teeth),
+   so when it's in, the gear is completely covered. It stops a little short
+   of the taskbar at the bottom. */
+body.layout-user-factory-central #item-panel {
+  position: fixed;
+  top: 24px;
+  right: 0;
+  /* from the gear's left edge across to the right screen edge */
+  left: calc(50% - var(--teeth-r-outer) - 24px);
+  width: auto;
+  max-width: none;
+  /* ...stopping ~a quarter inch (24px) above the open-programs bar */
+  bottom: calc(72px + 24px);
+  max-height: none;
+  margin: 0;
+  overflow-y: auto;
+  z-index: 5;
+
+  /* sawtooth edge: a zig-zag cut down the left side and along the bottom,
+     so the panel reads as a blade/gear-cut plate rather than a card */
+  --saw: 14px;
+  border: none;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--steel-dark) 94%, transparent),
+    color-mix(in srgb, var(--grease) 96%, transparent));
+  clip-path: polygon(
+    0% 0%, 100% 0%, 100% 100%, 0% 100%,
+    0% calc(100% - var(--saw)), var(--saw) calc(100% - var(--saw) * 2),
+    0% calc(100% - var(--saw) * 3), var(--saw) calc(100% - var(--saw) * 4),
+    0% calc(100% - var(--saw) * 5), var(--saw) calc(100% - var(--saw) * 6),
+    0% calc(100% - var(--saw) * 7), var(--saw) calc(100% - var(--saw) * 8),
+    0% calc(100% - var(--saw) * 9), var(--saw) calc(100% - var(--saw) * 10),
+    0% calc(100% - var(--saw) * 11), var(--saw) calc(100% - var(--saw) * 12),
+    0% calc(100% - var(--saw) * 13), var(--saw) calc(100% - var(--saw) * 14),
+    0% calc(100% - var(--saw) * 15), var(--saw) calc(100% - var(--saw) * 16),
+    0% calc(100% - var(--saw) * 17), var(--saw) calc(100% - var(--saw) * 18),
+    0% calc(100% - var(--saw) * 19), var(--saw) calc(100% - var(--saw) * 20),
+    0% calc(100% - var(--saw) * 21), var(--saw) calc(100% - var(--saw) * 22),
+    0% calc(100% - var(--saw) * 23), var(--saw) calc(100% - var(--saw) * 24),
+    0% calc(100% - var(--saw) * 25), var(--saw) calc(100% - var(--saw) * 26),
+    0% calc(100% - var(--saw) * 27), var(--saw) calc(100% - var(--saw) * 28),
+    0% calc(100% - var(--saw) * 29), var(--saw) calc(100% - var(--saw) * 30)
+  );
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.6);
+
+  /* slide/fade: driven by which pane has focus (data-radial-focus) */
+  transform: translateX(0);
+  opacity: 1;
+  transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
+              opacity 2s linear;
+}
+
+/* Sections focused (i.e. B was pressed, or focus returned to the gear):
+   the list fades out over 2s and slides back off the right edge, leaving
+   the gear clear. */
+body.layout-user-factory-central[data-radial-focus="sections"] #item-panel {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+/* Options focused (a section was selected from the bar): slide in from the
+   right and cover the gear. */
+body.layout-user-factory-central[data-radial-focus="options"] #item-panel,
+body.layout-user-factory-central[data-radial-focus="subfolder"] #item-panel {
+  transform: translateX(0);
+  opacity: 1;
+  transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
+              opacity 260ms linear;
+}
+
+/* ---- open-programs bar: horizontal, bottom-LEFT, stopping before the
+        clock/battery block on the right ---- */
+body.layout-user-factory-central #task-bar.taskbar-pos-cyber,
+body.layout-user-factory-central #task-bar {
+  left: 0;
+  right: 160px;            /* clear of the bottom-right clock/battery */
+  bottom: 0;
+  top: auto;
+  width: auto;
+  height: 72px;
+  flex-direction: row;
+  border-left: none; border-bottom: none;
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+  z-index: 6;
+}
+body.layout-user-factory-central #task-bar #task-bar-list {
+  flex-direction: row; flex-wrap: nowrap;
+  overflow-x: auto; align-items: center;
+}
+body.layout-user-factory-central #clock-wrap {
+  position: fixed;
+  right: 16px; bottom: 12px; top: auto; left: auto;
+  align-items: flex-end;
+  z-index: 7;
+}

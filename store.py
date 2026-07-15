@@ -27,6 +27,8 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 KEYBOARD_CONTROLS_FILE = DATA_DIR / "keyboard_controls.json"
 CONTROLLER_CONTROLS_FILE = DATA_DIR / "controller_controls.json"
 OVERLAY_FILE = DATA_DIR / "overlay.png"
+ASSETS_DIR = DATA_DIR / "theme_assets"
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _migrate_legacy_file(old_path, new_path):
@@ -78,22 +80,52 @@ def default_settings():
         "folders": {"music": [], "photos": [], "videos": []},
         "sections": sections,
         "custom_sections": [],  # [{"id": "...", "label": "..."}]
+        # Discovered Plugins/ folders: {plugin_id: {"visible": bool}}.
+        # Hidden by default; populated/merged by plugin_manager.scan_plugins()
+        # on startup and via the Settings > Plugins "Rescan" button.
+        "plugins": {},
         "web_shortcuts": [],  # [{"url": "...", "label": "..."}] — user-added, opened in CyberDeckBrowser
         "macros_whitelist": ["onscreenmenu.exe"],
+        # Per-theme background & overlay: {layout_key: path}. Empty means
+        # "use that theme's rendered placeholder". Legacy single-value keys
+        # below are migrated into the dawning_horizon slot on first load.
+        "background_by_theme": {},   # {dawning_horizon|night_horizon|cyber_radial: path}
+        "overlay_by_theme": {},      # same shape
+        "overlay_enabled_by_theme": {},
+        # legacy (migrated, then ignored):
         "background_image": None,
         "overlay_enabled": False,
         "overlay_image": None,
         "opening_video": None,
-        "window_mode": "windowed_fullscreen",  # exclusive_fullscreen | windowed_fullscreen | windowed | kiosk
+        "window_mode": "exclusive_fullscreen",  # exclusive_fullscreen | windowed_fullscreen | windowed | kiosk
         "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
         # Dawning Horizon background hue: "original", or "<palette>:<hue>"
         # where palette is light|dark|neon|primary|pastel|bubblegum and hue
         # is red|orange|yellow|green|blue|indigo|violet. Purely a frontend
         # concern (app.js computes and applies the actual colors).
         "dawning_theme_color": "original",
+        # Open-programs bar: skip the hold-X close confirmation
+        "close_tasks_without_prompt": False,
+        # How to bring the app to the foreground when it's in the background:
+        # "start_select" (Start+Select together), "xbox" (Guide button, when
+        # the controller/backend reports it), or "off".
+        "foreground_trigger": "start_select",
+        # Force the XInput backend instead of GameInput. XInput is the
+        # battle-tested path; GameInput adds Guide-button reporting and
+        # broader native device support on Win11.
+        "prefer_xinput": False,
+        # Open folder paths in Meridian Explorer instead of Windows
+        # Explorer (suite-internal routing; system-wide handling is the
+        # separate MeridianExplorerShellIntegration.bat)
+        "route_folders_to_meridian_explorer": False,
+        # List icon size: small (the classic 36px) | medium | large | xl,
+        # each 2x the previous. Row heights grow to fit — pure frontend.
+        "icon_size": "small",
         "recent_games": [],  # [{"path": ..., "name": ...}], most-recent-first, capped at 5
         "display_type": {"games": "gallery"},  # per-section-id: "list" | "gallery"; any id not present defaults to "list"
         "desktop_section_enabled": False,  # Desktop: always first in the list when on, off by default
+        "explorer_section_enabled": False,  # Explorer: right after Desktop, off by default
+        "browser_section_enabled": False,  # Browser: right after Explorer, off by default
         "load_subfolders": True,
         "video_fullscreen": False,
         "battery_indicator": True,
@@ -117,12 +149,24 @@ def load_settings():
                 data["macros_whitelist"] = legacy_whitelist
             merged = default_settings()
             _deep_merge(merged, data)
+            _migrate_theme_media(merged)
             return merged
         except Exception:
             pass
     s = default_settings()
     save_settings(s)
     return s
+
+
+def _migrate_theme_media(m):
+    """Fold the old single background/overlay values into the per-theme
+    dicts under the dawning_horizon slot, once, so existing users keep
+    their chosen image on their current theme."""
+    if m.get("background_image") and not m.get("background_by_theme"):
+        m["background_by_theme"] = {"dawning_horizon": m["background_image"]}
+    if m.get("overlay_image") and not m.get("overlay_by_theme"):
+        m["overlay_by_theme"] = {"dawning_horizon": m["overlay_image"]}
+        m["overlay_enabled_by_theme"] = {"dawning_horizon": bool(m.get("overlay_enabled"))}
 
 
 def _deep_merge(base, override):

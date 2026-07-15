@@ -165,6 +165,34 @@ def open_task_manager():
     return _run(["taskmgr.exe"])
 
 
+def open_command_prompt():
+    """Opens a normal (non-elevated) Command Prompt window."""
+    return _run(["cmd.exe"])
+
+
+def open_powershell():
+    """Opens a normal (non-elevated) Windows PowerShell window."""
+    return _run(["powershell.exe"])
+
+
+def open_microsoft_store():
+    # ms-windows-store: is the URI scheme handler for the Store app, same
+    # as clicking its tile — os.startfile resolves it like a link.
+    try:
+        os.startfile("ms-windows-store:")
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def open_windows_update():
+    try:
+        os.startfile("ms-settings:windowsupdate")
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 def shutdown():
     return _run(["shutdown", "/s", "/t", "0"])
 
@@ -421,6 +449,58 @@ def close_all_except(whitelist_names):
         except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
             continue
     return {"ok": True, "error": None, "closed": closed}
+
+
+def register_netbrowse_default_browser(trampoline_exe_path):
+    """Registers the Meridian NetBrowse shell trampoline (NOT Meridian
+    NetBrowse.exe itself) as a capable browser for http/https/ftp links and
+    .htm/.html files, current-user only, no admin. Self-contained here
+    (rather than importing Meridian_NetBrowse/default_browser.py) since
+    that source tree isn't guaranteed to sit next to Meridian Launcher.exe
+    in a packaged install — only the compiled exes are. As with any
+    Windows default-browser registration, actually becoming THE default is
+    one more click in Settings > Default apps."""
+    if not hasattr(os, "startfile"):  # good enough proxy for "not on Windows"
+        return False, "Windows only."
+    try:
+        import winreg
+    except ImportError:
+        return False, "Windows only."
+
+    PROGID = "MeridianNetBrowseHTML"
+    APPREG = "MeridianNetBrowse"
+
+    def _set(path, value, name=None):
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, path)
+        try:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+        finally:
+            winreg.CloseKey(key)
+
+    try:
+        cmd = f'"{trampoline_exe_path}" "%1"'
+        _set(rf"Software\Classes\{PROGID}", "Meridian NetBrowse Document")
+        _set(rf"Software\Classes\{PROGID}\DefaultIcon", f'"{trampoline_exe_path}",0')
+        _set(rf"Software\Classes\{PROGID}\shell\open\command", cmd)
+
+        capbase = r"Software\MeridianNetBrowse\Capabilities"
+        _set(capbase, "Meridian NetBrowse", "ApplicationName")
+        _set(capbase, "Routes links through Meridian Launcher's Browser section", "ApplicationDescription")
+        for scheme in ("http", "https", "ftp"):
+            _set(capbase + r"\URLAssociations", PROGID, scheme)
+        for ext in (".htm", ".html"):
+            _set(capbase + r"\FileAssociations", PROGID, ext)
+        _set(r"Software\RegisteredApplications", capbase, APPREG)
+
+        for scheme in ("http", "https"):
+            try:
+                _set(rf"Software\Classes\{scheme}\shell\open\command", cmd)
+            except Exception:
+                pass
+
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def launch_ps1_elevated(path, args=None):
