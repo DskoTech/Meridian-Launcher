@@ -35,6 +35,8 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 KEYBOARD_CONTROLS_FILE = DATA_DIR / "keyboard_controls.json"
 CONTROLLER_CONTROLS_FILE = DATA_DIR / "controller_controls.json"
 OVERLAY_FILE = DATA_DIR / "overlay.png"
+ASSETS_DIR = DATA_DIR / "theme_assets"
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _migrate_legacy_file(old_path, new_path):
@@ -80,11 +82,14 @@ def default_settings():
         "sections": sections,
         "custom_sections": [],  # [{"id": "...", "label": "..."}]
         "macros_whitelist": ["onscreenmenu.exe"],
+        "background_by_theme": {},
+        "overlay_by_theme": {},
+        "overlay_enabled_by_theme": {},
         "background_image": None,
         "overlay_enabled": False,
         "overlay_image": None,
         "opening_video": None,
-        "window_mode": "fullscreen",  # fullscreen | windowed
+        "window_mode": "exclusive_fullscreen",  # exclusive_fullscreen | windowed_fullscreen | windowed | kiosk
         "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
         # Dawning Horizon background hue: "original", or "<palette>:<hue>"
         # where palette is light|dark|neon|primary|pastel|bubblegum and hue
@@ -95,6 +100,15 @@ def default_settings():
         # MeridianExporter extension) becomes its own section in the
         # category row, named after the preset.
         "playnite_filter_sections": False,
+        "close_tasks_without_prompt": False,
+        # How to bring the app to the foreground when it's in the background:
+        # "start_select" (Start+Select together), "xbox" (Guide button, when
+        # the controller/backend reports it), or "off".
+        "foreground_trigger": "start_select",
+        # Force the XInput backend instead of GameInput. XInput is the
+        # battle-tested path; GameInput adds Guide-button reporting and
+        # broader native device support on Win11.
+        "prefer_xinput": False,
         # Start-menu game management: hidden titles are dropped from every
         # game section unless show_hidden_games is on; renames replace the
         # displayed title without touching Playnite's own data.
@@ -124,12 +138,21 @@ def load_settings():
                 data["macros_whitelist"] = legacy_whitelist
             merged = default_settings()
             _deep_merge(merged, data)
+            _migrate_theme_media(merged)
             return merged
         except Exception:
             pass
     s = default_settings()
     save_settings(s)
     return s
+
+
+def _migrate_theme_media(m):
+    if m.get("background_image") and not m.get("background_by_theme"):
+        m["background_by_theme"] = {"dawning_horizon": m["background_image"]}
+    if m.get("overlay_image") and not m.get("overlay_by_theme"):
+        m["overlay_by_theme"] = {"dawning_horizon": m["overlay_image"]}
+        m["overlay_enabled_by_theme"] = {"dawning_horizon": bool(m.get("overlay_enabled"))}
 
 
 def _deep_merge(base, override):

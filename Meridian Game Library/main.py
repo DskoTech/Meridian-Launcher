@@ -22,6 +22,18 @@ from urllib.parse import urlparse, parse_qs
 
 import webview
 
+
+# pywebview renamed its dialog constants: webview.OPEN_DIALOG and
+# webview.FOLDER_DIALOG are deprecated in favor of webview.FileDialog.OPEN
+# and .FOLDER. Resolve them once here so we use the new names where they
+# exist and still run on older pywebview builds.
+try:
+    _DLG_OPEN = webview.FileDialog.OPEN
+    _DLG_FOLDER = webview.FileDialog.FOLDER
+except AttributeError:  # pywebview < 5.x
+    _DLG_OPEN = getattr(webview, "OPEN_DIALOG")
+    _DLG_FOLDER = getattr(webview, "FOLDER_DIALOG")
+
 # pywebview defaults to opening any navigation it considers "external"
 # (including cross-subdomain hops) in the user's system browser instead of
 # inside the embedded window. GOG's and Epic's login flows both bounce
@@ -34,6 +46,9 @@ import webview
 webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
 
 import store
+import theme_assets
+import user_themes
+import tasks_win
 import system_actions
 import playnite_import
 import playnite_sync
@@ -58,6 +73,8 @@ MUSIC_EXT = {".mp3", ".flac", ".wav", ".m4a", ".ogg", ".wma", ".aac"}
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".m4v"}
 IMAGE_FILE_TYPES = ("Image Files (*.png;*.jpg;*.jpeg;*.bmp;*.webp)",)
+# Backgrounds also accept animated .gif.
+BACKGROUND_FILE_TYPES = ("Image Files (*.png;*.jpg;*.jpeg;*.bmp;*.webp;*.gif)",)
 VIDEO_FILE_TYPES = ("Video Files (*.mp4;*.webm;*.mov;*.mkv;*.avi)",)
 EXE_FILE_TYPES = ("Executable Files (*.exe)",)
 BAT_FILE_TYPES = ("Batch Files (*.bat)",)
@@ -456,7 +473,7 @@ def _with_icons(items):
 
 def _open_file_dialog(file_types):
     window = webview.windows[0]
-    result = window.create_file_dialog(webview.OPEN_DIALOG, file_types=file_types, allow_multiple=True)
+    result = window.create_file_dialog(_DLG_OPEN, file_types=file_types, allow_multiple=True)
     return list(result) if result else []
 
 
@@ -494,7 +511,7 @@ class Api:
 
     def playnite_pick_export_file(self):
         result = webview.windows[0].create_file_dialog(
-            webview.OPEN_DIALOG,
+            _DLG_OPEN,
             file_types=("JSON files (*.json)", "All files (*.*)"),
         )
         return result[0] if result else None
@@ -596,6 +613,76 @@ class Api:
         SETTINGS["game_renames"] = renames
         store.save_settings(SETTINGS)
         return SETTINGS
+
+    def set_prefer_xinput(self, enabled):
+        """Switch the input backend live. XInput is the proven path;
+        GameInput adds Guide-button reporting. Restarts the listener so the
+        change takes effect without relaunching the app."""
+        SETTINGS["prefer_xinput"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        restart_controller()
+        return SETTINGS
+
+    def controller_debug(self):
+        """Deep diagnostics for the Settings controller debugger: which
+        backend is live, what GameInput is doing poll-by-poll, and the raw
+        state the pad is reporting right now."""
+        import gameinput_api
+        out = {
+            "prefer_xinput": bool(SETTINGS.get("prefer_xinput", False)),
+            "env_override": os.environ.get("MERIDIAN_INPUT_BACKEND", "") or None,
+            "backend": None,
+            "connected": False,
+            "backend_errors": dict(getattr(gameinput_api, "LAST_BACKEND_ERRORS", {}) or {}),
+            "diag": dict(getattr(gameinput_api, "DIAG", {}) or {}),
+            "last_action": _LAST_CONTROLLER_ACTION[0],
+            "last_action_age": (
+                round(time.time() - _LAST_CONTROLLER_ACTION[1], 1)
+                if _LAST_CONTROLLER_ACTION[1] else None
+            ),
+            "foreground": None,
+        }
+        listener = _CONTROLLER_LISTENER
+        if listener is not None:
+            st = listener.status()
+            out["backend"] = st.get("backend")
+            out["connected"] = st.get("connected")
+            out["gamepad_slot"] = getattr(listener.gamepad, "gamepad_state_slot", None)
+        try:
+            out["foreground"] = self.is_foreground()
+        except Exception:
+            pass
+        return out
+
+    def reset_controller_debug(self):
+        import gameinput_api
+        gameinput_api.reset_diag()
+        return True
+
+    def controller_status(self):
+        """Diagnostic for the settings screen: which controller backend is
+        active (GameInput / XInput / none) and whether a pad is currently
+        connected. Helps confirm whether GameInput is really the path in
+        use when debugging fullscreen-experience input problems."""
+        env = os.environ.get("MERIDIAN_INPUT_BACKEND", "").strip() or None
+        listener = _CONTROLLER_LISTENER
+        if listener is None:
+            return {"backend": None, "connected": False, "override": env}
+        st = listener.status()
+        st["override"] = env
+        # which IGameInputReading::GetGamepadState vtable slot is in use —
+        # confirms GameInput is actually reading the pad, not just loaded.
+        try:
+            st["gamepad_slot"] = getattr(listener.gamepad, "gamepad_state_slot", None)
+        except Exception:
+            st["gamepad_slot"] = None
+        # why any preferred backend (e.g. GameInput) was rejected, if it was
+        try:
+            import gameinput_api
+            st["backend_errors"] = dict(getattr(gameinput_api, "LAST_BACKEND_ERRORS", {}) or {})
+        except Exception:
+            st["backend_errors"] = {}
+        return st
 
     def set_show_hidden_games(self, enabled):
         SETTINGS["show_hidden_games"] = bool(enabled)
@@ -737,7 +824,7 @@ class Api:
 
     # ---------------- media folders ----------------
     def pick_folder(self):
-        result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+        result = webview.windows[0].create_file_dialog(_DLG_FOLDER)
         return result[0] if result else None
 
     def add_folder(self, kind, path):
@@ -961,15 +1048,65 @@ class Api:
         os._exit(0)
 
     # ---------------- appearance ----------------
+    # ---------------- open-programs bar (taskbar replacement) ----------------
+    def list_open_tasks(self):
+        return tasks_win.list_open_tasks()
+
+    def focus_task(self, hwnd):
+        return {"ok": tasks_win.focus_task(hwnd)}
+
+    def close_task(self, hwnd):
+        return {"ok": tasks_win.close_task(hwnd)}
+
+    def set_foreground_trigger(self, mode):
+        if mode not in ("start_select", "xbox", "off"):
+            return SETTINGS
+        SETTINGS["foreground_trigger"] = mode
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def is_foreground(self):
+        """Whether this app's window is the OS foreground window right now.
+        The frontend uses this to gate controller navigation: input is still
+        received in the background (so the foreground combo works), but it
+        shouldn't move the cursor or open menus until the app is focused."""
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            our = ctypes.windll.user32.FindWindowW(None, APP_TITLE)
+            return bool(hwnd and our and hwnd == our)
+        except Exception:
+            return True  # non-Windows or failure: don't gate
+
+    def set_close_tasks_without_prompt(self, enabled):
+        SETTINGS["close_tasks_without_prompt"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def _layout_key(self):
+        return SETTINGS.get("layout", "dawning_horizon")
+
+    def theme_asset_urls(self):
+        assets = str(store.ASSETS_DIR)
+        layout = self._layout_key()
+        bg = theme_assets.placeholder_background(assets, "library", layout)
+        ov = theme_assets.placeholder_overlay(assets, "library", layout)
+        return {
+            "background": media_url(bg) if bg else None,
+            "overlay": media_url(ov) if ov else None,
+        }
+
     def set_background(self):
-        paths = _open_file_dialog(IMAGE_FILE_TYPES)
+        # pywebview file_types are filter STRINGS; concatenating a list of
+        # tuples raises TypeError and the dialog never opens.
+        paths = _open_file_dialog(BACKGROUND_FILE_TYPES)
         if paths:
-            SETTINGS["background_image"] = paths[0]
+            SETTINGS.setdefault("background_by_theme", {})[self._layout_key()] = paths[0]
             store.save_settings(SETTINGS)
         return SETTINGS
 
     def clear_background(self):
-        SETTINGS["background_image"] = None
+        SETTINGS.setdefault("background_by_theme", {}).pop(self._layout_key(), None)
         store.save_settings(SETTINGS)
         return SETTINGS
 
@@ -978,23 +1115,25 @@ class Api:
         if paths:
             try:
                 from PIL import Image
-                im = Image.open(paths[0]).convert("RGBA")
-                im.save(store.OVERLAY_FILE, "PNG")
-                SETTINGS["overlay_image"] = str(store.OVERLAY_FILE)
-                SETTINGS["overlay_enabled"] = True
+                layout = self._layout_key()
+                dest = store.DATA_DIR / f"overlay_{layout}.png"
+                Image.open(paths[0]).convert("RGBA").save(dest, "PNG")
+                SETTINGS.setdefault("overlay_by_theme", {})[layout] = str(dest)
+                SETTINGS.setdefault("overlay_enabled_by_theme", {})[layout] = True
             except Exception:
                 pass
             store.save_settings(SETTINGS)
         return SETTINGS
 
     def set_overlay_enabled(self, enabled):
-        SETTINGS["overlay_enabled"] = bool(enabled)
+        SETTINGS.setdefault("overlay_enabled_by_theme", {})[self._layout_key()] = bool(enabled)
         store.save_settings(SETTINGS)
         return SETTINGS
 
     def clear_overlay(self):
-        SETTINGS["overlay_image"] = None
-        SETTINGS["overlay_enabled"] = False
+        layout = self._layout_key()
+        SETTINGS.setdefault("overlay_by_theme", {}).pop(layout, None)
+        SETTINGS.setdefault("overlay_enabled_by_theme", {})[layout] = False
         store.save_settings(SETTINGS)
         return SETTINGS
 
@@ -1043,22 +1182,35 @@ class Api:
         return SETTINGS
 
     def set_window_mode(self, mode):
+        """Window mode, matching Meridian Launcher's four modes:
+        exclusive_fullscreen (true OS fullscreen), windowed_fullscreen
+        (borderless, covering the screen), windowed, and kiosk. The frame
+        itself can't be added/removed at runtime (pywebview limitation), so
+        a live switch between framed/frameless fully applies on restart."""
         SETTINGS["window_mode"] = mode
         store.save_settings(SETTINGS)
         try:
             win = webview.windows[0]
-            # Borderless windowed fullscreen instead of OS-exclusive
-            # fullscreen: move the frameless window to (0, 0) to cover the
-            # screen, or off to a windowed position otherwise. The frame
-            # itself can't be added/removed at runtime (pywebview
-            # limitation), so a live toggle only takes full effect after a
-            # restart.
-            if mode == "fullscreen" and not getattr(win, "_meridian_fullscreen", False):
-                win.move(0, 0)
+            is_exclusive = getattr(win, "_meridian_exclusive_fs", False)
+            if mode == "exclusive_fullscreen":
+                if not is_exclusive:
+                    win.toggle_fullscreen()
+                    win._meridian_exclusive_fs = True
                 win._meridian_fullscreen = True
-            elif mode == "windowed" and getattr(win, "_meridian_fullscreen", False):
-                win.move(60, 60)
-                win._meridian_fullscreen = False
+            elif mode in ("windowed_fullscreen", "kiosk"):
+                if is_exclusive:
+                    win.toggle_fullscreen()
+                    win._meridian_exclusive_fs = False
+                if not getattr(win, "_meridian_fullscreen", False):
+                    win.move(0, 0)
+                    win._meridian_fullscreen = True
+            elif mode == "windowed":
+                if is_exclusive:
+                    win.toggle_fullscreen()
+                    win._meridian_exclusive_fs = False
+                if getattr(win, "_meridian_fullscreen", False):
+                    win.move(60, 60)
+                    win._meridian_fullscreen = False
         except Exception:
             pass
         return SETTINGS
@@ -1067,11 +1219,36 @@ class Api:
         """UI layout mode: 'night_horizon' (default) or 'cyber_radial'. Purely
         a frontend concern — the frontend toggles a body class off this and
         does all the actual layout work; the backend just persists it."""
-        if mode not in ("dawning_horizon", "night_horizon", "cyber_radial"):
+        # Built-in layouts, or any discovered user theme ("user-<slug>").
+        valid = mode in ("dawning_horizon", "night_horizon", "cyber_radial")
+        if not valid and mode.startswith("user-"):
+            valid = user_themes.get_theme(BASE_DIR, mode) is not None
+        if not valid:
             return SETTINGS
         SETTINGS["layout"] = mode
         store.save_settings(SETTINGS)
         return SETTINGS
+
+    def list_user_themes(self):
+        """User themes discovered in the themes/ folder next to the app.
+        The frontend adds these to the theme picker and injects each theme's
+        CSS on top of its chosen base layout. Safe to call anytime; returns
+        [] when the folder is empty or missing."""
+        try:
+            return user_themes.discover_themes(BASE_DIR)
+        except Exception:
+            return []
+
+    def get_user_theme_css(self, layout_value):
+        """The CSS + base layout for one user theme, by its 'user-<slug>'
+        settings value. Returns None if it's not a user theme or is gone."""
+        try:
+            t = user_themes.get_theme(BASE_DIR, layout_value)
+            if not t:
+                return None
+            return {"css": t["css"], "base": t["base"], "name": t["name"]}
+        except Exception:
+            return None
 
     def set_dawning_theme_color(self, value):
         """Dawning Horizon primary theme color: "original", or
@@ -1082,9 +1259,14 @@ class Api:
             if len(parts) != 2:
                 return SETTINGS
             palette, hue = parts
-            if palette not in ("light", "dark", "neon", "primary", "pastel", "bubblegum"):
+            if palette not in ("light", "dark", "neon", "primary", "pastel", "bubblegum", "hex"):
                 return SETTINGS
-            if hue not in ("red", "orange", "yellow", "green", "blue", "indigo", "violet"):
+            if palette == "hex":
+                # Custom color from the grid selector: "hex:#rrggbb".
+                h = hue.lstrip("#")
+                if len(h) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in h):
+                    return SETTINGS
+            elif hue not in ("red", "orange", "yellow", "green", "blue", "indigo", "violet"):
                 return SETTINGS
         SETTINGS["dawning_theme_color"] = value
         store.save_settings(SETTINGS)
@@ -1100,6 +1282,42 @@ class Api:
         SETTINGS["playnite_filter_sections"] = bool(enabled)
         store.save_settings(SETTINGS)
         return SETTINGS
+
+    def playnite_filter_diagnostics(self):
+        """Why filter-preset sections aren't showing up. Reports the exact
+        file the reader looks at, whether it exists, what's in it, and how
+        many presets parsed — so this is diagnosable instead of guesswork."""
+        import json as _json
+        out = {"toggle_on": bool(SETTINGS.get("playnite_filter_sections")),
+               "import_source": SETTINGS.get("game_import_source", "playnite")}
+        try:
+            cfg = self._playnite_settings()
+            export = playnite_import.get_export_path(cfg)
+            out["export_path"] = export
+            out["export_exists"] = bool(export and os.path.isfile(export))
+            preset_path = None
+            if export:
+                preset_path = os.path.join(os.path.dirname(export),
+                                           "playnite_filter_presets.json")
+            out["presets_path"] = preset_path
+            out["presets_exists"] = bool(preset_path and os.path.isfile(preset_path))
+            if out["presets_exists"]:
+                raw = open(preset_path, "r", encoding="utf-8-sig").read()
+                out["presets_bytes"] = len(raw)
+                out["presets_preview"] = raw[:180]
+                try:
+                    data = _json.loads(raw)
+                    out["presets_json_type"] = type(data).__name__
+                    out["presets_count_raw"] = (
+                        len(data) if isinstance(data, list) else (1 if isinstance(data, dict) else 0))
+                except Exception as e:
+                    out["presets_parse_error"] = str(e)
+            parsed = playnite_import.get_filter_presets(cfg)
+            out["presets_parsed"] = len(parsed or [])
+            out["preset_names"] = [p.get("name") for p in (parsed or [])][:12]
+        except Exception as e:
+            out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
 
     def playnite_filter_presets(self):
         """[{id, name, count}] for every saved preset in the export, or []
@@ -1172,7 +1390,34 @@ def _quit_via_combo():
     os._exit(0)
 
 
+
+# [action_name, timestamp] of the most recent controller action to reach the
+# app — the settings debugger uses it to prove input is (or isn't) arriving.
+_LAST_CONTROLLER_ACTION = [None, 0.0]
+
+
+def restart_controller():
+    """Stop the running listener and start a fresh one, so a backend change
+    (prefer_xinput) applies without relaunching the app."""
+    global _CONTROLLER_LISTENER
+    try:
+        if _CONTROLLER_LISTENER is not None:
+            _CONTROLLER_LISTENER.stop()
+    except Exception:
+        pass
+    _CONTROLLER_LISTENER = None
+    try:
+        import gameinput_api
+        gameinput_api.reset_diag()
+    except Exception:
+        pass
+    return start_controller()
+
+
 def _controller_action(action_name):
+    # record it for the settings debugger before dispatching
+    _LAST_CONTROLLER_ACTION[0] = action_name
+    _LAST_CONTROLLER_ACTION[1] = time.time()
     try:
         webview.windows[0].evaluate_js(f"window.handleControllerInput && window.handleControllerInput('{action_name}')")
     except Exception:
@@ -1186,7 +1431,11 @@ def _controller_any():
         pass
 
 
+_CONTROLLER_LISTENER = None  # kept for the settings screen's controller_status()
+
+
 def start_controller():
+    global _CONTROLLER_LISTENER
     controls = store.load_controller_controls()
     listener = ControllerListener(
         controls,
@@ -1194,7 +1443,10 @@ def start_controller():
         on_any=_controller_any,
         on_quit_combo=_quit_via_combo,
         on_foreground_combo=_bring_to_foreground,
+        foreground_trigger_getter=lambda: SETTINGS.get("foreground_trigger", "start_select"),
+        prefer_xinput=bool(SETTINGS.get("prefer_xinput", False)),
     )
+    _CONTROLLER_LISTENER = listener
     listener.start()
     return listener
 
@@ -1247,13 +1499,11 @@ def main():
     )
     window._meridian_fullscreen = borderless_fullscreen
 
-    # Best-effort library freshness: silently launch Playnite in the
-    # background, wait for its MeridianExporter extension to rewrite the
-    # export file (proof a library sync completed), then close it again —
-    # all without blocking the UI from showing immediately. See
-    # playnite_sync.py for the honest limitations of this approach.
-    playnite_cfg = SETTINGS.setdefault("playnite", {"export_path": None, "executable_path": None})
-    playnite_sync.silent_sync_in_background(playnite_cfg, timeout=90)
+    # NOTE: Playnite is deliberately NOT launched on startup anymore. The
+    # gallery reads whatever the last export produced; refreshing the
+    # library is now an explicit user action ("Sync Playnite now" in
+    # Settings), so opening the gallery never spawns Playnite.
+    SETTINGS.setdefault("playnite", {"export_path": None, "executable_path": None})
 
     start_controller()
     webview.start(debug=False, gui="edgechromium")

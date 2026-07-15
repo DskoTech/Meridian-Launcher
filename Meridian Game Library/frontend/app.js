@@ -160,6 +160,8 @@ const state = {
   gameFilter: {}, // per category id: "all" | "installed" | "not_installed"
   gameLibraryFull: {}, // per category id: unfiltered entries, so filtering doesn't need a refetch
   filterPresets: [], // [{id, name, count}] saved Playnite filter presets, when that toggle is on
+  userThemes: [], // discovered themes from the themes/ folder
+  userThemeCss: {}, // { __active: slug } tracks which user theme CSS is injected
   gridFocus: "list", // "list" | "filter" — which pane has directional focus in a game_grid section
   radialFocus: "sections", // "sections" | "options" | "subfolder" — sections/filter focus cycle
   sectionsBrowseIndex: 0, // which section is highlighted while browsing, until confirmed
@@ -228,6 +230,40 @@ function buildCategories(settings) {
   ];
 }
 
+
+// Renders playnite_filter_diagnostics() into the settings panel.
+async function updatePlayniteFilterDebug() {
+  const box = document.getElementById("playnite-filter-debug");
+  if (!box) return;
+  let d;
+  try { d = await api().playnite_filter_diagnostics(); }
+  catch (e) { box.textContent = "diagnostics unavailable: " + e; return; }
+  const L = [];
+  L.push(`toggle on      : ${d.toggle_on ? "yes" : "NO  <-- turn on 'Playnite filter sections' above"}`);
+  L.push(`import source  : ${d.import_source}`);
+  L.push(`export file    : ${d.export_path || "(not resolved)"}`);
+  L.push(`  exists       : ${d.export_exists ? "yes" : "NO  <-- run 'Export library for Meridian' in Playnite"}`);
+  L.push(`presets file   : ${d.presets_path || "(n/a)"}`);
+  L.push(`  exists       : ${d.presets_exists ? "yes" : "NO  <-- the extension didn't write it (is it v1.1?)"}`);
+  if (d.presets_exists) {
+    L.push(`  size         : ${d.presets_bytes} bytes   json: ${d.presets_json_type || "?"}`);
+    L.push(`  raw presets  : ${d.presets_count_raw}`);
+    if (d.presets_parse_error) L.push(`  PARSE ERROR  : ${d.presets_parse_error}`);
+    L.push(`  preview      : ${(d.presets_preview || "").replace(/\s+/g, " ").slice(0, 120)}`);
+  }
+  L.push(`parsed presets : ${d.presets_parsed}`);
+  if (d.preset_names && d.preset_names.length) L.push(`  names        : ${d.preset_names.join(", ")}`);
+  if (d.error) L.push(`error          : ${d.error}`);
+  if (d.presets_exists && d.presets_count_raw === 0) {
+    L.push("");
+    L.push(">> The file is there but empty: Playnite exported zero presets.");
+    L.push("   Check you actually have saved filter presets in Playnite, then");
+    L.push("   re-run Extensions > 'Export library for Meridian' \u2014 its dialog");
+    L.push("   reports how many it found.");
+  }
+  box.textContent = L.join("\n");
+}
+
 async function loadFilterPresets(settings) {
   if (settings && settings.playnite_filter_sections && (settings.game_import_source || "playnite") === "playnite") {
     try {
@@ -279,6 +315,8 @@ function ensureCategoryElement(cat) {
 
 function renderCategories() {
   const row = el("category-row");
+  // expose the focus target to CSS (drives the CyberRadial hub glow)
+  document.body.dataset.radialFocus = state.radialFocus || "sections";
 
   // drop persistent elements for categories that no longer exist (e.g. a removed custom section)
   const currentIds = new Set(state.categories.map((c) => c.id));
@@ -377,10 +415,28 @@ function applyAccent() {
 // Purely a CSS concern driven by one body class — see style.css. The
 // grid's own left/right/up/down navigation (handleDirectionalLeft etc.)
 // is unchanged either way — CyberRadial here is a visual reflow only.
+// A user custom theme is any layout value starting with "user-"; it renders
+// on top of a chosen built-in base (see user_themes.py). We look it up in
+// the cached list discovered from the themes/ folder.
+function currentUserTheme() {
+  const layout = state.settings && state.settings.layout;
+  if (!layout || !layout.startsWith("user-")) return null;
+  const slug = layout.slice("user-".length);
+  return (state.userThemes || []).find((t) => t.slug === slug) || null;
+}
+function userThemeBase() {
+  const t = currentUserTheme();
+  return t ? t.base : null;
+}
+
 function isCyberRadial() {
+  const base = userThemeBase();
+  if (base) return base === "cyber_radial";
   return !!(state.settings && state.settings.layout === "cyber_radial");
 }
 function isDawningHorizon() {
+  const base = userThemeBase();
+  if (base) return base === "dawning_horizon";
   return !!(state.settings && (state.settings.layout === "dawning_horizon" || !state.settings.layout));
 }
 // ---------------- Dawning Horizon: primary theme color ----------------
@@ -409,10 +465,57 @@ const DAWNING_PALETTES = {
   bubblegum: { bg0: [82, 80], bg1: [90, 70], accent: [88, 42], lightBg: true },
 };
 
+// Derive an HSL hue (0-360) and a light/dark hint from a #rrggbb string,
+// so a custom grid-picked color can drive the same hue-based engine as the
+// named palettes.
+function hexToHue(hex) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16) / 255;
+  const g = parseInt(h.slice(2, 4), 16) / 255;
+  const b = parseInt(h.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let hue = 0;
+  if (d !== 0) {
+    if (max === r) hue = ((g - b) / d) % 6;
+    else if (max === g) hue = (b - r) / d + 2;
+    else hue = (r - g) / d + 4;
+    hue *= 60;
+    if (hue < 0) hue += 360;
+  }
+  const light = (max + min) / 2;
+  return { hue, light };
+}
+
+
+function hslToHex(h, sPct, lPct) {
+  const sN = sPct / 100, lN = lPct / 100;
+  const c = (1 - Math.abs(2 * lN - 1)) * sN;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = lN - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return "#" + [r, g, b].map((v) => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("");
+}
+
 function parseDawningThemeColor(settings) {
   const raw = (settings && settings.dawning_theme_color) || "original";
   if (raw === "original") return null;
   const [palette, hueName] = raw.split(":");
+  if (palette === "hex") {
+    // Custom color from the mspaint-style grid. Build a palette on the fly
+    // from its hue, leaning light or dark to match the picked color.
+    const { hue, light } = hexToHue(hueName);
+    const isLight = light > 0.6;
+    const pal = isLight
+      ? { bg0: [55, 88], bg1: [60, 80], accent: [60, 44], lightBg: true }
+      : { bg0: [80, 16], bg1: [88, 26], accent: [90, 62], lightBg: false };
+    return { palette: pal, hue };
+  }
   const pal = DAWNING_PALETTES[palette];
   const hueEntry = DAWNING_HUES.find(([name]) => name === hueName);
   if (!pal || !hueEntry) return null;
@@ -458,11 +561,52 @@ const DAWNING_ACCENT_VARS = [
   "steam", "gog", "epic", "amazon", "other", "settings", "music",
 ];
 
+// Toggle the body class for the active user theme (layout-user-<slug>) and
+// make sure its CSS is present in a <style id="user-theme-css"> element.
+// Only one user theme is active at a time; clear the class/CSS otherwise.
+function applyUserThemeClass() {
+  const t = currentUserTheme();
+  Array.prototype.slice.call(document.body.classList)
+    .filter((c) => c.indexOf("layout-user-") === 0)
+    .forEach((c) => document.body.classList.remove(c));
+  const styleEl = ensureUserThemeStyleEl();
+  if (!t) { styleEl.textContent = ""; return; }
+  document.body.classList.add("layout-user-" + t.slug);
+  if (state.userThemeCss.__active !== t.slug) {
+    api().get_user_theme_css(state.settings.layout).then((res) => {
+      styleEl.textContent = (res && res.css) || t.css || "";
+      state.userThemeCss.__active = t.slug;
+    }).catch(() => { styleEl.textContent = t.css || ""; });
+  }
+}
+function ensureUserThemeStyleEl() {
+  let el2 = document.getElementById("user-theme-css");
+  if (!el2) {
+    el2 = document.createElement("style");
+    el2.id = "user-theme-css";
+    document.head.appendChild(el2);
+  }
+  return el2;
+}
+async function loadUserThemes() {
+  try {
+    state.userThemes = (await api().list_user_themes()) || [];
+  } catch (e) {
+    state.userThemes = [];
+  }
+}
+
 function applyLayoutClass() {
+  // Built-in base classes are driven by isCyberRadial()/isDawningHorizon(),
+  // which already resolve a user theme's chosen base. On top of that we add
+  // the user theme's own class and inject its stylesheet.
   document.body.classList.toggle("layout-cyberradial", isCyberRadial());
   document.body.classList.toggle("layout-dawninghorizon", isDawningHorizon());
   document.body.classList.toggle("layout-nighthorizon", !isCyberRadial() && !isDawningHorizon());
+  applyUserThemeClass();
   applyDawningThemeColor(state.settings);
+  if (state.settings) { applyBackground(state.settings); applyOverlay(state.settings); }
+  applyTaskbarPlacement();
 }
 
 // ---------------- category selection (always live, no separate "enter" step) ----------------
@@ -478,10 +622,6 @@ function selectCategory(i) {
   refreshItemPanel();
 }
 
-function moveCategory(delta) {
-  const next = (state.catIndex + delta + state.categories.length) % state.categories.length;
-  selectCategory(next);
-}
 
 function isGameGridCategory() {
   const cat = state.categories[state.catIndex];
@@ -505,8 +645,18 @@ function currentGridRowBounds() {
 // change sections or jump to the filter sidebar; that's Y/\ (forward) and
 // B/Space (back) exclusively, so there's one predictable way to reach
 // each panel instead of several overlapping ones.
+function scrollSections(delta) {
+  const n = state.categories.length;
+  state.sectionsBrowseIndex = (state.sectionsBrowseIndex + delta + n) % n;
+  renderCategories();
+}
 function handleDirectionalLeft() {
-  if (state.radialFocus === "sections") return;
+  // DawningHorizon: the sections bar is horizontal, so left/right scrolls
+  // it (instead of up/down, which the vertical themes use).
+  if (state.radialFocus === "sections") {
+    if (isDawningHorizon()) scrollSections(-1);
+    return;
+  }
   if (isGameGridCategory() && state.gridFocus === "list") {
     const { rowStart } = currentGridRowBounds();
     if (state.selected > rowStart) moveSelection(-1);
@@ -514,7 +664,10 @@ function handleDirectionalLeft() {
   }
 }
 function handleDirectionalRight() {
-  if (state.radialFocus === "sections") return;
+  if (state.radialFocus === "sections") {
+    if (isDawningHorizon()) scrollSections(1);
+    return;
+  }
   if (isGameGridCategory() && state.gridFocus === "list") {
     const { rowEnd } = currentGridRowBounds();
     if (state.selected < rowEnd) moveSelection(1);
@@ -523,9 +676,9 @@ function handleDirectionalRight() {
 }
 function handleDirectionalUp() {
   if (state.radialFocus === "sections") {
-    const n = state.categories.length;
-    state.sectionsBrowseIndex = (state.sectionsBrowseIndex - 1 + n) % n;
-    renderCategories();
+    // vertical themes scroll sections with up/down; DawningHorizon uses
+    // left/right, so up/down does nothing to the section bar there.
+    if (!isDawningHorizon()) scrollSections(-1);
     return;
   }
   if (isGameGridCategory() && state.gridFocus === "filter") { moveFilterSelection(-1); return; }
@@ -534,9 +687,7 @@ function handleDirectionalUp() {
 }
 function handleDirectionalDown() {
   if (state.radialFocus === "sections") {
-    const n = state.categories.length;
-    state.sectionsBrowseIndex = (state.sectionsBrowseIndex + 1) % n;
-    renderCategories();
+    if (!isDawningHorizon()) scrollSections(1);
     return;
   }
   if (isGameGridCategory() && state.gridFocus === "filter") { moveFilterSelection(1); return; }
@@ -888,11 +1039,6 @@ async function storeLoginFlow(storeId) {
   }
 }
 
-function formatPlaytime(minutes) {
-  if (!minutes) return "Not played yet";
-  const hours = minutes / 60;
-  return hours >= 1 ? `${hours.toFixed(hours < 10 ? 1 : 0)} hrs played` : `${minutes} min played`;
-}
 
 function rowContentFor(cat, item, i) {
   if (item.__browsingEmpty) {
@@ -1274,10 +1420,38 @@ async function renderSettings() {
   // controller controls quick reference — always the first settings block
   const controlsBlock = document.createElement("div");
   controlsBlock.className = "settings-block";
-  controlsBlock.innerHTML = `<h3>Controller controls</h3>
+  controlsBlock.innerHTML = `<h3>Controller controls</h3>\n    <div id="controller-status-line" class="controller-status">Controller API: checking\u2026</div>
     <p class="settings-note">What each controller button does in Meridian Game Library. Confirm/Back/directions can be remapped in controller_controls.json; combos always use the physical buttons listed. Keyboard: Enter confirm, Space back, arrow keys navigate, the \\ key opens the side panel, Tab opens the Start menu, Escape quits.</p>
     <div class="controls-grid"><div class="controls-row"><span class="controls-btn">A</span><span class="controls-desc">Confirm / launch the selected game</span></div><div class="controls-row"><span class="controls-btn">B</span><span class="controls-desc">Back / close menus and overlays</span></div><div class="controls-row"><span class="controls-btn">D-pad / Left stick</span><span class="controls-desc">Navigate — up/down through games, left/right across sections</span></div><div class="controls-row"><span class="controls-btn">Y (tap)</span><span class="controls-desc">Jump to the Show filter side panel (All / Installed / Not Installed)</span></div><div class="controls-row"><span class="controls-btn">Start</span><span class="controls-desc">Open the Start menu — hide/unhide games, rename titles, show hidden games, close the program</span></div><div class="controls-row"><span class="controls-btn">Start + Back (together)</span><span class="controls-desc">Bring Meridian Game Library to the foreground</span></div><div class="controls-row"><span class="controls-btn">L3 + R3 (click both sticks)</span><span class="controls-desc">Quit the app instantly</span></div></div>`;
   c.appendChild(controlsBlock);
+  setTimeout(updateControllerStatusLine, 0);
+
+  // Prefer XInput: force the proven backend when GameInput misbehaves.
+  c.appendChild(buildToggleBlock(
+    "Prefer XInput",
+    !!settings.prefer_xinput,
+    async () => {
+      state.settings = await api().set_prefer_xinput(!settings.prefer_xinput);
+      renderSettings();
+    },
+    settings.prefer_xinput
+      ? "Using XInput. Proven and reliable; the Xbox/Guide button isn't reported on this path."
+      : "Using GameInput when available (falls back to XInput). GameInput reports the Xbox/Guide button.",
+  ));
+
+  // Controller debugger — live diagnostics, refreshed while it's on screen.
+  const dbgBlock = document.createElement("div");
+  dbgBlock.className = "settings-block";
+  dbgBlock.innerHTML = `<h3>Controller debugger</h3>
+    <p class="settings-note">Live view of the input pipeline. Press buttons and move the sticks \u2014 if "last action" and the raw state update, input is reaching the app.</p>
+    <pre id="controller-debug" class="controller-debug">collecting\u2026</pre>`;
+  const dbgReset = document.createElement("button");
+  dbgReset.className = "btn-link";
+  dbgReset.textContent = "Reset counters";
+  dbgReset.addEventListener("click", async () => { await api().reset_controller_debug(); updateControllerDebug(); });
+  dbgBlock.appendChild(dbgReset);
+  c.appendChild(dbgBlock);
+  startControllerDebugPolling();
 
   // One shared connection now — Playnite itself. Steam/GOG/Epic/Luna are
   // just filtered views into whatever Playnite's library export contains.
@@ -1289,13 +1463,25 @@ async function renderSettings() {
   winBlock.innerHTML = `<h3>Window mode</h3>`;
   const radioWrap = document.createElement("div");
   radioWrap.className = "radio-group";
-  ["fullscreen", "windowed"].forEach((mode) => {
+  // Same window modes as Meridian Launcher, minus Kiosk: the Launcher has
+  // unlock paths for kiosk (45s Y-hold, the d-pad code); the Game Library
+  // has none, so offering it here could lock someone out with no way back.
+  const WINDOW_MODE_LABELS = {
+    exclusive_fullscreen: "Exclusive Fullscreen",
+    windowed_fullscreen: "Windowed Fullscreen",
+    windowed: "Windowed",
+  };
+  ["exclusive_fullscreen", "windowed_fullscreen", "windowed"].forEach((mode) => {
     const pill = document.createElement("div");
     pill.className = "radio-pill" + (settings.window_mode === mode ? " active" : "");
-    pill.textContent = mode[0].toUpperCase() + mode.slice(1);
+    pill.textContent = WINDOW_MODE_LABELS[mode];
     pill.addEventListener("click", async () => { await api().set_window_mode(mode); renderSettings(); });
     radioWrap.appendChild(pill);
   });
+  const winNote = document.createElement("p");
+  winNote.className = "settings-note";
+  winNote.textContent = "Switching between framed and frameless fully applies after a restart (a pywebview limitation).";
+  winBlock.appendChild(winNote);
   winBlock.appendChild(radioWrap);
   c.appendChild(winBlock);
 
@@ -1305,60 +1491,32 @@ async function renderSettings() {
   layoutBlock.innerHTML = `<h3>Layouts</h3>`;
   const layoutRadioWrap = document.createElement("div");
   layoutRadioWrap.className = "radio-group";
-  [["dawning_horizon", "DawningHorizon"], ["night_horizon", "Verticular Blobs"], ["cyber_radial", "CyberRadial"]].forEach(([mode, label]) => {
+  const builtinLayouts = [["dawning_horizon", "DawningHorizon"], ["night_horizon", "Verticular Blobs"], ["cyber_radial", "CyberRadial"]];
+  const userLayouts = (state.userThemes || []).map((t) => [t.layout, t.name + " \u2022 user"]);
+  [...builtinLayouts, ...userLayouts].forEach(([mode, label]) => {
     const pill = document.createElement("div");
     pill.className = "radio-pill" + ((settings.layout || "dawning_horizon") === mode ? " active" : "");
     pill.textContent = label;
-    pill.addEventListener("click", async () => { await api().set_layout(mode); renderSettings(); });
+    pill.addEventListener("click", async () => {
+      state.userThemeCss.__active = null;
+      await api().set_layout(mode);
+      await loadUserThemes();
+      renderSettings();
+    });
     layoutRadioWrap.appendChild(pill);
   });
   layoutBlock.appendChild(layoutRadioWrap);
+  const themeHint = document.createElement("p");
+  themeHint.className = "settings-note";
+  themeHint.textContent = "Add your own themes by dropping a .css file (or a folder with theme.css) into the themes/ folder next to the app, then reopen this screen.";
+  layoutBlock.appendChild(themeHint);
+  const rescan = document.createElement("button");
+  rescan.className = "btn-link";
+  rescan.textContent = "Rescan themes folder";
+  rescan.addEventListener("click", async () => { await loadUserThemes(); renderSettings(); });
+  layoutBlock.appendChild(rescan);
   c.appendChild(layoutBlock);
 
-  // Dawning Horizon primary theme color
-  const themeBlock = document.createElement("div");
-  themeBlock.className = "settings-block";
-  themeBlock.innerHTML = `<h3>Dawning Horizon theme color</h3>`;
-  const themeNote = document.createElement("p");
-  themeNote.className = "settings-note";
-  themeNote.textContent = "Re-tints the DawningHorizon background to a chosen hue; section colors follow as a complementary ROYGBIV rainbow. Only affects the DawningHorizon layout.";
-  themeBlock.appendChild(themeNote);
-  const currentThemeColor = settings.dawning_theme_color || "original";
-  const pickThemeColor = async (value) => {
-    await api().set_dawning_theme_color(value);
-    state.settings = await api().get_settings();
-    applyDawningThemeColor(state.settings);
-    renderSettings();
-  };
-  const origWrap = document.createElement("div");
-  origWrap.className = "radio-group";
-  const origPill = document.createElement("div");
-  origPill.className = "radio-pill" + (currentThemeColor === "original" ? " active" : "");
-  origPill.textContent = "Original";
-  origPill.addEventListener("click", () => pickThemeColor("original"));
-  origWrap.appendChild(origPill);
-  themeBlock.appendChild(origWrap);
-  [["light", "Light"], ["dark", "Dark"], ["neon", "Neon"], ["primary", "Primary"], ["pastel", "Pastel"], ["bubblegum", "Bubblegum"]].forEach(([pal, label]) => {
-    const row = document.createElement("div");
-    row.className = "theme-swatch-row";
-    const lab = document.createElement("span");
-    lab.className = "theme-swatch-label";
-    lab.textContent = label;
-    row.appendChild(lab);
-    DAWNING_HUES.forEach(([hueName, hueDeg]) => {
-      const value = `${pal}:${hueName}`;
-      const sw = document.createElement("button");
-      sw.type = "button";
-      sw.className = "theme-swatch" + (currentThemeColor === value ? " active" : "");
-      const rec = DAWNING_PALETTES[pal];
-      sw.style.background = `hsl(${hueDeg}, ${rec.bg1[0]}%, ${rec.bg1[1]}%)`;
-      sw.title = `${label} \u2014 ${hueName}`;
-      sw.addEventListener("click", () => pickThemeColor(value));
-      row.appendChild(sw);
-    });
-    themeBlock.appendChild(row);
-  });
-  c.appendChild(themeBlock);
 
   // games per row (gallery grid), applies across all layouts/themes
   const perRowBlock = document.createElement("div");
@@ -1433,6 +1591,64 @@ async function renderSettings() {
   );
   c.appendChild(pfBlock);
 
+  // open-programs bar behavior
+  c.appendChild(buildToggleBlock(
+    "Close tasks without prompt",
+    !!settings.close_tasks_without_prompt,
+    async () => {
+      await api().set_close_tasks_without_prompt(!settings.close_tasks_without_prompt);
+      renderSettings();
+    },
+    settings.close_tasks_without_prompt
+      ? "Holding X on an open-programs bar item closes it immediately."
+      : "Holding X on an open-programs bar item asks to confirm first.",
+  ));
+
+  // Filter-preset diagnostics: shows exactly where the reader looks and what
+  // it found, so "presets aren't showing" is answerable instead of a guess.
+  const fpBlock = document.createElement("div");
+  fpBlock.className = "settings-block";
+  fpBlock.innerHTML = `<h3>Playnite filter presets \u2014 diagnostics</h3>
+    <pre id="playnite-filter-debug" class="controller-debug">checking\u2026</pre>`;
+  const fpRefresh = document.createElement("button");
+  fpRefresh.className = "btn-link";
+  fpRefresh.textContent = "Re-check";
+  fpRefresh.addEventListener("click", () => updatePlayniteFilterDebug());
+  fpBlock.appendChild(fpRefresh);
+  c.appendChild(fpBlock);
+  setTimeout(updatePlayniteFilterDebug, 0);
+
+  // Foreground trigger: how to bring Meridian Game Library to the front when it's in
+  // the background. Input is always received in the background, but only
+  // this trigger (or clicking) brings the window forward.
+  const fgBlock = document.createElement("div");
+  fgBlock.className = "settings-block";
+  fgBlock.innerHTML = `<h3>Bring to foreground with</h3>`;
+  const fgNote = document.createElement("p");
+  fgNote.className = "settings-note";
+  fgNote.textContent = "When Meridian Game Library is running in the background, this brings it to the front. Controller input is still received while backgrounded, but won't navigate or open menus until the window is focused again.";
+  fgBlock.appendChild(fgNote);
+  const fgGroup = document.createElement("div");
+  fgGroup.className = "radio-group";
+  const fgCur = (settings.foreground_trigger) || "start_select";
+  [["start_select", "Start + Select"], ["xbox", "Xbox (Guide) button"], ["off", "Off"]].forEach(([val, label]) => {
+    const pill = document.createElement("div");
+    pill.className = "radio-pill" + (fgCur === val ? " active" : "");
+    pill.textContent = label;
+    pill.addEventListener("click", async () => {
+      state.settings = await api().set_foreground_trigger(val);
+      renderSettings();
+    });
+    fgGroup.appendChild(pill);
+  });
+  fgBlock.appendChild(fgGroup);
+  const fgXboxNote = document.createElement("p");
+  fgXboxNote.className = "settings-note";
+  fgXboxNote.textContent = "Note: the Xbox/Guide button is only reported by some controller drivers (via XInputGetStateEx). If it doesn't respond on your setup, use Start + Select.";
+  fgBlock.appendChild(fgXboxNote);
+  c.appendChild(fgBlock);
+
+
   // battery indicator
   c.appendChild(buildToggleBlock(
     "Battery Level Indicator",
@@ -1446,10 +1662,10 @@ async function renderSettings() {
   bgBlock.innerHTML = `<h3>Custom background</h3>`;
   const bgBtn = document.createElement("button");
   bgBtn.className = "btn-outline";
-  bgBtn.textContent = settings.background_image ? "Change image" : "Choose image";
+  bgBtn.textContent = themeBackground(settings) ? "Change image" : "Choose image";
   bgBtn.addEventListener("click", async () => { await api().set_background(); applyBackground(await api().get_settings()); renderSettings(); });
   bgBlock.appendChild(bgBtn);
-  if (settings.background_image) {
+  if (themeBackground(settings)) {
     const clear = document.createElement("button");
     clear.className = "btn-link";
     clear.textContent = "Clear";
@@ -1465,10 +1681,10 @@ async function renderSettings() {
   const ovRow = document.createElement("div");
   ovRow.className = "settings-row";
   const toggle = document.createElement("div");
-  toggle.className = "toggle-switch" + (settings.overlay_enabled ? " on" : "");
+  toggle.className = "toggle-switch" + (themeOverlayEnabled(settings) ? " on" : "");
   toggle.innerHTML = `<div class="knob"></div>`;
   toggle.addEventListener("click", async () => {
-    await api().set_overlay_enabled(!settings.overlay_enabled);
+    await api().set_overlay_enabled(!themeOverlayEnabled(settings));
     await applyOverlay(await api().get_settings());
     renderSettings();
   });
@@ -1477,10 +1693,10 @@ async function renderSettings() {
   ovBlock.appendChild(ovRow);
   const ovBtn = document.createElement("button");
   ovBtn.className = "btn-outline";
-  ovBtn.textContent = settings.overlay_image ? "Change overlay.png" : "Choose overlay image";
+  ovBtn.textContent = themeOverlay(settings) ? "Change overlay" : "Choose overlay image";
   ovBtn.addEventListener("click", async () => { await api().set_overlay(); await applyOverlay(await api().get_settings()); renderSettings(); });
   ovBlock.appendChild(ovBtn);
-  if (settings.overlay_image) {
+  if (themeOverlay(settings)) {
     const clear = document.createElement("button");
     clear.className = "btn-link";
     clear.textContent = "Clear";
@@ -1505,6 +1721,92 @@ async function renderSettings() {
   dataBlock.appendChild(dataBtn);
   c.appendChild(dataBlock);
 
+
+  // Theme color sits at the very bottom of Settings, right above the credit.
+  // Dawning Horizon primary theme color
+  const themeBlock = document.createElement("div");
+  themeBlock.className = "settings-block";
+  themeBlock.innerHTML = `<h3>Dawning Horizon theme color</h3>`;
+  const themeNote = document.createElement("p");
+  themeNote.className = "settings-note";
+  themeNote.textContent = "Re-tints the DawningHorizon background to a chosen hue; section colors follow as a complementary ROYGBIV rainbow. Only affects the DawningHorizon layout.";
+  themeBlock.appendChild(themeNote);
+  const currentThemeColor = settings.dawning_theme_color || "original";
+  const pickThemeColor = async (value) => {
+    await api().set_dawning_theme_color(value);
+    state.settings = await api().get_settings();
+    applyDawningThemeColor(state.settings);
+    renderSettings();
+  };
+  const origWrap = document.createElement("div");
+  origWrap.className = "radio-group";
+  const origPill = document.createElement("div");
+  origPill.className = "radio-pill" + (currentThemeColor === "original" ? " active" : "");
+  origPill.textContent = "Original";
+  origPill.addEventListener("click", () => pickThemeColor("original"));
+  origWrap.appendChild(origPill);
+  themeBlock.appendChild(origWrap);
+  [["light", "Light"], ["dark", "Dark"], ["neon", "Neon"], ["primary", "Primary"], ["pastel", "Pastel"], ["bubblegum", "Bubblegum"]].forEach(([pal, label]) => {
+    const row = document.createElement("div");
+    row.className = "theme-swatch-row";
+    const lab = document.createElement("span");
+    lab.className = "theme-swatch-label";
+    lab.textContent = label;
+    row.appendChild(lab);
+    DAWNING_HUES.forEach(([hueName, hueDeg]) => {
+      const value = `${pal}:${hueName}`;
+      const sw = document.createElement("button");
+      sw.type = "button";
+      sw.className = "theme-swatch" + (currentThemeColor === value ? " active" : "");
+      const rec = DAWNING_PALETTES[pal];
+      sw.style.background = `hsl(${hueDeg}, ${rec.bg1[0]}%, ${rec.bg1[1]}%)`;
+      sw.title = `${label} \u2014 ${hueName}`;
+      sw.addEventListener("click", () => pickThemeColor(value));
+      row.appendChild(sw);
+    });
+    themeBlock.appendChild(row);
+  });
+  // mspaint-style "edit colors" grid: an HSV plane of predefined cells
+  // beneath the named palettes, plus a live custom swatch. Picking a cell
+  // stores "hex:#rrggbb".
+  const gridWrap = document.createElement("div");
+  gridWrap.className = "color-grid-wrap";
+  const gridLabel = document.createElement("p");
+  gridLabel.className = "settings-note";
+  gridLabel.textContent = "Custom color \u2014 pick from the grid:";
+  gridWrap.appendChild(gridLabel);
+  const grid = document.createElement("div");
+  grid.className = "color-grid";
+  const COLS = 24, ROWS = 8;
+  const currentCustom = (currentThemeColor || "").startsWith("hex:")
+    ? currentThemeColor.slice(4) : null;
+  for (let r = 0; r < ROWS; r++) {
+    for (let col = 0; col < COLS; col++) {
+      const hue = Math.round((col / COLS) * 360);
+      // top rows brighter, bottom rows darker; last column a grey ramp
+      let cssColor, hex;
+      if (col === COLS - 1) {
+        const g = Math.round(255 * (1 - r / (ROWS - 1)));
+        hex = "#" + [g, g, g].map((v) => v.toString(16).padStart(2, "0")).join("");
+        cssColor = hex;
+      } else {
+        const light = 88 - (r / (ROWS - 1)) * 70; // 88% -> 18%
+        const sat = 85;
+        cssColor = `hsl(${hue}, ${sat}%, ${light}%)`;
+        hex = hslToHex(hue, sat, light);
+      }
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "color-cell" + (currentCustom && currentCustom.toLowerCase() === hex.toLowerCase() ? " active" : "");
+      cell.style.background = cssColor;
+      cell.title = hex;
+      cell.addEventListener("click", () => pickThemeColor("hex:" + hex));
+      grid.appendChild(cell);
+    }
+  }
+  gridWrap.appendChild(grid);
+  themeBlock.appendChild(gridWrap);
+  c.appendChild(themeBlock);
 
   // credit footer — always the very last thing in the settings box
   const creditBlock = document.createElement("div");
@@ -1590,87 +1892,7 @@ function buildPlayniteConnectionBlock(settings) {
   return block;
 }
 
-function buildExeSectionBlock(sec) {
-  const block = document.createElement("div");
-  block.className = "settings-block";
-  block.id = `settings-block-${sec.id}`;
-  const h = document.createElement("h3");
-  h.textContent = sec.label;
-  block.appendChild(h);
-  const listWrap = document.createElement("div");
-  block.appendChild(listWrap);
 
-  const refreshList = (items) => {
-    listWrap.innerHTML = "";
-    items.forEach((it) => {
-      const row = document.createElement("div");
-      row.className = "folder-row";
-      row.innerHTML = `<span>${escapeHtml(it.name)}</span><button title="Remove">&#10005;</button>`;
-      row.querySelector("button").addEventListener("click", async () => {
-        const updated = await api().remove_exe_from_section(sec.id, it.path);
-        refreshList(updated);
-      });
-      listWrap.appendChild(row);
-    });
-  };
-
-  api().list_section_items(sec.id).then(refreshList);
-
-  const addBtn = document.createElement("button");
-  addBtn.className = "add-folder-btn";
-  addBtn.textContent = `+ Add .exe to ${sec.label}`;
-  addBtn.addEventListener("click", async () => {
-    const updated = await api().add_exe_to_section(sec.id);
-    refreshList(updated);
-  });
-  block.appendChild(addBtn);
-
-  if (sec.custom) {
-    const rm = document.createElement("button");
-    rm.className = "btn-link";
-    rm.textContent = "Remove this section";
-    rm.addEventListener("click", async () => { await api().remove_custom_section(sec.id); await refreshAfterSettingsChange(); });
-    block.appendChild(rm);
-  }
-
-  return block;
-}
-
-async function buildMacroSectionBlock() {
-  const block = document.createElement("div");
-  block.className = "settings-block";
-  block.id = "settings-block-macros";
-  block.innerHTML = `<h3>Macros</h3>`;
-  const listWrap = document.createElement("div");
-  block.appendChild(listWrap);
-
-  const refreshList = (items) => {
-    listWrap.innerHTML = "";
-    items.filter((it) => it.type !== "builtin").forEach((it) => {
-      const row = document.createElement("div");
-      row.className = "folder-row";
-      row.innerHTML = `<span>${escapeHtml(it.name)}</span><button title="Remove">&#10005;</button>`;
-      row.querySelector("button").addEventListener("click", async () => {
-        const updated = await api().remove_macro_item(it.path);
-        refreshList(updated);
-      });
-      listWrap.appendChild(row);
-    });
-  };
-
-  const items = await api().list_macro_items();
-  refreshList(items);
-
-  const addBtn = document.createElement("button");
-  addBtn.className = "add-folder-btn";
-  addBtn.textContent = "+ Add .bat to Macros";
-  addBtn.addEventListener("click", async () => {
-    const updated = await api().add_bat_to_macros();
-    refreshList(updated);
-  });
-  block.appendChild(addBtn);
-  return block;
-}
 
 async function refreshAfterSettingsChange() {
   const settings = await api().get_settings();
@@ -1684,11 +1906,6 @@ async function refreshAfterSettingsChange() {
 
 // ---------------- custom section modal ----------------
 
-function openSectionModal() {
-  el("modal-overlay").classList.remove("hidden");
-  el("modal-input").value = "";
-  el("modal-input").focus();
-}
 function closeSectionModal() {
   el("modal-overlay").classList.add("hidden");
 }
@@ -1708,24 +1925,64 @@ el("modal-input").addEventListener("keydown", (e) => {
 
 // ---------------- appearance: background & overlay ----------------
 
+
+function currentLayoutKey() {
+  return (state.settings && state.settings.layout) || "dawning_horizon";
+}
+function themeBackground(settings) {
+  const k = currentLayoutKey();
+  return (settings.background_by_theme && settings.background_by_theme[k]) || null;
+}
+function themeOverlay(settings) {
+  const k = currentLayoutKey();
+  return (settings.overlay_by_theme && settings.overlay_by_theme[k]) || null;
+}
+function themeOverlayEnabled(settings) {
+  const k = currentLayoutKey();
+  return !!(settings.overlay_enabled_by_theme && settings.overlay_enabled_by_theme[k]);
+}
+
 function applyBackground(settings) {
   const layer = el("bg-image-layer");
-  if (settings.background_image) {
-    api().get_media_url(settings.background_image).then((url) => {
-      layer.style.backgroundImage = `url("${url}")`;
+  const custom = themeBackground(settings);
+  if (custom) {
+    api().get_media_url(custom).then((url) => {
+      layer.style.backgroundImage = `url("${url}")`;  // static or animated .gif
     });
   } else {
-    layer.style.backgroundImage = "none";
+    api().theme_asset_urls().then((a) => {
+      layer.style.backgroundImage = a && a.background ? `url("${a.background}")` : "none";
+    });
   }
+}
+
+
+// Overlay show/hide. Bound to the Left Trigger (the only unused controller
+// input) and the O key. This is a runtime toggle — it doesn't change the
+// saved per-theme overlay setting, it just gets the frame out of the way.
+let _overlayHidden = false;
+function toggleOverlayVisibility() {
+  _overlayHidden = !_overlayHidden;
+  const c = el("overlay-canvas");
+  if (c) c.style.visibility = _overlayHidden ? "hidden" : "";
+  showToast(_overlayHidden ? "Overlay hidden" : "Overlay shown");
 }
 
 async function applyOverlay(settings) {
   const canvas = el("overlay-canvas");
-  if (!settings.overlay_enabled || !settings.overlay_image) {
+  if (!themeOverlayEnabled(settings)) {
     canvas.classList.remove("active");
     return;
   }
-  const url = await api().get_media_url(settings.overlay_image);
+  const custom = themeOverlay(settings);
+  let url;
+  if (custom) {
+    url = await api().get_media_url(custom);
+  } else {
+    const a = await api().theme_asset_urls();
+    url = a && a.overlay;
+    if (!url) { canvas.classList.remove("active"); return; }
+  }
   const img = new Image();
   img.crossOrigin = "anonymous";
   img.onload = () => {
@@ -2037,6 +2294,21 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "Tab") { e.preventDefault(); if (!e.repeat) toggleStartMenu(); return; }
 
+  // Shift = keyboard X: jump to/from the open-programs bar. Delete closes
+  // the highlighted task while the bar is focused.
+  if (e.key === "o" || e.key === "O") { if (!e.repeat) toggleOverlayVisibility(); return; }
+  if (e.key === "Shift") { if (!e.repeat) toggleTaskbarFocus(); return; }
+  if (taskbarState.focused) {
+    if (kc && e.key === kc.up) { e.preventDefault(); handleTaskbarInput("up"); return; }
+    if (kc && e.key === kc.down) { e.preventDefault(); handleTaskbarInput("down"); return; }
+    if (kc && e.key === kc.left) { e.preventDefault(); handleTaskbarInput("left"); return; }
+    if (kc && e.key === kc.right) { e.preventDefault(); handleTaskbarInput("right"); return; }
+    if (kc && e.key === kc.confirm) { e.preventDefault(); if (!e.repeat) handleTaskbarInput("confirm"); return; }
+    if (kc && e.key === kc.back) { e.preventDefault(); if (!e.repeat) handleTaskbarInput("back"); return; }
+    if (e.key === "Delete") { if (!e.repeat) closeTaskbarSelection(); return; }
+    return;
+  }
+
   if (!kc) return;
   if (e.key === kc.confirm) { if (!e.repeat) activateCurrentSelection(); }
   else if (e.key === kc.back) { if (!e.repeat) handleBack(); }
@@ -2244,12 +2516,322 @@ function closeRenameModal() {
   hideOsk();
 }
 
+
+// Live controller-backend indicator inside the controls block: which API
+// (GameInput / XInput / none) is actually driving input, and whether a
+// pad is connected right now. Refreshes while the settings screen is up.
+
+// ---------------- controller debugger ----------------
+// Polls controller_debug() while the panel is on screen and renders a plain
+// readout. The point is to make each stage of the pipeline visible:
+// backend chosen -> readings arriving -> gamepad state decoded -> action
+// dispatched to the UI. Whichever line stops updating is the broken stage.
+let _ctrlDebugTimer = null;
+function startControllerDebugPolling() {
+  if (_ctrlDebugTimer) clearInterval(_ctrlDebugTimer);
+  updateControllerDebug();
+  _ctrlDebugTimer = setInterval(() => {
+    if (!document.getElementById("controller-debug")) {
+      clearInterval(_ctrlDebugTimer); _ctrlDebugTimer = null; return;
+    }
+    updateControllerDebug();
+  }, 500);
+}
+
+async function updateControllerDebug() {
+  const box = document.getElementById("controller-debug");
+  if (!box) return;
+  let d;
+  try { d = await api().controller_debug(); } catch (e) { box.textContent = "debug unavailable: " + e; return; }
+  const diag = d.diag || {};
+  const st = diag.last_state;
+  const lines = [];
+  lines.push(`backend        : ${d.backend || "none"}${d.prefer_xinput ? "  (Prefer XInput is ON)" : ""}`);
+  if (d.env_override) lines.push(`env override   : MERIDIAN_INPUT_BACKEND=${d.env_override}`);
+  lines.push(`controller     : ${d.connected ? "connected" : "NOT connected"}`);
+  lines.push(`app focused    : ${d.foreground === null ? "?" : (d.foreground ? "yes" : "no  (input is received but won't navigate)")}`);
+  lines.push("");
+  if (d.backend === "GameInput" || Object.keys(diag.slot_probe || {}).length) {
+    lines.push("GameInput pipeline:");
+    lines.push(`  stage        : ${diag.stage || "?"}`);
+    lines.push(`  polls        : ${diag.polls || 0}`);
+    lines.push(`  readings     : ${diag.readings || 0}   (no reading: ${diag.no_reading || 0})`);
+    lines.push(`  states       : ${diag.states || 0}   (GetGamepadState false: ${diag.state_false || 0})`);
+    lines.push(`  reading slot : ${d.gamepad_slot || diag.slot || "not resolved"}`);
+    if (diag.last_hr !== null && diag.last_hr !== undefined) {
+      const hr = diag.last_hr < 0 ? (diag.last_hr >>> 0).toString(16).toUpperCase() : diag.last_hr;
+      lines.push(`  last HRESULT : 0x${hr}`);
+    }
+    const probe = diag.slot_probe || {};
+    Object.keys(probe).forEach((k) => lines.push(`  slot ${k}      : ${probe[k]}`));
+    lines.push("");
+  }
+  if (d.backend_errors && Object.keys(d.backend_errors).length) {
+    lines.push("backend errors:");
+    Object.keys(d.backend_errors).forEach((k) => lines.push(`  ${k}: ${d.backend_errors[k]}`));
+    lines.push("");
+  }
+  // The decisive check: a wrong-but-plausible vtable slot returns zeros
+  // forever, which is indistinguishable from an idle pad in one sample.
+  if (d.backend === "GameInput" && (diag.states || 0) > 0) {
+    const seen = diag.buttons_seen || 0;
+    const anyInput = seen !== 0 || diag.stick_moved || diag.trigger_moved;
+    lines.push(`input ever seen: ${anyInput ? "YES" : "NO  <-- slot " + (d.gamepad_slot || diag.slot) + " is decoding, but never sees input"}`);
+    lines.push(`  buttons seen : 0x${(seen >>> 0).toString(16).toUpperCase().padStart(8, "0")}   (states with a button down: ${diag.nonzero_states || 0})`);
+    lines.push(`  stick moved  : ${diag.stick_moved ? "yes" : "no"}    trigger moved: ${diag.trigger_moved ? "yes" : "no"}`);
+    if (!anyInput) {
+      lines.push("  >> press every button and waggle both sticks. If this stays");
+      lines.push("     empty, this vtable slot is the wrong function. Turn on");
+      lines.push("     'Prefer XInput' above to get working input meanwhile.");
+    }
+    lines.push("");
+  }
+  lines.push("raw pad state:");
+  if (st) {
+    lines.push(`  buttons ${st.buttons}   LT ${st.lt}  RT ${st.rt}`);
+    lines.push(`  L stick ${st.lx}, ${st.ly}    R stick ${st.rx}, ${st.ry}`);
+  } else {
+    lines.push("  (none decoded yet)");
+  }
+  lines.push("");
+  lines.push(`last action    : ${d.last_action || "(none yet)"}${d.last_action_age !== null && d.last_action_age !== undefined ? "   " + d.last_action_age + "s ago" : ""}`);
+  box.textContent = lines.join("\n");
+}
+
+async function updateControllerStatusLine() {
+  const elLine = document.getElementById("controller-status-line");
+  if (!elLine) return;
+  let st = null;
+  try { st = await api().controller_status(); } catch (e) { st = null; }
+  let text, cls;
+  if (!st || !st.backend) {
+    text = "Controller API: none available \u2014 keyboard/mouse only";
+    cls = "status-bad";
+  } else {
+    text = `Controller API: ${st.backend} \u2014 ${st.connected ? "controller connected" : "no controller detected"}`;
+    cls = st.connected ? "status-good" : "status-warn";
+    if (st.override) text += ` (forced via MERIDIAN_INPUT_BACKEND=${st.override})`;
+    // If GameInput was tried but rejected, show why (helps diagnose the
+    // XInput fallback on Windows 11).
+    if (st.backend === "GameInput" && st.gamepad_slot) {
+      text += ` \u2014 reading slot ${st.gamepad_slot}`;
+    }
+    if (st.backend_errors && st.backend_errors.gameinput && st.backend !== "GameInput") {
+      text += ` \u2014 GameInput unavailable: ${st.backend_errors.gameinput}`;
+    }
+  }
+  elLine.textContent = text;
+  elLine.className = `controller-status ${cls}`;
+}
+setInterval(updateControllerStatusLine, 2000);
+
 // ---------------- controller bridge (called from Python via evaluate_js) ----------------
 // Note: confirm/back are already edge-triggered on the Python side (XInput
 // rising-edge detection), so no repeat-guard is needed here for those.
 
+const TASKBAR_PLACEMENT = {
+  // vertical, tucked under the clock/battery block on the right, running
+  // down to the bottom-right corner. Width is matched to that block via
+  // the dawning-taskbar CSS below.
+  dawning_horizon: { orientation: "vertical", position: "dawning" },
+  // horizontal, bottom edge, left side snapped to the right of the
+  // (bottom-left) clock/battery block, to the bottom-right corner.
+  night_horizon: { orientation: "horizontal", position: "night" },
+  // horizontal, bottom edge, from the left edge to the left side of the
+  // bottom-right clock/battery block.
+  cyber_radial: { orientation: "horizontal", position: "cyber" },
+};
+
+const taskbarState = { focused: false, index: 0, tasks: [], pollTimer: null, confirmingClose: false };
+
+function taskbarPlacement() {
+  const layout = (state.settings && state.settings.layout) || "dawning_horizon";
+  return TASKBAR_PLACEMENT[layout] || null;
+}
+
+function ensureTaskbarDom() {
+  if (el("task-bar")) return;
+  const bar = document.createElement("div");
+  bar.id = "task-bar";
+  bar.className = "hidden";
+  bar.innerHTML = `
+    <div id="task-bar-bubble" class="hidden"></div>
+    <div id="task-bar-list"></div>`;
+  document.body.appendChild(bar);
+}
+
+function applyTaskbarPlacement() {
+  try {
+    _applyTaskbarPlacement();
+  } catch (e) {
+    console.error("taskbar placement failed:", e);
+  }
+}
+
+function _applyTaskbarPlacement() {
+  ensureTaskbarDom();
+  const bar = el("task-bar");
+  if (!bar || !bar.classList) return;
+  const placement = taskbarPlacement();
+  bar.classList.remove("taskbar-horizontal", "taskbar-vertical");
+  // clear any previous position class (theme switches) — copy the live
+  // DOMTokenList to an array rather than spreading it
+  Array.prototype.slice.call(bar.classList)
+    .filter((c) => c.indexOf("taskbar-pos-") === 0)
+    .forEach((c) => bar.classList.remove(c));
+  if (!placement) {
+    bar.classList.add("hidden");
+    if (taskbarState.focused) exitTaskbar();
+    if (taskbarState.pollTimer) { clearInterval(taskbarState.pollTimer); taskbarState.pollTimer = null; }
+    return;
+  }
+  bar.classList.add(placement.orientation === "vertical" ? "taskbar-vertical" : "taskbar-horizontal");
+  if (placement.position) bar.classList.add(`taskbar-pos-${placement.position}`);
+  bar.classList.remove("hidden");
+  refreshTaskbarTasks();
+  if (!taskbarState.pollTimer) {
+    taskbarState.pollTimer = setInterval(refreshTaskbarTasks, 2500);
+  }
+}
+
+async function refreshTaskbarTasks() {
+  try {
+    taskbarState.tasks = (await api().list_open_tasks()) || [];
+  } catch (e) {
+    taskbarState.tasks = [];
+  }
+  if (taskbarState.index >= taskbarState.tasks.length) {
+    taskbarState.index = Math.max(0, taskbarState.tasks.length - 1);
+  }
+  renderTaskbar();
+}
+
+function renderTaskbar() {
+  const list = el("task-bar-list");
+  if (!list) return;
+  list.innerHTML = "";
+  taskbarState.tasks.forEach((t, i) => {
+    const box = document.createElement("div");
+    box.className = "task-box" + (taskbarState.focused && i === taskbarState.index ? " selected" : "");
+    if (t.icon) {
+      const img = document.createElement("img");
+      img.src = t.icon;
+      img.alt = "";
+      box.appendChild(img);
+    } else {
+      const ph = document.createElement("span");
+      ph.className = "task-box-placeholder";
+      ph.textContent = (t.title || "?").charAt(0).toUpperCase();
+      box.appendChild(ph);
+    }
+    box.addEventListener("click", () => {
+      taskbarState.index = i;
+      if (!taskbarState.focused) enterTaskbar();
+      renderTaskbar();
+    });
+    list.appendChild(box);
+  });
+  updateTaskbarBubble();
+}
+
+// The name bubble is FIXED in place (anchored just above the bar in
+// horizontal mode, beside it in vertical mode via CSS) — it changes text,
+// never position, so the eye always knows where to look.
+function updateTaskbarBubble() {
+  const bubble = el("task-bar-bubble");
+  if (!bubble) return;
+  const t = taskbarState.tasks[taskbarState.index];
+  if (taskbarState.focused && t) {
+    bubble.textContent = t.title;
+    bubble.classList.remove("hidden");
+  } else {
+    bubble.classList.add("hidden");
+  }
+}
+
+function enterTaskbar() {
+  if (!taskbarPlacement()) return; // not placed in this theme (yet)
+  taskbarState.focused = true;
+  el("task-bar").classList.add("focused");
+  refreshTaskbarTasks();
+}
+
+function exitTaskbar() {
+  taskbarState.focused = false;
+  const bar = el("task-bar");
+  if (bar) bar.classList.remove("focused");
+  updateTaskbarBubble();
+  renderTaskbar();
+}
+
+function toggleTaskbarFocus() {
+  if (taskbarState.focused) exitTaskbar();
+  else enterTaskbar();
+}
+
+function moveTaskbarSelection(delta) {
+  const n = taskbarState.tasks.length;
+  if (!n) return;
+  taskbarState.index = (taskbarState.index + delta + n) % n;
+  renderTaskbar();
+}
+
+async function activateTaskbarSelection() {
+  const t = taskbarState.tasks[taskbarState.index];
+  if (!t) return;
+  if (taskbarState.confirmingClose) { closeTaskbarSelection(); return; }
+  await api().focus_task(t.id);
+}
+
+async function closeTaskbarSelection() {
+  const t = taskbarState.tasks[taskbarState.index];
+  if (!t) return;
+  const skipPrompt = !!(state.settings && state.settings.close_tasks_without_prompt);
+  if (!skipPrompt && !taskbarState.confirmingClose) {
+    // inline confirm: bubble asks, a second hold-X (or A) confirms
+    taskbarState.confirmingClose = true;
+    const bubble = el("task-bar-bubble");
+    if (bubble) { bubble.textContent = `Close "${t.title}"? Hold X again / A to confirm`; bubble.classList.remove("hidden"); }
+    setTimeout(() => { taskbarState.confirmingClose = false; updateTaskbarBubble(); }, 4000);
+    return;
+  }
+  taskbarState.confirmingClose = false;
+  await api().close_task(t.id);
+  showToast(`Asked "${t.title}" to close.`);
+  setTimeout(refreshTaskbarTasks, 500);
+}
+
+function handleTaskbarInput(action) {
+  const placement = taskbarPlacement() || { orientation: "horizontal" };
+  const horizontal = placement.orientation !== "vertical";
+  const prev = horizontal ? "left" : "up";
+  const next = horizontal ? "right" : "down";
+  if (action === prev) moveTaskbarSelection(-1);
+  else if (action === next) moveTaskbarSelection(1);
+  else if (action === "confirm") activateTaskbarSelection();
+  else if (action === "back") exitTaskbar(); // back to the sections bar
+  else if (action === "x_taskbar") exitTaskbar();
+  else if (action === "x_taskbar_hold") closeTaskbarSelection();
+  else if (action === "y_subfolder") { exitTaskbar(); handleJumpToSubfolder(); }
+}
+
+
+
+// Focus gating: controller input keeps arriving while the app is in the
+// background (so the Python-side foreground combo can fire), but it must
+// NOT navigate or open menus until the app is the foreground window again.
+// We poll a cheap backend check and cache the result.
+let _isForeground = true;
+async function _pollForeground() {
+  try { _isForeground = await api().is_foreground(); } catch (e) { _isForeground = true; }
+}
+setInterval(_pollForeground, 400);
+_pollForeground();
+
 window.handleControllerInput = function (action) {
+  if (action === "toggle_overlay") { toggleOverlayVisibility(); return; }
   if (!state.introDismissed) return;
+  if (!_isForeground) return; // backgrounded: receive but don't act
   if (isOskCapturing()) { handleOskControllerInput(action); return; }
   if (isStartMenuOpen()) { handleStartMenuInput(action); return; }
   if (el("rename-overlay") && !el("rename-overlay").classList.contains("hidden")) {
@@ -2257,6 +2839,9 @@ window.handleControllerInput = function (action) {
     return;
   }
   if (action === "start_menu") { toggleStartMenu(); return; }
+  if (action === "x_taskbar") { toggleTaskbarFocus(); return; }
+  if (taskbarState.focused) { handleTaskbarInput(action); return; }
+  if (action === "x_taskbar_hold") return; // hold-to-close only inside the bar
   if (!el("video-overlay").classList.contains("hidden")) { handleVideoControllerInput(action); return; }
   if (isOverlayOpen()) {
     if (action === "left" && !el("photo-overlay").classList.contains("hidden")) el("photo-prev").click();
@@ -2448,11 +3033,14 @@ async function boot() {
   const [settings, kc] = await Promise.all([api().get_settings(), api().get_keyboard_controls()]);
   state.settings = settings;
   state.keyboardControls = kc;
+  await loadUserThemes(); // discover themes/ at startup so drop-ins just appear
   await loadFilterPresets(settings);
   state.categories = buildCategories(settings);
 
-  el("hint-confirm").textContent = `${kc.confirm} select`;
-  el("hint-back").textContent = `${kc.back} back`;
+  // The controls hint text was removed per design; these spans may be
+  // absent (kept commented in index.html for future use), so guard them.
+  const _hc = el("hint-confirm"); if (_hc) _hc.textContent = `${kc.confirm} select`;
+  const _hb = el("hint-back"); if (_hb) _hb.textContent = `${kc.back} back`;
 
   applyAccent();
   renderCategories();

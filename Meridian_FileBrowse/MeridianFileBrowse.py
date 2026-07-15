@@ -400,16 +400,22 @@ class Cooldown:
             self._last[key] = now
             return True
         return False
-class MeridianExplorer:
+class MeridianFileBrowse:
+    """Meridian FileBrowse — the Explorer-section-embedded fork of Meridian
+    Explorer. Kept in its own separate source files/folder (not shared with
+    Meridian Explorer or Meridian Launcher) per the "second copy, modified"
+    requirement. Always launched by Meridian Launcher with --box=X,Y,W,H
+    (never full-screen); "boxed" below is therefore always true in normal
+    use, but the non-boxed fallback is kept for standalone testing."""
+
     def __init__(self, start_path=None, box=None):
         pygame.init()
-        pygame.display.set_caption("Meridian Explorer")
+        pygame.display.set_caption("Meridian FileBrowse")
+        self.boxed = bool(box)
         if box:
-            # "Boxed" mode: used when Meridian Launcher's Explorer section is
-            # visible but hasn't loaded the full in-process Meridian
-            # FileBrowse plugin — this standalone copy of Meridian Explorer
-            # is launched sized/positioned to sit exactly inside the
-            # Launcher's list-frame box instead of covering the screen.
+            # "Boxed" mode: this is how Meridian Launcher always launches
+            # Meridian FileBrowse — sized/positioned to sit exactly inside
+            # the Explorer section's list-frame box, never OS fullscreen.
             x, y, w, h = box
             self.width, self.height = max(200, w), max(150, h)
             os.environ["SDL_VIDEO_WINDOW_POS"] = f"{x},{y}"
@@ -1232,6 +1238,8 @@ class MeridianExplorer:
         # --- normal browsing --- #
         pane = self.panes[self.active_pane]
         if event.key == pygame.K_ESCAPE:
+            # "Exit Program" (see the Start-button handler above for what
+            # happens next on Meridian Launcher's side).
             self.running = False
         elif event.key == pygame.K_UP:
             self.nav_vertical(-1)
@@ -1487,6 +1495,11 @@ class MeridianExplorer:
             if pressed(9) and self.cooldown.ready("btn_r3") and self.state == "browse":
                 self.state = "confirm_selectall"
             if pressed(7) and self.cooldown.ready("btn_start"):
+                # In boxed mode (always, under Meridian Launcher) this is
+                # "Exit Program": the process simply exits — Meridian
+                # Launcher's watcher thread notices and moves the section
+                # selector back to the Sections bar and restores its own
+                # controller/keyboard bindings. Nothing further to do here.
                 self.running = False
     # ------------------------------------------------------------------ #
     # DRAWING
@@ -1508,7 +1521,8 @@ class MeridianExplorer:
         if self.multi_active:
             hints = "A: Toggle Select Y: Options B: Cancel Multi-Select"
         else:
-            hints = "A: Confirm B: Back Y: Options LB/RB: Switch Pane L-Stick R/RT: Fast Scroll Hold Select: Multi R3: Select All Start: Quit"
+            exit_label = "Exit Program" if self.boxed else "Quit"
+            hints = f"A: Confirm B: Back Y: Options LB/RB: Switch Pane L-Stick R/RT: Fast Scroll Hold Select: Multi R3: Select All Start: {exit_label}"
         text = self.font_footer.render(hints, True, COL_DIM_TEXT)
         self.screen.blit(text, (30, y + (FOOTER_HEIGHT - text.get_height()) // 2))
     def quick_access_items(self):
@@ -1940,4 +1954,4 @@ def _start_path_from_argv():
 
 
 if __name__ == "__main__":
-    MeridianExplorer(start_path=_start_path_from_argv(), box=_parse_box_arg()).run()
+    MeridianFileBrowse(start_path=_start_path_from_argv(), box=_parse_box_arg()).run()

@@ -71,6 +71,7 @@ python -m PyInstaller ^
     --name "%APP_NAME%" ^
     --windowed ^
     --onedir ^
+    --contents-directory "MeridianGameLibrary_internal" ^
     --noconfirm ^
     --hidden-import win32timezone ^
     --collect-submodules webview ^

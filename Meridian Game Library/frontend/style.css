@@ -21,6 +21,22 @@
    a vertical stack instead of a horizontal row (see README).
    ============================================================ */
 
+/* ============================================================
+   STYLESHEET ARCHITECTURE (Game Library) — see the Launcher's
+   style.css for the full variable reference; this app shares the
+   same system:
+     body.layout-dawninghorizon | layout-nighthorizon | layout-cyberradial
+   switch the three built-in themes (applyLayoutClass in app.js), and
+   user themes add body.layout-user-<slug> on top of a chosen base,
+   with CSS injected into <style id="user-theme-css"> (user_themes.py).
+   Key vars: --active-accent (current section accent, most-referenced),
+   --bg-0/--bg-1 (bg gradient), --text-hi/--text-lo, --line, the
+   --accent-<section> palette, --hub-cx/--hub-cy/--orbit-r (CyberRadial
+   geometry), and --row-visual-size (icon size). The Game Library adds
+   a game grid (#item-panel gallery), a filter sidebar (#subfolder-nav,
+   the "Show" bar) and Playnite filter-preset sections.
+   ============================================================ */
+
 @font-face {
   font-family: 'Rajdhani';
   src: url('fonts/Rajdhani-Regular.ttf') format('truetype');
@@ -128,8 +144,10 @@ html, body {
   mix-blend-mode: luminosity;
 }
 
+/* The custom overlay draws ON TOP of the whole UI (above #app), and never
+   eats input. */
 #overlay-canvas {
-  position: fixed; inset: 0; z-index: 1;
+  position: fixed; inset: 0; z-index: 40;
   width: 100%; height: 100%;
   pointer-events: none;
   display: none;
@@ -735,6 +753,7 @@ html, body {
    neighbors rotate into that fixed spot and back out again.
    ================================================================ */
 
+/* ===== THEME: CyberRadial (Game Library) — orbital section ring; geometry via --hub-cx/--hub-cy/--orbit-r; rounded focus glow on #category-viewport::after ===== */
 body.layout-cyberradial #top-bar {
   padding: 0;
   --orbit-r: 205px;
@@ -781,7 +800,7 @@ body.layout-cyberradial #content-area {
 }
 body.layout-cyberradial #item-panel {
   margin: 0 auto; max-width: 1100px; width: 100%;
-  max-height: calc(100vh - 24px - 16.6vh - 34px);
+  max-height: calc(100vh - 24px - 16.6vh - 34px - 72px); /* extra 72px clears the open-programs bar */
   overflow-y: auto;
 }
 
@@ -886,6 +905,7 @@ body.layout-dawninghorizon .category .label {
 body.layout-dawninghorizon .category.active .icon-ring { color: var(--cat-color); border-color: var(--cat-color); box-shadow: 0 0 18px -2px var(--cat-color); }
 body.layout-dawninghorizon .category.active .label { color: var(--text-hi); text-shadow: none; }
 
+/* ===== THEME: DawningHorizon (Game Library) — horizontal sections (left/right scroll); Show bar snaps to the games box; vertical open-programs bar under clock ===== */
 body.layout-dawninghorizon #item-panel {
   background: none; border: none; clip-path: none; padding: 0;
 }
@@ -906,6 +926,7 @@ body.layout-dawninghorizon #hint-bar span {
 }
 
 /* ---------------- Verticular Blobs (NightHorizon) only ---------------- */
+/* ===== THEME: NightHorizon / Verticular Blobs (Game Library) — options box fixed w/ internal scroll; clock bottom-left; horizontal bottom taskbar ===== */
 body.layout-nighthorizon #item-panel {
   margin-bottom: 10px; /* shortens the bottom of the list box by 10px */
 }
@@ -970,4 +991,361 @@ body.layout-nighthorizon #item-panel {
 .settings-credit p {
   margin: 0; font-size: 12px; color: var(--text-lo); line-height: 1.6;
   border-top: 1px solid var(--line); padding-top: 14px; font-style: italic;
+}
+
+/* Controller backend status line (Settings > Controller controls) */
+.controller-status {
+  margin-top: 8px; font-family: var(--font-mono); font-size: 12px;
+  letter-spacing: 0.04em; padding: 6px 10px; border-radius: 6px;
+  border: 1px solid var(--line); display: inline-block;
+}
+.controller-status.status-good { color: #6ee7a8; border-color: #6ee7a8; }
+.controller-status.status-warn { color: #f5c96b; border-color: #f5c96b; }
+.controller-status.status-bad { color: #f27878; border-color: #f27878; }
+
+.theme-scope { font-size: 11px; font-weight: 400; color: var(--text-lo); letter-spacing: 0.04em; }
+
+/* mspaint-style custom color grid in the Dawning Horizon color picker */
+.color-grid-wrap { margin-top: 12px; }
+.color-grid {
+  display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px;
+  max-width: 480px; margin-top: 6px;
+  border: 1px solid var(--line); padding: 4px; border-radius: 6px;
+}
+.color-cell {
+  width: 100%; aspect-ratio: 1; padding: 0; border: 1px solid transparent;
+  cursor: pointer; border-radius: 2px;
+}
+.color-cell:hover { transform: scale(1.4); border-color: var(--text-hi); position: relative; z-index: 2; }
+.color-cell.active { border-color: var(--text-hi); box-shadow: 0 0 0 2px var(--bg-0), 0 0 0 3px var(--text-hi); }
+
+/* Controls hint bar: text removed per design; keep the (empty) element
+   for future use but take it out of the layout in every theme. */
+#hint-bar { display: none !important; }
+
+
+/* CyberRadial: sections focused -> a ROUND glow centered on the hub orb,
+   sized past the orbit ring so it surrounds the section buttons and the
+   3D orb together (replaces any square projection). */
+body.layout-cyberradial #category-viewport::after {
+  content: "";
+  position: absolute;
+  left: var(--hub-cx); top: var(--hub-cy);
+  width: calc((var(--orbit-r) + 90px) * 2);
+  height: calc((var(--orbit-r) + 90px) * 2);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle,
+    color-mix(in srgb, var(--active-accent) 30%, transparent) 0%,
+    color-mix(in srgb, var(--active-accent) 18%, transparent) 55%,
+    transparent 72%);
+  opacity: 0;
+  transition: opacity 260ms ease;
+  z-index: 0;
+}
+body.layout-cyberradial[data-radial-focus="sections"] #category-viewport::after {
+  opacity: 1;
+}
+
+/* ---- DawningHorizon: open-programs bar + Show-bar snapping ---- */
+/* Clock/battery fixed top-right so the vertical taskbar can tuck under it. */
+body.layout-dawninghorizon #clock-wrap {
+  position: fixed; top: 20px; right: 24px; z-index: 30;
+  width: 200px; align-items: flex-end;
+}
+
+/* Games options box (#item-panel) and the Show bar (#subfolder-nav) sit
+   top-aligned and snapped: the Show bar's top-left meets the games box's
+   top-right (gap removed, both pinned to the top). The whole content row
+   leaves a right margin for the vertical taskbar. */
+body.layout-dawninghorizon #content-area {
+  align-items: flex-start;
+  gap: 0;
+  padding-right: 136px; /* clears the 100px bar + edge gap */
+}
+body.layout-dawninghorizon #item-panel { margin: 0; }
+body.layout-dawninghorizon #subfolder-nav {
+  margin-left: 0;              /* left edge meets the games box right edge */
+  align-self: flex-start;      /* top snaps to the games box top */
+}
+
+/* The vertical open-programs bar: under the clock block, right flush to
+   the screen edge, down to the bottom-right corner. */
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning {
+  position: fixed;
+  top: 76px;      /* just under the clock/battery block */
+  right: 0;       /* right side snapped to the screen edge */
+  bottom: 0;      /* to the bottom-right corner */
+  width: 200px;   /* matches the clock/battery block width */
+  left: auto;
+  border-right: none; border-bottom: none;
+  border-top-right-radius: 0; border-bottom-right-radius: 0;
+  flex-direction: column;
+}
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning #task-bar-list {
+  flex-direction: column; flex-wrap: nowrap; align-items: center; overflow-y: auto;
+}
+/* Collision guard: if the Show bar would reach under the taskbar, cap its
+   width so it shrinks from the right and stays clear (the content row's
+   right padding already reserves the bar's column, so this mainly bounds
+   the Show bar on very narrow screens). */
+body.layout-dawninghorizon #subfolder-nav { max-width: 220px; }
+
+/* ---------------- open-programs bar (taskbar replacement) ----------------
+   Hidden until a theme claims a placement (TASKBAR_PLACEMENT in app.js). */
+#task-bar {
+  position: fixed; z-index: 40;
+  background: var(--panel);
+  border: 3px solid var(--line);
+  border-radius: 12px;
+  padding: 6px; backdrop-filter: blur(10px);
+  display: flex;
+}
+#task-bar.hidden { display: none; }
+#task-bar.focused { border-color: var(--active-accent); }
+#task-bar-list { display: flex; gap: 6px; min-width: 0; min-height: 0; }
+#task-bar.taskbar-horizontal { flex-direction: column; }
+#task-bar.taskbar-horizontal #task-bar-list { flex-direction: row; }
+#task-bar.taskbar-vertical #task-bar-list { flex-direction: column; }
+.task-box {
+  width: 48px; height: 48px; flex: 0 1 auto; min-width: 22px; min-height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-1) 60%, transparent);
+  cursor: pointer; overflow: hidden;
+}
+.task-box img { width: 32px; height: 32px; max-width: 85%; max-height: 85%; object-fit: contain; }
+.task-box-placeholder { font-family: var(--font-display); font-size: 18px; color: var(--text-lo); }
+.task-box.selected {
+  border-color: var(--active-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--active-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--active-accent) 18%, transparent);
+}
+#task-bar-bubble {
+  position: absolute; background: var(--panel);
+  border: 1px solid var(--active-accent); border-radius: 8px;
+  padding: 5px 12px; font-size: 13px; color: var(--text-hi);
+  white-space: nowrap; max-width: 60vw; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
+#task-bar-bubble.hidden { display: none; }
+#task-bar.taskbar-horizontal #task-bar-bubble { bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); }
+#task-bar.taskbar-vertical #task-bar-bubble { left: calc(100% + 10px); top: 12px; }
+
+/* ---- DawningHorizon: Show-bar snapping + vertical open-programs bar ---- */
+/* Clock/battery fixed top-right so the vertical taskbar tucks under it. */
+body.layout-dawninghorizon #clock-wrap {
+  position: fixed; top: 18px; right: 20px; z-index: 30;
+  width: 200px; align-items: flex-end;
+}
+/* Games box + Show bar: top-aligned and snapped (Show bar's top-left meets
+   the games box's top-right). Reserve the right edge for the taskbar. */
+body.layout-dawninghorizon #content-area {
+  align-items: flex-start;
+  gap: 0;
+  padding-right: 232px; /* 200px bar + 20px edge + air */
+}
+body.layout-dawninghorizon #item-panel { margin: 0; }
+body.layout-dawninghorizon #subfolder-nav {
+  margin-left: 0; align-self: flex-start; max-width: 220px;
+}
+/* Vertical open-programs bar: under the clock block, right flush to the
+   screen edge, down to the bottom-right corner. */
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning {
+  top: 72px; right: 0; bottom: 0; width: 200px; left: auto;
+  border-right: none; border-bottom: none;
+  border-top-right-radius: 0; border-bottom-right-radius: 0;
+  flex-direction: column;
+}
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning #task-bar-list {
+  flex-direction: column; flex-wrap: nowrap; align-items: center; overflow-y: auto;
+}
+
+/* ================= Verticular Blobs (NightHorizon) overhaul =================
+   Match the Meridian Launcher's Verticular Blobs look: no hub orb, no
+   wireframe/orbit backdrop — just the soft multi-blob gradient field.
+   Clock/battery moves to the bottom-left; the options box is fixed and
+   scrolls internally; a horizontal open-programs bar runs along the bottom
+   from the right of the clock block to the corner. */
+
+/* remove the orb + wireframe */
+body.layout-nighthorizon #top-bar::before,
+body.layout-nighthorizon #top-bar::after { display: none !important; }
+
+/* blob gradient background (ported from the Launcher's NightHorizon) */
+body.layout-nighthorizon #horizon-glow {
+  background-image:
+    radial-gradient(520px 520px at 10% 15%, rgba(255,255,255,0.14), transparent 60%),
+    radial-gradient(360px 360px at 85% 10%, rgba(255,255,255,0.10), transparent 62%),
+    radial-gradient(460px 460px at 75% 80%, rgba(255,255,255,0.09), transparent 60%),
+    radial-gradient(300px 300px at 15% 85%, rgba(255,255,255,0.08), transparent 58%),
+    radial-gradient(380px 380px at 45% 45%, rgba(255,255,255,0.06), transparent 55%),
+    radial-gradient(1800px 1400px at 30% 30%, color-mix(in srgb, var(--active-accent) 20%, transparent), transparent 75%),
+    linear-gradient(160deg, var(--bg-0) 0%, var(--bg-1) 55%, var(--bg-0) 100%);
+  background-repeat: no-repeat;
+  background-position: 10% 15%, 85% 10%, 75% 80%, 15% 85%, 45% 45%, 30% 30%, 0 0;
+  background-size: auto;
+}
+
+/* clock/battery -> bottom-left corner */
+body.layout-nighthorizon #clock-wrap {
+  top: auto; right: auto; bottom: 20px; left: 24px;
+  align-items: flex-start; z-index: 30;
+}
+
+/* options/games box: fixed height, scrolls internally, bottom lifted clear
+   of the horizontal taskbar strip (72px) */
+body.layout-nighthorizon #content-area {
+  overflow: hidden;
+}
+body.layout-nighthorizon #item-panel {
+  margin-bottom: 0;
+  max-height: calc(100vh - 220px - 72px);
+  overflow-y: auto;
+}
+/* settings list uses the same panel; keep it internally scrolled too */
+body.layout-nighthorizon #settings-panel,
+body.layout-nighthorizon .settings-scroll {
+  max-height: calc(100vh - 220px - 72px);
+  overflow-y: auto;
+}
+
+/* horizontal open-programs bar along the bottom */
+body.layout-nighthorizon #task-bar.taskbar-pos-night {
+  left: 220px;   /* right of the bottom-left clock/battery block */
+  right: 0; bottom: 0; top: auto;
+  width: auto; height: 72px;
+  flex-direction: row;
+  border-left: none; border-right: none; border-bottom: none;
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+}
+body.layout-nighthorizon #task-bar.taskbar-pos-night #task-bar-list {
+  flex-direction: row; flex-wrap: nowrap; overflow-x: auto; align-items: center;
+}
+
+/* ---- CyberRadial: open-programs bar in place of the removed control
+   text — horizontal along the bottom, left edge to the left side of the
+   bottom-right clock/battery block. ---- */
+body.layout-cyberradial #task-bar.taskbar-pos-cyber {
+  left: 0; bottom: 0; top: auto;
+  right: 160px;  /* stop before the bottom-right clock/battery block */
+  width: auto; height: 72px;
+  flex-direction: row;
+  border-left: none; border-bottom: none;
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+}
+body.layout-cyberradial #task-bar.taskbar-pos-cyber #task-bar-list {
+  flex-direction: row; flex-wrap: nowrap; overflow-x: auto; align-items: center;
+}
+/* ---------------- open-programs bar (taskbar replacement) ----------------
+   Hidden until a theme claims a placement for it (TASKBAR_PLACEMENT in
+   app.js): the theme adds taskbar-horizontal or taskbar-vertical plus an
+   optional taskbar-pos-* class for its chosen spot. Base styling below is
+   placement-agnostic. */
+#task-bar {
+  position: fixed;
+  z-index: 40;
+  background: var(--panel);
+  border: 3px solid var(--line); /* deliberately thick — it reads as a taskbar */
+  border-radius: 12px;
+  padding: 6px;
+  backdrop-filter: blur(10px);
+  display: flex;
+}
+#task-bar.focused { border-color: var(--active-accent); }
+
+#task-bar-list { display: flex; gap: 6px; min-width: 0; min-height: 0; }
+#task-bar.taskbar-horizontal { flex-direction: column; }
+#task-bar.taskbar-horizontal #task-bar-list { flex-direction: row; }
+#task-bar.taskbar-vertical #task-bar-list { flex-direction: column; }
+
+.task-box {
+  width: 48px; height: 48px;
+  flex: 0 1 auto; min-width: 22px; min-height: 22px; /* compacts when space runs out */
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-1) 60%, transparent);
+  cursor: pointer; overflow: hidden;
+}
+.task-box img { width: 32px; height: 32px; max-width: 85%; max-height: 85%; object-fit: contain; image-rendering: auto; }
+.task-box-placeholder { font-family: var(--font-display); font-size: 18px; color: var(--text-lo); }
+.task-box.selected {
+  border-color: var(--active-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--active-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--active-accent) 18%, transparent);
+}
+
+/* Name bubble: FIXED position relative to the bar — above it in
+   horizontal mode, beside it in vertical mode. It never follows the
+   highlighted box; only its text changes. */
+#task-bar-bubble {
+  position: absolute;
+  background: var(--panel);
+  border: 1px solid var(--active-accent);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+  color: var(--text-hi);
+  white-space: nowrap;
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+#task-bar.taskbar-horizontal #task-bar-bubble {
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+#task-bar.taskbar-vertical #task-bar-bubble {
+  left: calc(100% + 10px);
+  top: 12px;
+}
+
+/* ---- DawningHorizon (Game Library): open-programs bar + Show-bar snap ---- */
+/* Clock/battery at the bottom-right; the open-programs bar fills the
+   column above them, both matched to the same 200px width. */
+body.layout-dawninghorizon #clock-wrap {
+  position: fixed; bottom: 16px; right: 24px; top: auto; z-index: 30;
+  width: 100px; align-items: flex-end;
+}
+/* Games box + Show bar top-aligned and snapped (gap removed); content row
+   reserves the right column for the vertical taskbar. */
+body.layout-dawninghorizon #content-area {
+  align-items: flex-start;
+  gap: 0;
+  padding-right: 136px; /* clears the 100px bar + edge gap */
+}
+body.layout-dawninghorizon #item-panel { margin: 0; }
+body.layout-dawninghorizon #subfolder-nav {
+  margin-left: 0; align-self: flex-start; max-width: 220px;
+}
+/* Vertical bar: right flush to the screen edge, from the top down to just
+   above the clock/battery block. */
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning {
+  position: fixed; top: 20px; right: 0; bottom: 60px; width: 100px; left: auto;
+  border-right: none; border-bottom: none;
+  border-top-right-radius: 0; border-bottom-right-radius: 0;
+  flex-direction: column;
+}
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning #task-bar-list {
+  flex-direction: column; flex-wrap: nowrap; align-items: center; overflow-y: auto;
+}
+
+
+/* DawningHorizon (Game Library): bar is at the screen's right edge, so the
+   name bubble points inward (left of the bar). */
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning #task-bar-bubble {
+  left: auto; right: calc(100% + 10px); top: 12px;
+}
+
+/* Controller debugger readout (Settings > Controls) */
+.controller-debug {
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  white-space: pre; overflow-x: auto;
+  background: color-mix(in srgb, var(--bg-0) 70%, transparent);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; margin-top: 8px; color: var(--text-lo);
+  max-height: 320px; overflow-y: auto;
 }
