@@ -29,13 +29,19 @@ class BrowserTabs(QTabWidget):
 
     def __init__(
         self,
-        homepage
+        homepage,
+        startup_url=None
     ):
 
         super().__init__()
 
 
         self.homepage=homepage
+
+        # A URL to open in the first tab instead of the homepage (default-
+        # browser / command-line invocation). Homepage still applies to
+        # every tab opened afterward.
+        self.startup_url=startup_url
 
 
         self.setTabsClosable(
@@ -88,15 +94,16 @@ class BrowserTabs(QTabWidget):
         )
 
 
-        self.new_tab()
+        # First tab: the startup URL if we were handed one, else homepage.
+        self.new_tab(self.startup_url or self.homepage)
 
 
 
-    def new_tab(self):
+    def new_tab(self, url=None):
 
         browser=BrowserView(
 
-            self.homepage
+            url or self.homepage
 
         )
 

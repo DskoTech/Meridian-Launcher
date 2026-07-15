@@ -83,13 +83,16 @@ class MainWindow(QMainWindow):
 
     def __init__(
         self,
-        config
+        config,
+        startup_url=None
     ):
 
         super().__init__()
 
 
         self.config = config
+
+        self.startup_url = startup_url
 
         #
         # Window setup
@@ -146,7 +149,9 @@ class MainWindow(QMainWindow):
 
         self.browser = BrowserTabs(
 
-            config["homepage"]
+            config["homepage"],
+
+            startup_url
 
         )
 
@@ -353,7 +358,8 @@ class MainWindow(QMainWindow):
         self.find_bar = FindBar()
 
         self.settings_dialog = SettingsDialog(
-            self.config
+            self.config,
+            controller=self.controller
         )
 
 

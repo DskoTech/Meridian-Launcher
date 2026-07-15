@@ -63,6 +63,7 @@ REM correctly, add --windowed to the line below to
 REM hide the console for normal use.
 
 pyinstaller --noconfirm --onedir --name CyberDeckBrowser ^
+    --contents-directory "CyberDeckBrowser_internal" ^
     --icon "icon.ico" ^
     --collect-all PySide6 ^
     --collect-all shiboken6 ^

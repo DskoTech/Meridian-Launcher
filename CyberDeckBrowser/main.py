@@ -20,7 +20,29 @@ from ui.cyberpunk_prompt import CyberpunkPrompt
 
 
 
+def _handle_browser_registration_cli():
+    """Let another app (Meridian Launcher's macro) register/unregister
+    CyberDeck as the default browser by launching us with a flag, instead
+    of duplicating the registry logic. Returns True if a flag was handled
+    and the process should exit."""
+    if "--register-default-browser" in sys.argv or "--unregister-default-browser" in sys.argv:
+        try:
+            import default_browser
+            exe = sys.executable
+            if "--unregister-default-browser" in sys.argv:
+                default_browser.unregister()
+            else:
+                default_browser.register(exe)
+        except Exception:
+            pass
+        return True
+    return False
+
+
 def main():
+    if _handle_browser_registration_cli():
+        return
+
     Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
 
     app = QApplication(
@@ -42,6 +64,30 @@ def main():
     if "--window-mode=borderless-fullscreen" in sys.argv:
 
         config["fullscreen"] = True
+
+
+    #
+    # A URL handed to us on the command line - how Windows invokes the
+    # default browser ("...CyberDeckBrowser.exe" "%1") and how other
+    # Meridian apps route a link here. The first argv entry that looks
+    # like a URL wins; flags (starting with "-") are ignored.
+    #
+
+    startup_url = None
+
+    for arg in sys.argv[1:]:
+
+        if arg.startswith("-"):
+
+            continue
+
+        low = arg.lower()
+
+        if low.startswith(("http://", "https://", "file://", "ftp://")) or "." in arg:
+
+            startup_url = arg
+
+            break
 
 
     #
@@ -87,7 +133,8 @@ def main():
     def start_main_window():
 
         window = MainWindow(
-            config
+            config,
+            startup_url
         )
 
         state["window"] = window

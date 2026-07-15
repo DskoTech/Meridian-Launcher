@@ -188,6 +188,19 @@ class ControllerThread(QThread):
     # Per-backend sampling -> one normalized dict
     # ------------------------------------------------------------------ #
 
+    def backend_name(self):
+        """Which input backend is active — for the settings dialog's
+        diagnostic line (GameInput / XInput / SDL / none)."""
+        if self.pad is not None:
+            return getattr(self.pad, "backend", "GameInput/XInput")
+        if self.controller is not None:
+            return "SDL (pygame)"
+        return None
+
+    def is_connected(self):
+        """Whether the most recent sample actually saw a controller."""
+        return bool(getattr(self.state, "connected", False))
+
     def _sample_gameinput(self):
         try:
             snap = self.pad.poll()

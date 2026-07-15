@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QPushButton
 )
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 
 
 
@@ -59,12 +59,15 @@ class SettingsDialog(QWidget):
     def __init__(
         self,
         config,
+        controller=None,
         parent=None
     ):
 
         super().__init__(parent)
 
         self.config = config
+
+        self.controller = controller
 
         self.setWindowFlags(
 
@@ -124,6 +127,37 @@ class SettingsDialog(QWidget):
         layout.addWidget(
             controls_label
         )
+
+
+        #
+        # Live controller-backend indicator - which API
+        # (GameInput / XInput / SDL / none) is actually
+        # driving input right now, so fullscreen-experience
+        # input problems can be diagnosed at a glance.
+        #
+
+        self.controller_status_label = QLabel(
+            "CONTROLLER API: checking..."
+        )
+
+        self.controller_status_label.setStyleSheet(
+            "font-size:12px; color:#f5c96b; border:1px solid #f5c96b;"
+            "border-radius:4px; padding:6px; background:#0c0c1c;"
+        )
+
+        layout.addWidget(
+            self.controller_status_label
+        )
+
+        self._status_timer = QTimer(self)
+
+        self._status_timer.timeout.connect(
+            self._refresh_controller_status
+        )
+
+        self._status_timer.start(2000)
+
+        self._refresh_controller_status()
 
 
         self.sensitivity_box = self._build_spin_row(
@@ -476,3 +510,23 @@ class SettingsDialog(QWidget):
 
 
         self.hide()
+
+
+    def _refresh_controller_status(self):
+        c = getattr(self, "controller", None)
+        backend = c.backend_name() if c is not None and hasattr(c, "backend_name") else None
+        if not backend:
+            text = "CONTROLLER API: none available - keyboard/mouse only"
+            color = "#f27878"
+        else:
+            connected = bool(c.is_connected()) if hasattr(c, "is_connected") else False
+            text = "CONTROLLER API: %s - %s" % (
+                backend,
+                "controller connected" if connected else "no controller detected",
+            )
+            color = "#6ee7a8" if connected else "#f5c96b"
+        self.controller_status_label.setText(text)
+        self.controller_status_label.setStyleSheet(
+            "font-size:12px; color:%s; border:1px solid %s;"
+            "border-radius:4px; padding:6px; background:#0c0c1c;" % (color, color)
+        )

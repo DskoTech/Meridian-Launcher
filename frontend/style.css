@@ -21,6 +21,51 @@
    a vertical stack instead of a horizontal row (see README).
    ============================================================ */
 
+/* ============================================================
+   STYLESHEET ARCHITECTURE (read this before editing / theming)
+   ------------------------------------------------------------
+   The UI is a single HTML document whose *look* is switched between
+   three built-in themes by ONE body class, applied by app.js's
+   applyLayoutClass():
+       body.layout-dawninghorizon   — flat horizontal XMB-style bar
+       body.layout-nighthorizon     — "Verticular Blobs": vertical
+                                       hub/orbit sidebar (Theseus look)
+       body.layout-cyberradial      — orbital-arc reflow of the same DOM
+   The base (theme-agnostic) rules come first; each theme then has its
+   own "body.layout-*" override section further down. A theme only needs
+   to restyle what differs from the base.
+
+   USER CUSTOM THEMES: a user theme adds a SECOND class,
+   body.layout-user-<slug>, on top of its chosen base class (see
+   user_themes.py + applyUserThemeClass() in app.js). Its CSS is injected
+   into <style id="user-theme-css">. So to make a theme, target
+   body.layout-user-<slug> and override the variables/selectors below.
+
+   CSS CUSTOM PROPERTIES (:root) — what each one drives:
+     --bg-0, --bg-1      Base background gradient stops (darkest → deep).
+     --panel             Translucent fill behind panels/option boxes.
+     --text-hi           Primary/highlighted text color.
+     --text-lo           Dimmed/secondary text (subtitles, hints).
+     --line              Hairline/border color (rgba, low alpha).
+     --accent-<section>  Per-section accent (music/photos/games/…); the
+                         active section copies its value into
+                         --active-accent, which most glows/outlines read.
+     --active-accent     The current section's accent — the single most
+                         referenced color; retint this per theme for a
+                         quick reskin.
+     --font-display      Headings / large UI text.
+     --font-body         Body / list text.
+     --font-mono         Clock, hex, monospace bits.
+     --sidebar-w         Width of the vertical sidebar (NightHorizon).
+     --corner-w          Corner cap width for the framed edges.
+   Theme-local geometry (set inside body.layout-* blocks):
+     --hub-cx, --hub-cy  Center of the CyberRadial hub orb.
+     --orbit-r           Radius of the CyberRadial section ring.
+     --orbit-angle       Per-button angle around that ring.
+   Icon size (body.icon-size-*): --row-visual-size scales list icons
+   (small 36px → xl 288px); rows grow to fit since they size to content.
+   ============================================================ */
+
 @font-face {
   font-family: 'Rajdhani';
   src: url('fonts/Rajdhani-Regular.ttf') format('truetype');
@@ -124,8 +169,11 @@ html, body {
   mix-blend-mode: luminosity;
 }
 
+/* The custom overlay is a decorative frame drawn ON TOP of everything —
+   it sits above #app (z-index 2) and the clock (5), and never eats input
+   (pointer-events: none). */
 #overlay-canvas {
-  position: fixed; inset: 0; z-index: 1;
+  position: fixed; inset: 0; z-index: 40;
   width: 100%; height: 100%;
   pointer-events: none;
   display: none;
@@ -375,7 +423,7 @@ html, body {
 }
 .item-row .idx { font-family: var(--font-mono); font-size: 13px; width: 22px; text-align: right; opacity: 0.5; flex-shrink: 0; }
 .item-row .row-visual {
-  width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+  width: var(--row-visual-size, 36px); height: var(--row-visual-size, 36px); border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   background:
     radial-gradient(circle at 34% 28%, rgba(255,255,255,0.18), transparent 45%),
@@ -384,7 +432,7 @@ html, body {
   border: 1px solid var(--line);
 }
 .item-row .row-visual img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
-.item-row .row-visual svg { width: 18px; height: 18px; }
+.item-row .row-visual svg { width: calc(var(--row-visual-size, 36px) / 2); height: calc(var(--row-visual-size, 36px) / 2); }
 .item-row .meta { flex: 1; min-width: 0; }
 .item-row .title { font-size: 15px; font-weight: 500; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: font-weight 160ms ease; }
 .item-row .subtitle { font-size: 12px; color: var(--text-lo); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -642,6 +690,14 @@ body[data-radial-focus]:not([data-radial-focus="options"]) .item-row.selected {
    neighbors rotate into that fixed spot and back out again.
    ================================================================ */
 
+/* ============================================================
+   THEME: CyberRadial (body.layout-cyberradial)
+   The section buttons orbit a central hub on an arc. Geometry is
+   driven by --hub-cx/--hub-cy (hub center), --orbit-r (ring radius)
+   and per-button --orbit-angle. The rounded focus glow lives on
+   #category-viewport::after. Options box max-height reserves room
+   for the bottom taskbar + now-playing bar.
+   ============================================================ */
 body.layout-cyberradial #top-bar {
   padding: 0;
   --orbit-r: 205px;
@@ -709,7 +765,7 @@ body.layout-cyberradial #item-panel {
   /* stops just above the now-playing bar (62px tall, 24px off the
      bottom); content scrolls internally past that point rather than
      pushing the panel — or the page — taller */
-  max-height: calc(100vh - 24px - 62px - 24px);
+  max-height: calc(100vh - 24px - 62px - 24px - 72px); /* extra 72px clears the open-programs bar */
   overflow-y: auto;
 }
 
@@ -756,8 +812,31 @@ body.layout-cyberradial #hint-bar span {
 }
 
 /* which of the three panels (sections / options / subfolder) has focus */
+/* Sections focused: a ROUND glow centered on the hub orb, sized past the
+   orbit ring so it wraps the section buttons and the orb together, instead
+   of the old square inset projection on the rectangular top bar. */
 body.layout-cyberradial[data-radial-focus="sections"] #top-bar {
-  box-shadow: inset 0 0 60px -12px color-mix(in srgb, var(--active-accent) 35%, transparent);
+  box-shadow: none;
+}
+body.layout-cyberradial #category-viewport::after {
+  content: "";
+  position: absolute;
+  left: var(--hub-cx); top: var(--hub-cy);
+  width: calc((var(--orbit-r) + 90px) * 2);
+  height: calc((var(--orbit-r) + 90px) * 2);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle,
+    color-mix(in srgb, var(--active-accent) 30%, transparent) 0%,
+    color-mix(in srgb, var(--active-accent) 18%, transparent) 55%,
+    transparent 72%);
+  opacity: 0;
+  transition: opacity 260ms ease;
+  z-index: 0;
+}
+body.layout-cyberradial[data-radial-focus="sections"] #category-viewport::after {
+  opacity: 1;
 }
 body.layout-cyberradial[data-radial-focus="options"] #item-panel {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--active-accent) 55%, transparent), 0 0 30px -10px var(--active-accent);
@@ -811,6 +890,13 @@ body[data-display-type="gallery"] #content-area {
    ================================================================ */
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap');
 
+/* ============================================================
+   THEME: DawningHorizon (body.layout-dawninghorizon)
+   Flat, horizontal XMB-style section bar; the sections scroll
+   left/right. Clock/battery pin top-right; the open-programs bar
+   tucks under them as a vertical column (taskbar-pos-dawning).
+   The default/original Meridian look.
+   ============================================================ */
 body.layout-dawninghorizon {
   --bg-0: #05070d;
   --bg-1: #0b1120;
@@ -952,6 +1038,12 @@ body.layout-dawninghorizon #now-playing {
 /* ---------------- Verticular Blobs (NightHorizon): a much more vivid,
    varied neon palette per section — orange/pink/purple/blue/green/
    yellow/red/gold — instead of the green-family default. ---------------- */
+/* ============================================================
+   THEME: NightHorizon / "Verticular Blobs" (body.layout-nighthorizon)
+   Vertical hub-and-spine sidebar (the Theseus-inspired look). Clock
+   sits bottom-left; the open-programs bar runs horizontally along the
+   bottom (taskbar-pos-night); wireframe/orb backdrop.
+   ============================================================ */
 body.layout-nighthorizon {
   --accent-music: #39ff14;
   --accent-photos: #ff2fd0;
@@ -1057,4 +1149,202 @@ body.layout-nighthorizon #item-panel {
 .settings-credit p {
   margin: 0; font-size: 12px; color: var(--text-lo); line-height: 1.6;
   border-top: 1px solid var(--line); padding-top: 14px; font-style: italic;
+}
+
+/* ---------------- open-programs bar (taskbar replacement) ----------------
+   Hidden until a theme claims a placement for it (TASKBAR_PLACEMENT in
+   app.js): the theme adds taskbar-horizontal or taskbar-vertical plus an
+   optional taskbar-pos-* class for its chosen spot. Base styling below is
+   placement-agnostic. */
+#task-bar {
+  position: fixed;
+  z-index: 40;
+  background: var(--panel);
+  border: 3px solid var(--line); /* deliberately thick — it reads as a taskbar */
+  border-radius: 12px;
+  padding: 6px;
+  backdrop-filter: blur(10px);
+  display: flex;
+}
+#task-bar.focused { border-color: var(--active-accent); }
+
+#task-bar-list { display: flex; gap: 6px; min-width: 0; min-height: 0; }
+#task-bar.taskbar-horizontal { flex-direction: column; }
+#task-bar.taskbar-horizontal #task-bar-list { flex-direction: row; }
+#task-bar.taskbar-vertical #task-bar-list { flex-direction: column; }
+
+.task-box {
+  width: 48px; height: 48px;
+  flex: 0 1 auto; min-width: 22px; min-height: 22px; /* compacts when space runs out */
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-1) 60%, transparent);
+  cursor: pointer; overflow: hidden;
+}
+.task-box img { width: 32px; height: 32px; max-width: 85%; max-height: 85%; object-fit: contain; image-rendering: auto; }
+.task-box-placeholder { font-family: var(--font-display); font-size: 18px; color: var(--text-lo); }
+.task-box.selected {
+  border-color: var(--active-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--active-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--active-accent) 18%, transparent);
+}
+
+/* Name bubble: FIXED position relative to the bar — above it in
+   horizontal mode, beside it in vertical mode. It never follows the
+   highlighted box; only its text changes. */
+#task-bar-bubble {
+  position: absolute;
+  background: var(--panel);
+  border: 1px solid var(--active-accent);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+  color: var(--text-hi);
+  white-space: nowrap;
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+#task-bar.taskbar-horizontal #task-bar-bubble {
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+#task-bar.taskbar-vertical #task-bar-bubble {
+  left: calc(100% + 10px);
+  top: 12px;
+}
+
+/* Controller backend status line (Settings > Controller controls) */
+.controller-status {
+  margin-top: 8px; font-family: var(--font-mono); font-size: 12px;
+  letter-spacing: 0.04em; padding: 6px 10px; border-radius: 6px;
+  border: 1px solid var(--line); display: inline-block;
+}
+.controller-status.status-good { color: #6ee7a8; border-color: #6ee7a8; }
+.controller-status.status-warn { color: #f5c96b; border-color: #f5c96b; }
+.controller-status.status-bad { color: #f27878; border-color: #f27878; }
+
+
+/* Icon size setting: each step doubles the icon; rows grow to fit since
+   they size to content. Titles scale gently so XL doesn't read as a
+   billboard next to a 288px icon. */
+body.icon-size-medium { --row-visual-size: 72px; }
+body.icon-size-large  { --row-visual-size: 144px; }
+body.icon-size-xl     { --row-visual-size: 288px; }
+body.icon-size-medium .item-row .title { font-size: 17px; }
+body.icon-size-large .item-row .title  { font-size: 20px; }
+body.icon-size-xl .item-row .title     { font-size: 24px; }
+body.icon-size-large .item-row .subtitle, body.icon-size-xl .item-row .subtitle { font-size: 14px; }
+
+.theme-scope { font-size: 11px; font-weight: 400; color: var(--text-lo); letter-spacing: 0.04em; }
+
+/* mspaint-style custom color grid in the Dawning Horizon color picker */
+.color-grid-wrap { margin-top: 12px; }
+.color-grid {
+  display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px;
+  max-width: 480px; margin-top: 6px;
+  border: 1px solid var(--line); padding: 4px; border-radius: 6px;
+}
+.color-cell {
+  width: 100%; aspect-ratio: 1; padding: 0; border: 1px solid transparent;
+  cursor: pointer; border-radius: 2px;
+}
+.color-cell:hover { transform: scale(1.4); border-color: var(--text-hi); position: relative; z-index: 2; }
+.color-cell.active { border-color: var(--text-hi); box-shadow: 0 0 0 2px var(--bg-0), 0 0 0 3px var(--text-hi); }
+
+/* Controls hint bar: text removed per design; keep the (empty) element
+   for future use but take it out of the layout in every theme. */
+#hint-bar { display: none !important; }
+
+/* DawningHorizon open-programs bar: vertical, tucked under the clock/
+   battery block on the right edge, from just below it to the bottom-right
+   corner, matched to that block's width. */
+/* Clock/battery now sit at the BOTTOM of the right-hand column, in the
+   bottom-right corner; the open-programs bar fills the column above them.
+   Both share the same 200px width so they line up as one stacked block. */
+body.layout-dawninghorizon #clock-wrap {
+  position: fixed; bottom: 16px; right: 40px; top: auto;
+  left: auto;              /* the base rule pins left:24px — clear it, or
+                              left wins and the clock sticks bottom-LEFT */
+  z-index: 30;
+  width: 100px; align-items: flex-end;
+}
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning {
+  position: fixed;
+  top: 24px;               /* from near the top... */
+  right: 40px;             /* right side flush with the clock block */
+  bottom: 64px;            /* ...down to just above the clock/battery block */
+  width: 100px;            /* halved — matches the clock/battery block width */
+  left: auto;
+  flex-direction: column;
+}
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning #task-bar-list {
+  flex-direction: column;   /* vertical bar -> items stack in a column */
+  flex-wrap: nowrap;
+  align-items: center;
+  overflow-y: auto;
+}
+/* Bar sits at the screen's right edge, so the name bubble points inward
+   (to the left of the bar) rather than off-screen to the right. */
+body.layout-dawninghorizon #task-bar.taskbar-pos-dawning #task-bar-bubble {
+  left: auto;
+  right: calc(100% + 10px);
+  top: 12px;
+}
+
+/* ---- Verticular Blobs (NightHorizon): open-programs bar ---- */
+/* Horizontal, bottom edge, from the right side of the clock/battery
+   sidebar to the bottom-right corner. */
+body.layout-nighthorizon #task-bar.taskbar-pos-night {
+  left: var(--sidebar-w); right: 0; bottom: 0; top: auto;
+  width: auto; height: 72px;
+  flex-direction: row;
+  border-left: none; border-right: none; border-bottom: none;
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+}
+body.layout-nighthorizon #task-bar.taskbar-pos-night #task-bar-list {
+  flex-direction: row; flex-wrap: nowrap; overflow-x: auto; align-items: center;
+}
+/* Options box: lift its bottom above the taskbar strip (72px) plus the
+   now-playing bar it already cleared, so nothing collides. */
+body.layout-nighthorizon #item-panel {
+  max-height: calc(100vh - 126px - 72px);
+}
+
+/* ---- CyberRadial: open-programs bar in place of the removed control
+   text — horizontal along the bottom, left edge to the left side of the
+   bottom-right clock/battery block. ---- */
+body.layout-cyberradial #task-bar.taskbar-pos-cyber {
+  left: 0; bottom: 0; top: auto;
+  right: 160px;  /* stop before the bottom-right clock/battery block */
+  width: auto; height: 72px;
+  flex-direction: row;
+  border-left: none; border-bottom: none;
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+}
+body.layout-cyberradial #task-bar.taskbar-pos-cyber #task-bar-list {
+  flex-direction: row; flex-wrap: nowrap; overflow-x: auto; align-items: center;
+}
+
+/* Theme color-grid 2D sub-cursor (Themes settings). The grid is one entry
+   in the settings cursor; this ring shows the active cell while D-pad moves
+   within it. */
+.color-cell.grid-cursor {
+  outline: 3px solid var(--text-hi);
+  outline-offset: 1px;
+  transform: scale(1.5);
+  position: relative;
+  z-index: 3;
+}
+
+/* Controller debugger readout (Settings > Controls) */
+.controller-debug {
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  white-space: pre; overflow-x: auto;
+  background: color-mix(in srgb, var(--bg-0) 70%, transparent);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; margin-top: 8px; color: var(--text-lo);
+  max-height: 320px; overflow-y: auto;
 }
