@@ -1,0 +1,8 @@
+{
+  "id": "snapchat",
+  "label": "Snapchat",
+  "version": "1.0",
+  "type": "webapp",
+  "url": "https://web.snapchat.com/",
+  "description": "Snapchat Web, boxed into a Meridian NetBrowse instance pinned to this section. Log in same as any browser (note: Snapchat Web has fewer features than the phone app - no Snap camera). Uses Meridian NetBrowse's virtual mouse (A: left click, B: right click), Start: on-screen keyboard, and a stripped-down menu with only Exit Program."
+}

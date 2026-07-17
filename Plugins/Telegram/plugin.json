@@ -1,0 +1,8 @@
+{
+  "id": "telegram",
+  "label": "Telegram",
+  "version": "1.0",
+  "type": "webapp",
+  "url": "https://web.telegram.org/k/",
+  "description": "Telegram Web, boxed into a Meridian NetBrowse instance pinned to this section. Log in with your phone/QR code same as any browser. Uses Meridian NetBrowse's virtual mouse (A: left click, B: right click), Start: on-screen keyboard, and a stripped-down menu with only Exit Program."
+}

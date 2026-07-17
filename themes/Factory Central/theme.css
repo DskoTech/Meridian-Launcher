@@ -47,28 +47,158 @@ body.layout-user-factory-central {
   --steel-hi: #6b7889;
   --grease: #0e1116;
   --amber: #ffb020;
+
+  /* --- Factory Pomo backdrop palette --------------------------
+     Primary-heavy, high-contrast blocks per the aesthetic's late-80s/
+     early-90s CAD-graphics-meets-industrial-vernacular look. */
+  --pomo-teal: #0e4d55;   /* deep industrial teal-blue                    */
+  --pomo-black: #14100c;  /* near-black, stripe base                      */
+  --pomo-rust: #c1440e;   /* burnt rust/amber, diagonal hazard bands      */
+
+  /* --- vivid Memphis-style accents (reference image palette) --------- */
+  --pomo-magenta: #e6007e;
+  --pomo-cyan: #14c3d6;    /* the big structural bars/rings in the ref    */
+  --pomo-yellow: #ffd400;
+  --pomo-blue: #1554b8;
+  --pomo-purple: #7a3fa0;
+  --pomo-green: #7cb928;
+  --pomo-blue-deep: #16234f; /* center-field base, like the ref's backdrop */
 }
 
-/* ---------- backdrop: dark shop floor with a warm pool of light ---------- */
+/* FIX: the base CyberRadial rule sets --hub-cx/--hub-cy directly on
+   #top-bar itself (see style.css's plain "#top-bar { --hub-cx: 24px;
+   --hub-cy: 50%; }" rule, which applies to every theme). A custom
+   property declared directly on an element beats one merely inherited
+   from an ancestor like body.layout-user-factory-central, so without
+   this override #top-bar silently keeps using --hub-cx: 24px and the
+   whole gear + category ring renders hugging the left edge instead of
+   centered - regardless of what's set on body above. This is what was
+   previously reported as "the gear and options are stuck to the left
+   side". */
+body.layout-user-factory-central #top-bar {
+  --hub-cx: 50%;
+  --hub-cy: 50%;
+  --orbit-r: 190px;
+}
+
+/* ---------- section names: bigger ring than the icons, same center ----------
+   Independently positioned on their own circle (rather than riding inside
+   the same small button as the icon), 1 inch further out than the icon
+   ring's outer edge, always - regardless of window size, since 1in is a
+   fixed physical CSS unit, not a percentage. */
+body.layout-user-factory-central {
+  --icon-ring-r: 34px;      /* approx. outer radius of .icon-ring */
+  --label-gap: 0.5in;       /* brought in to about halfway between the icon ring and the old 1in position */
+  --label-r: calc(var(--orbit-r) + var(--icon-ring-r) + var(--label-gap) - 10px - 30px);
+}
+body.layout-user-factory-central .category .label {
+  position: absolute;
+  left: calc(var(--hub-cx) + cos(var(--orbit-angle, 0deg)) * var(--label-r));
+  top: calc(var(--hub-cy) + sin(var(--orbit-angle, 0deg)) * var(--label-r));
+  transform: translate(-50%, -50%) rotate(var(--orbit-angle, 0deg));
+  transform-origin: center;
+  transition: left 320ms ease, top 320ms ease, transform 320ms ease;
+}
+/* ---------- backdrop: Factory Pomo scene, matching the reference image ----------
+   Reference: a thick multicolor checkerboard frame (magenta/yellow/teal/
+   blue/purple/green squares) around the whole screen, with a muted blue
+   center field divided by diagonal lines radiating from the middle into
+   four triangular quadrants, one or two with a faint chevron texture -
+   the same layout this theme's gear sits in front of. */
+/* ---------- backdrop: Factory Pomo split diagonal-stripe field ----------
+   Left/right split: left half teal diagonal stripes, right half red
+   diagonal stripes - same 45-degree hazard-band pattern on both sides,
+   just a different hue each side. Two separate pseudo-elements, each
+   just half the screen with its own single-layer background, rather than
+   one element with two mask-matched background layers - that multi-mask
+   approach turned out unreliable in practice (the split wasn't rendering
+   as two clean halves), this is simpler and unambiguous. */
 body.layout-user-factory-central #horizon-glow {
-  background:
-    radial-gradient(720px 720px at 50% 50%,
-      color-mix(in srgb, var(--amber) 10%, transparent), transparent 62%),
-    radial-gradient(1400px 900px at 50% 120%, #1b2029, transparent 70%),
-    linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 60%, var(--bg-0) 100%);
+  background: var(--pomo-black);
   animation: none;
 }
-/* the faint plate seams of a factory floor */
+body.layout-user-factory-central #horizon-glow::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; width: 50%; height: 100%;
+  background-image: repeating-linear-gradient(45deg,
+    var(--pomo-teal) 0 28px,
+    var(--pomo-black) 28px 56px);
+  opacity: 0.9;
+  pointer-events: none;
+}
 body.layout-user-factory-central #horizon-glow::after {
   content: "";
-  position: absolute; inset: 0;
-  background:
-    repeating-linear-gradient(0deg, transparent 0 118px,
-      color-mix(in srgb, var(--steel) 22%, transparent) 118px 120px),
-    repeating-linear-gradient(90deg, transparent 0 118px,
-      color-mix(in srgb, var(--steel) 22%, transparent) 118px 120px);
-  opacity: 0.5;
+  position: absolute;
+  top: 0; right: 0; left: auto; width: 50%; height: 100%;
+  background-image: repeating-linear-gradient(45deg,
+    #c8241c 0 28px,
+    var(--pomo-black) 28px 56px);
+  opacity: 0.9;
   pointer-events: none;
+}
+/* multicolor checkerboard frame around all four edges - built from four
+   fixed-position bars (top/bottom on #subfolder-nav, left/right on
+   #preview-pane; both elements otherwise unused for ::before/::after in
+   this theme). Fixed positioning means these ignore their host's own box
+   and lay out purely against the viewport. */
+body.layout-user-factory-central #subfolder-nav::before,
+body.layout-user-factory-central #preview-pane::before,
+body.layout-user-factory-central #preview-pane::after {
+  content: "";
+  position: fixed;
+  /* z-index: 0 (positioned, fixed) still paints ABOVE normal-flow
+     content like the plain list rows inside #subfolder-nav - which is
+     why this frame was showing up over that box's real content instead
+     of staying strictly in the background. Negative puts it behind
+     everything, matching the intent ("selector layer" background decor
+     only). */
+  z-index: -3;
+  pointer-events: none;
+  --sq: 46px; /* checkerboard square size */
+}
+/* top+bottom edges, both painted from this one element instead of a
+   separate ::before/::after each — frees up #subfolder-nav::after for the
+   dot ring below (its pseudo-elements are otherwise unused and, unlike
+   #task-bar, nothing here sets a transform/filter/backdrop-filter that
+   would break position:fixed's normal "relative to the viewport"
+   behavior for its children). */
+body.layout-user-factory-central #subfolder-nav::before {
+  top: 0; left: 0; width: 100vw; height: 100vh;
+  background-image:
+    repeating-linear-gradient(90deg,
+      var(--pomo-magenta) 0 var(--sq), var(--pomo-yellow) var(--sq) calc(var(--sq) * 2),
+      var(--pomo-cyan) calc(var(--sq) * 2) calc(var(--sq) * 3), var(--pomo-blue) calc(var(--sq) * 3) calc(var(--sq) * 4),
+      var(--pomo-purple) calc(var(--sq) * 4) calc(var(--sq) * 5), var(--pomo-green) calc(var(--sq) * 5) calc(var(--sq) * 6)),
+    repeating-linear-gradient(90deg,
+      var(--pomo-magenta) 0 var(--sq), var(--pomo-yellow) var(--sq) calc(var(--sq) * 2),
+      var(--pomo-cyan) calc(var(--sq) * 2) calc(var(--sq) * 3), var(--pomo-blue) calc(var(--sq) * 3) calc(var(--sq) * 4),
+      var(--pomo-purple) calc(var(--sq) * 4) calc(var(--sq) * 5), var(--pomo-green) calc(var(--sq) * 5) calc(var(--sq) * 6));
+  background-position: top left, bottom left;
+  background-repeat: repeat-x, repeat-x;
+  background-size: 100% var(--sq), 100% var(--sq);
+}
+body.layout-user-factory-central #preview-pane::before {
+  top: 0; left: 0; width: var(--sq); height: 100vh;
+  background: repeating-linear-gradient(0deg,
+    var(--pomo-magenta) 0 var(--sq),
+    var(--pomo-yellow) var(--sq) calc(var(--sq) * 2),
+    var(--pomo-cyan) calc(var(--sq) * 2) calc(var(--sq) * 3),
+    var(--pomo-blue) calc(var(--sq) * 3) calc(var(--sq) * 4),
+    var(--pomo-purple) calc(var(--sq) * 4) calc(var(--sq) * 5),
+    var(--pomo-green) calc(var(--sq) * 5) calc(var(--sq) * 6));
+  border-left: 3px solid #000; border-right: 3px solid #000;
+}
+body.layout-user-factory-central #preview-pane::after {
+  top: 0; right: 0; left: auto; width: var(--sq); height: 100vh;
+  background: repeating-linear-gradient(0deg,
+    var(--pomo-green) 0 var(--sq),
+    var(--pomo-purple) var(--sq) calc(var(--sq) * 2),
+    var(--pomo-blue) calc(var(--sq) * 2) calc(var(--sq) * 3),
+    var(--pomo-cyan) calc(var(--sq) * 3) calc(var(--sq) * 4),
+    var(--pomo-yellow) calc(var(--sq) * 4) calc(var(--sq) * 5),
+    var(--pomo-magenta) calc(var(--sq) * 5) calc(var(--sq) * 6));
+  border-left: 3px solid #000; border-right: 3px solid #000;
 }
 
 /* ---------- layer 1 + 2: gear teeth and the rim they sit on ---------- */
@@ -175,7 +305,10 @@ body.layout-user-factory-central #top-bar::after {
 
 /* ---------- the focus glow, re-tinted as hot amber ---------- */
 /* CyberRadial already centers a round glow on the hub via ::after; keep the
-   behavior, change the color so a focused gear looks lit from within. */
+   behavior, change the color so a focused gear looks lit from within.
+   z-index: -1 so it sits BEHIND the gear's teeth/rim/hub layers instead of
+   washing a translucent amber tint over them - the gear itself reads as
+   solid opaque metal, with the glow only visible around its edges. */
 body.layout-user-factory-central #category-viewport::after {
   width: calc((var(--orbit-r) + 120px) * 2);
   height: calc((var(--orbit-r) + 120px) * 2);
@@ -183,57 +316,194 @@ body.layout-user-factory-central #category-viewport::after {
     color-mix(in srgb, var(--amber) 26%, transparent) 0%,
     color-mix(in srgb, var(--amber) 14%, transparent) 55%,
     transparent 72%);
-  z-index: 0;
+  z-index: -1;
+}
+
+/* Belt-and-suspenders: the gear's actual metal layers are fully opaque
+   (solid conic-gradients already, no alpha in the fill colors themselves),
+   explicit here so nothing upstream can accidentally set opacity < 1 on
+   them and make the "wheel" look translucent. */
+body.layout-user-factory-central #category-row::before,
+body.layout-user-factory-central #category-viewport::before,
+body.layout-user-factory-central #top-bar::before,
+body.layout-user-factory-central #top-bar::after {
+  opacity: 1;
+  mix-blend-mode: normal;
 }
 
 /* ---------- section buttons: bolt heads riding the gear ---------- */
 body.layout-user-factory-central .category {
   z-index: 2;
 }
+/* Icon AND label colors both cycle through the palette via hue-rotate,
+   driven by --cat-idx (a stable per-section index set in app.js -
+   see ensureCategoryElement) rather than :nth-of-type. nth-of-type counts
+   DOM position, but the category row only mounts a moving window of
+   elements for the carousel, so which section landed on "6n+1" etc kept
+   drifting/repeating as it scrolled - this is why most pills read as one
+   repeated color and only ~4 distinct ones ever showed up. hue-rotate on
+   a fixed base color, driven by a real per-section number, doesn't have
+   that problem: each --cat-idx always maps to the same hue everywhere. */
 body.layout-user-factory-central .category .icon-ring {
-  background: radial-gradient(circle at 35% 30%, var(--steel-hi), var(--steel-dark));
   border: 2px solid color-mix(in srgb, #000 55%, transparent);
   box-shadow:
     inset 0 1px 2px color-mix(in srgb, #fff 22%, transparent),
     0 2px 6px rgba(0, 0, 0, 0.7);
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--pomo-magenta) 80%, #fff), var(--pomo-magenta));
+  filter: hue-rotate(calc(var(--cat-idx, 0) * 60deg));
 }
+/* Active-selection glow uses THIS SAME hue-rotated color (boosted
+   brighter + a matching colored glow) instead of a flat amber override -
+   so as the highlighted section changes, the glow color visibly changes
+   too, since every section has its own --cat-idx. */
 body.layout-user-factory-central .category.active .icon-ring {
-  background: radial-gradient(circle at 35% 30%,
-    color-mix(in srgb, var(--amber) 85%, #fff), var(--amber));
-  border-color: color-mix(in srgb, var(--amber) 60%, #000);
+  filter: hue-rotate(calc(var(--cat-idx, 0) * 60deg)) brightness(1.25) saturate(1.15);
   box-shadow:
-    0 0 12px color-mix(in srgb, var(--amber) 70%, transparent),
-    0 0 26px color-mix(in srgb, var(--amber) 35%, transparent);
+    0 0 12px color-mix(in srgb, var(--pomo-magenta) 80%, transparent),
+    0 0 26px color-mix(in srgb, var(--pomo-magenta) 40%, transparent);
+  border-color: color-mix(in srgb, var(--pomo-magenta) 60%, #000);
 }
-/* the label pill: a stamped steel plate */
+
+/* the label pill: cycles color too (like the icon), offset 30 degrees
+   around the color wheel from its own icon so the two read as related-
+   but-distinct hues rather than identical - and both still change
+   together as the highlighted section moves. */
 body.layout-user-factory-central .category .label {
-  background: linear-gradient(180deg, var(--steel), var(--steel-dark));
+  background: linear-gradient(180deg, var(--pomo-cyan), color-mix(in srgb, var(--pomo-cyan) 55%, #000));
   border: 1px solid color-mix(in srgb, #000 50%, transparent);
-  color: #e8edf3;
+  color: #04141a;
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-weight: 700;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  filter: hue-rotate(calc(var(--cat-idx, 0) * 60deg + 30deg));
 }
 body.layout-user-factory-central .category.active .label {
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--amber) 92%, #fff), var(--amber));
-  color: #241703;
-  border-color: color-mix(in srgb, var(--amber) 50%, #000);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--pomo-magenta) 92%, #fff), var(--pomo-magenta));
+  border-color: color-mix(in srgb, var(--pomo-magenta) 50%, #000);
+  color: #2a0014;
+  filter: hue-rotate(calc(var(--cat-idx, 0) * 60deg + 30deg)) brightness(1.1);
+}
+
+/* Animated color-cycling dashed border, used on every box in this theme
+   EXCEPT #item-panel (which keeps its sawtooth clip-path edge instead).
+   @property lets the browser smoothly interpolate between actual palette
+   colors frame-to-frame (a plain CSS variable would just hard-cut). */
+@property --dash-color {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #14c3d6;
+}
+@keyframes factory-central-dash-cycle {
+  0%   { --dash-color: var(--pomo-magenta); }
+  20%  { --dash-color: var(--pomo-yellow); }
+  40%  { --dash-color: var(--pomo-cyan); }
+  60%  { --dash-color: var(--pomo-blue); }
+  80%  { --dash-color: var(--pomo-purple); }
+  100% { --dash-color: var(--pomo-magenta); }
+}
+body.layout-user-factory-central #subfolder-nav,
+body.layout-user-factory-central #preview-pane,
+body.layout-user-factory-central #task-bar {
+  border: 4px dashed var(--dash-color);
+  border-style: dashed;
+  animation: factory-central-dash-cycle 6s linear infinite;
 }
 
 /* ---------- panels: bolted plate ---------- */
-body.layout-user-factory-central #item-panel,
+body.layout-user-factory-central #item-panel {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--steel-dark) 82%, transparent),
+    color-mix(in srgb, var(--grease) 88%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--steel-hi) 40%, transparent);
+}
 body.layout-user-factory-central #subfolder-nav {
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--steel-dark) 82%, transparent),
     color-mix(in srgb, var(--grease) 88%, transparent));
-  border: 2px solid var(--steel);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--steel-hi) 40%, transparent);
 }
 body.layout-user-factory-central .item-row.selected {
   background: color-mix(in srgb, var(--amber) 20%, transparent);
   box-shadow: inset 3px 0 0 var(--amber);
+}
+
+/* ---------- decorative rings around the section circle ----------
+   Two extra rings, both centered on the same hub as everything else:
+     1. A ring of thick, color-cycling tick marks ("|||||||||") sitting
+        right at the radius the section boxes (icon + label pill) occupy
+        - i.e. orbit-r + the icon ring's own radius, same circle the
+        icons/pills already ride on.
+     2. A second, slightly larger ring of solid primary-colored dots
+        (red/yellow/blue) encircling the tick-mark ring.
+   Built on #task-bar::before/::after (otherwise unused here) - fixed
+   positioning means they ignore the taskbar's own box and center on the
+   hub like every other decorative layer in this theme. */
+/* Built on #category-row::after and #subfolder-nav::after (both otherwise
+   unused here). NOTE: these are deliberately NOT on #task-bar - it has
+   backdrop-filter set in the base stylesheet, which (like transform)
+   makes an element the containing block for its own fixed-position
+   pseudo-elements, so anything positioned "fixed" there was being placed
+   relative to the taskbar's small bottom strip instead of the viewport,
+   nowhere near the actual gear center. Neither host below has that
+   problem. */
+body.layout-user-factory-central {
+  --tick-ring-r: calc((var(--orbit-r) + var(--icon-ring-r)) * 2);
+  --dot-ring-r: calc((var(--orbit-r) + var(--icon-ring-r) + 34px) * 2);
+}
+body.layout-user-factory-central #category-row::after {
+  content: "";
+  position: absolute;
+  left: var(--hub-cx); top: var(--hub-cy);
+  width: calc(var(--tick-ring-r) * 2 + 24px);
+  height: calc(var(--tick-ring-r) * 2 + 24px);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  /* Must stay behind the options/items box (#item-panel, z-index 5) at
+     all times - -1 puts it behind the rest of #top-bar's own content too
+     (gear teeth/rim/hub are 0/1/-1 already), which is fine since this
+     ring is meant to read as background decoration either way. */
+  z-index: -2;
+  background: repeating-conic-gradient(from 0deg,
+    var(--dash-color) 0deg 2deg,
+    transparent 2deg 6deg);
+  -webkit-mask: radial-gradient(circle at 50% 50%,
+    transparent 0 calc(var(--tick-ring-r) - 9px),
+    #000 calc(var(--tick-ring-r) - 9px) calc(var(--tick-ring-r) + 9px),
+    transparent calc(var(--tick-ring-r) + 9px));
+  mask: radial-gradient(circle at 50% 50%,
+    transparent 0 calc(var(--tick-ring-r) - 9px),
+    #000 calc(var(--tick-ring-r) - 9px) calc(var(--tick-ring-r) + 9px),
+    transparent calc(var(--tick-ring-r) + 9px));
+  animation: factory-central-dash-cycle 6s linear infinite;
+}
+body.layout-user-factory-central #clock-wrap::after {
+  content: "";
+  position: fixed;
+  left: var(--hub-cx); top: var(--hub-cy);
+  width: calc(var(--dot-ring-r) * 2 + 24px);
+  height: calc(var(--dot-ring-r) * 2 + 24px);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  /* Deliberately NOT hosted on #subfolder-nav: that element gets
+     classList.add("hidden") in almost every section kind, which made
+     this ring disappear along with it most of the time. #clock-wrap is
+     persistent UI chrome that's always on screen, so the ring stays put
+     regardless of which section/panel is active. */
+  z-index: -1;
+  background: repeating-conic-gradient(from 0deg,
+    #e8231a 0deg 6deg, transparent 6deg 20deg,
+    #ffd400 20deg 26deg, transparent 26deg 40deg,
+    #1554b8 40deg 46deg, transparent 46deg 60deg);
+  -webkit-mask: radial-gradient(circle at 50% 50%,
+    transparent 0 calc(var(--dot-ring-r) - 10px),
+    #000 calc(var(--dot-ring-r) - 10px) calc(var(--dot-ring-r) + 10px),
+    transparent calc(var(--dot-ring-r) + 10px));
+  mask: radial-gradient(circle at 50% 50%,
+    transparent 0 calc(var(--dot-ring-r) - 10px),
+    #000 calc(var(--dot-ring-r) - 10px) calc(var(--dot-ring-r) + 10px),
+    transparent calc(var(--dot-ring-r) + 10px));
+  filter: blur(0.4px); /* softens the wedge edges toward round-dot */
 }
 
 /* ---------- clock + taskbar: hazard-striped machine fascia ---------- */
@@ -243,10 +513,8 @@ body.layout-user-factory-central #clock {
 }
 body.layout-user-factory-central #task-bar {
   background: linear-gradient(180deg, var(--steel-dark), var(--grease));
-  border-color: var(--steel);
 }
 body.layout-user-factory-central #task-bar.focused {
-  border-color: var(--amber);
   box-shadow: 0 0 18px color-mix(in srgb, var(--amber) 40%, transparent);
 }
 
@@ -274,14 +542,9 @@ body.layout-user-factory-central #category-row {
   position: absolute; inset: 0;
 }
 
-/* ---- section names rotate with the gear ----
-   Each label is counter-positioned by its orbit angle so the text rides
-   around the rim like a stamped marking rather than staying upright. */
-body.layout-user-factory-central .category .label {
-  transform: rotate(var(--orbit-angle, 0deg));
-  transform-origin: center;
-  transition: transform 320ms ease;
-}
+/* Section-name positioning/rotation lives with the rest of the label-ring
+   rules near the top of this file (see "--label-r"), so both the radius
+   and the rim-following rotation stay in one place. */
 
 /* ---- content area: free-floating panels over the gear ---- */
 body.layout-user-factory-central #content-area {
@@ -332,7 +595,7 @@ body.layout-user-factory-central #item-panel {
   max-height: none;
   margin: 0;
   overflow-y: auto;
-  z-index: 5;
+  z-index: 8; /* comfortably above the decorative rings (-2/-1) and everything else in this theme */
 
   /* sawtooth edge: a zig-zag cut down the left side and along the bottom,
      so the panel reads as a blade/gear-cut plate rather than a card */
@@ -341,36 +604,466 @@ body.layout-user-factory-central #item-panel {
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--steel-dark) 94%, transparent),
     color-mix(in srgb, var(--grease) 96%, transparent));
+  /* Teeth run the full left edge for any reasonable window height
+     (up to ~3000px tall) instead of stopping partway up, so the
+     sawtooth doesn't fade into a plain diagonal cut above a certain
+     point - previously it only covered the bottom ~420px. */
   clip-path: polygon(
     0% 0%, 100% 0%, 100% 100%, 0% 100%,
-    0% calc(100% - var(--saw)), var(--saw) calc(100% - var(--saw) * 2),
-    0% calc(100% - var(--saw) * 3), var(--saw) calc(100% - var(--saw) * 4),
-    0% calc(100% - var(--saw) * 5), var(--saw) calc(100% - var(--saw) * 6),
-    0% calc(100% - var(--saw) * 7), var(--saw) calc(100% - var(--saw) * 8),
-    0% calc(100% - var(--saw) * 9), var(--saw) calc(100% - var(--saw) * 10),
-    0% calc(100% - var(--saw) * 11), var(--saw) calc(100% - var(--saw) * 12),
-    0% calc(100% - var(--saw) * 13), var(--saw) calc(100% - var(--saw) * 14),
-    0% calc(100% - var(--saw) * 15), var(--saw) calc(100% - var(--saw) * 16),
-    0% calc(100% - var(--saw) * 17), var(--saw) calc(100% - var(--saw) * 18),
-    0% calc(100% - var(--saw) * 19), var(--saw) calc(100% - var(--saw) * 20),
-    0% calc(100% - var(--saw) * 21), var(--saw) calc(100% - var(--saw) * 22),
-    0% calc(100% - var(--saw) * 23), var(--saw) calc(100% - var(--saw) * 24),
-    0% calc(100% - var(--saw) * 25), var(--saw) calc(100% - var(--saw) * 26),
-    0% calc(100% - var(--saw) * 27), var(--saw) calc(100% - var(--saw) * 28),
-    0% calc(100% - var(--saw) * 29), var(--saw) calc(100% - var(--saw) * 30)
+    0% calc(100% - var(--saw) * 1),
+    var(--saw) calc(100% - var(--saw) * 2),
+    0% calc(100% - var(--saw) * 3),
+    var(--saw) calc(100% - var(--saw) * 4),
+    0% calc(100% - var(--saw) * 5),
+    var(--saw) calc(100% - var(--saw) * 6),
+    0% calc(100% - var(--saw) * 7),
+    var(--saw) calc(100% - var(--saw) * 8),
+    0% calc(100% - var(--saw) * 9),
+    var(--saw) calc(100% - var(--saw) * 10),
+    0% calc(100% - var(--saw) * 11),
+    var(--saw) calc(100% - var(--saw) * 12),
+    0% calc(100% - var(--saw) * 13),
+    var(--saw) calc(100% - var(--saw) * 14),
+    0% calc(100% - var(--saw) * 15),
+    var(--saw) calc(100% - var(--saw) * 16),
+    0% calc(100% - var(--saw) * 17),
+    var(--saw) calc(100% - var(--saw) * 18),
+    0% calc(100% - var(--saw) * 19),
+    var(--saw) calc(100% - var(--saw) * 20),
+    0% calc(100% - var(--saw) * 21),
+    var(--saw) calc(100% - var(--saw) * 22),
+    0% calc(100% - var(--saw) * 23),
+    var(--saw) calc(100% - var(--saw) * 24),
+    0% calc(100% - var(--saw) * 25),
+    var(--saw) calc(100% - var(--saw) * 26),
+    0% calc(100% - var(--saw) * 27),
+    var(--saw) calc(100% - var(--saw) * 28),
+    0% calc(100% - var(--saw) * 29),
+    var(--saw) calc(100% - var(--saw) * 30),
+    0% calc(100% - var(--saw) * 31),
+    var(--saw) calc(100% - var(--saw) * 32),
+    0% calc(100% - var(--saw) * 33),
+    var(--saw) calc(100% - var(--saw) * 34),
+    0% calc(100% - var(--saw) * 35),
+    var(--saw) calc(100% - var(--saw) * 36),
+    0% calc(100% - var(--saw) * 37),
+    var(--saw) calc(100% - var(--saw) * 38),
+    0% calc(100% - var(--saw) * 39),
+    var(--saw) calc(100% - var(--saw) * 40),
+    0% calc(100% - var(--saw) * 41),
+    var(--saw) calc(100% - var(--saw) * 42),
+    0% calc(100% - var(--saw) * 43),
+    var(--saw) calc(100% - var(--saw) * 44),
+    0% calc(100% - var(--saw) * 45),
+    var(--saw) calc(100% - var(--saw) * 46),
+    0% calc(100% - var(--saw) * 47),
+    var(--saw) calc(100% - var(--saw) * 48),
+    0% calc(100% - var(--saw) * 49),
+    var(--saw) calc(100% - var(--saw) * 50),
+    0% calc(100% - var(--saw) * 51),
+    var(--saw) calc(100% - var(--saw) * 52),
+    0% calc(100% - var(--saw) * 53),
+    var(--saw) calc(100% - var(--saw) * 54),
+    0% calc(100% - var(--saw) * 55),
+    var(--saw) calc(100% - var(--saw) * 56),
+    0% calc(100% - var(--saw) * 57),
+    var(--saw) calc(100% - var(--saw) * 58),
+    0% calc(100% - var(--saw) * 59),
+    var(--saw) calc(100% - var(--saw) * 60),
+    0% calc(100% - var(--saw) * 61),
+    var(--saw) calc(100% - var(--saw) * 62),
+    0% calc(100% - var(--saw) * 63),
+    var(--saw) calc(100% - var(--saw) * 64),
+    0% calc(100% - var(--saw) * 65),
+    var(--saw) calc(100% - var(--saw) * 66),
+    0% calc(100% - var(--saw) * 67),
+    var(--saw) calc(100% - var(--saw) * 68),
+    0% calc(100% - var(--saw) * 69),
+    var(--saw) calc(100% - var(--saw) * 70),
+    0% calc(100% - var(--saw) * 71),
+    var(--saw) calc(100% - var(--saw) * 72),
+    0% calc(100% - var(--saw) * 73),
+    var(--saw) calc(100% - var(--saw) * 74),
+    0% calc(100% - var(--saw) * 75),
+    var(--saw) calc(100% - var(--saw) * 76),
+    0% calc(100% - var(--saw) * 77),
+    var(--saw) calc(100% - var(--saw) * 78),
+    0% calc(100% - var(--saw) * 79),
+    var(--saw) calc(100% - var(--saw) * 80),
+    0% calc(100% - var(--saw) * 81),
+    var(--saw) calc(100% - var(--saw) * 82),
+    0% calc(100% - var(--saw) * 83),
+    var(--saw) calc(100% - var(--saw) * 84),
+    0% calc(100% - var(--saw) * 85),
+    var(--saw) calc(100% - var(--saw) * 86),
+    0% calc(100% - var(--saw) * 87),
+    var(--saw) calc(100% - var(--saw) * 88),
+    0% calc(100% - var(--saw) * 89),
+    var(--saw) calc(100% - var(--saw) * 90),
+    0% calc(100% - var(--saw) * 91),
+    var(--saw) calc(100% - var(--saw) * 92),
+    0% calc(100% - var(--saw) * 93),
+    var(--saw) calc(100% - var(--saw) * 94),
+    0% calc(100% - var(--saw) * 95),
+    var(--saw) calc(100% - var(--saw) * 96),
+    0% calc(100% - var(--saw) * 97),
+    var(--saw) calc(100% - var(--saw) * 98),
+    0% calc(100% - var(--saw) * 99),
+    var(--saw) calc(100% - var(--saw) * 100),
+    0% calc(100% - var(--saw) * 101),
+    var(--saw) calc(100% - var(--saw) * 102),
+    0% calc(100% - var(--saw) * 103),
+    var(--saw) calc(100% - var(--saw) * 104),
+    0% calc(100% - var(--saw) * 105),
+    var(--saw) calc(100% - var(--saw) * 106),
+    0% calc(100% - var(--saw) * 107),
+    var(--saw) calc(100% - var(--saw) * 108),
+    0% calc(100% - var(--saw) * 109),
+    var(--saw) calc(100% - var(--saw) * 110),
+    0% calc(100% - var(--saw) * 111),
+    var(--saw) calc(100% - var(--saw) * 112),
+    0% calc(100% - var(--saw) * 113),
+    var(--saw) calc(100% - var(--saw) * 114),
+    0% calc(100% - var(--saw) * 115),
+    var(--saw) calc(100% - var(--saw) * 116),
+    0% calc(100% - var(--saw) * 117),
+    var(--saw) calc(100% - var(--saw) * 118),
+    0% calc(100% - var(--saw) * 119),
+    var(--saw) calc(100% - var(--saw) * 120),
+    0% calc(100% - var(--saw) * 121),
+    var(--saw) calc(100% - var(--saw) * 122),
+    0% calc(100% - var(--saw) * 123),
+    var(--saw) calc(100% - var(--saw) * 124),
+    0% calc(100% - var(--saw) * 125),
+    var(--saw) calc(100% - var(--saw) * 126),
+    0% calc(100% - var(--saw) * 127),
+    var(--saw) calc(100% - var(--saw) * 128),
+    0% calc(100% - var(--saw) * 129),
+    var(--saw) calc(100% - var(--saw) * 130),
+    0% calc(100% - var(--saw) * 131),
+    var(--saw) calc(100% - var(--saw) * 132),
+    0% calc(100% - var(--saw) * 133),
+    var(--saw) calc(100% - var(--saw) * 134),
+    0% calc(100% - var(--saw) * 135),
+    var(--saw) calc(100% - var(--saw) * 136),
+    0% calc(100% - var(--saw) * 137),
+    var(--saw) calc(100% - var(--saw) * 138),
+    0% calc(100% - var(--saw) * 139),
+    var(--saw) calc(100% - var(--saw) * 140),
+    0% calc(100% - var(--saw) * 141),
+    var(--saw) calc(100% - var(--saw) * 142),
+    0% calc(100% - var(--saw) * 143),
+    var(--saw) calc(100% - var(--saw) * 144),
+    0% calc(100% - var(--saw) * 145),
+    var(--saw) calc(100% - var(--saw) * 146),
+    0% calc(100% - var(--saw) * 147),
+    var(--saw) calc(100% - var(--saw) * 148),
+    0% calc(100% - var(--saw) * 149),
+    var(--saw) calc(100% - var(--saw) * 150),
+    0% calc(100% - var(--saw) * 151),
+    var(--saw) calc(100% - var(--saw) * 152),
+    0% calc(100% - var(--saw) * 153),
+    var(--saw) calc(100% - var(--saw) * 154),
+    0% calc(100% - var(--saw) * 155),
+    var(--saw) calc(100% - var(--saw) * 156),
+    0% calc(100% - var(--saw) * 157),
+    var(--saw) calc(100% - var(--saw) * 158),
+    0% calc(100% - var(--saw) * 159),
+    var(--saw) calc(100% - var(--saw) * 160),
+    0% calc(100% - var(--saw) * 161),
+    var(--saw) calc(100% - var(--saw) * 162),
+    0% calc(100% - var(--saw) * 163),
+    var(--saw) calc(100% - var(--saw) * 164),
+    0% calc(100% - var(--saw) * 165),
+    var(--saw) calc(100% - var(--saw) * 166),
+    0% calc(100% - var(--saw) * 167),
+    var(--saw) calc(100% - var(--saw) * 168),
+    0% calc(100% - var(--saw) * 169),
+    var(--saw) calc(100% - var(--saw) * 170),
+    0% calc(100% - var(--saw) * 171),
+    var(--saw) calc(100% - var(--saw) * 172),
+    0% calc(100% - var(--saw) * 173),
+    var(--saw) calc(100% - var(--saw) * 174),
+    0% calc(100% - var(--saw) * 175),
+    var(--saw) calc(100% - var(--saw) * 176),
+    0% calc(100% - var(--saw) * 177),
+    var(--saw) calc(100% - var(--saw) * 178),
+    0% calc(100% - var(--saw) * 179),
+    var(--saw) calc(100% - var(--saw) * 180),
+    0% calc(100% - var(--saw) * 181),
+    var(--saw) calc(100% - var(--saw) * 182),
+    0% calc(100% - var(--saw) * 183),
+    var(--saw) calc(100% - var(--saw) * 184),
+    0% calc(100% - var(--saw) * 185),
+    var(--saw) calc(100% - var(--saw) * 186),
+    0% calc(100% - var(--saw) * 187),
+    var(--saw) calc(100% - var(--saw) * 188),
+    0% calc(100% - var(--saw) * 189),
+    var(--saw) calc(100% - var(--saw) * 190),
+    0% calc(100% - var(--saw) * 191),
+    var(--saw) calc(100% - var(--saw) * 192),
+    0% calc(100% - var(--saw) * 193),
+    var(--saw) calc(100% - var(--saw) * 194),
+    0% calc(100% - var(--saw) * 195),
+    var(--saw) calc(100% - var(--saw) * 196),
+    0% calc(100% - var(--saw) * 197),
+    var(--saw) calc(100% - var(--saw) * 198),
+    0% calc(100% - var(--saw) * 199),
+    var(--saw) calc(100% - var(--saw) * 200),
+    0% calc(100% - var(--saw) * 201),
+    var(--saw) calc(100% - var(--saw) * 202),
+    0% calc(100% - var(--saw) * 203),
+    var(--saw) calc(100% - var(--saw) * 204),
+    0% calc(100% - var(--saw) * 205),
+    var(--saw) calc(100% - var(--saw) * 206),
+    0% calc(100% - var(--saw) * 207),
+    var(--saw) calc(100% - var(--saw) * 208),
+    0% calc(100% - var(--saw) * 209),
+    var(--saw) calc(100% - var(--saw) * 210),
+    0% calc(100% - var(--saw) * 211),
+    var(--saw) calc(100% - var(--saw) * 212),
+    0% calc(100% - var(--saw) * 213),
+    var(--saw) calc(100% - var(--saw) * 214),
+    0% calc(100% - var(--saw) * 215),
+    var(--saw) calc(100% - var(--saw) * 216),
+    0% calc(100% - var(--saw) * 217),
+    var(--saw) calc(100% - var(--saw) * 218),
+    0% calc(100% - var(--saw) * 219),
+    var(--saw) calc(100% - var(--saw) * 220),
+    0% calc(100% - var(--saw) * 221),
+    var(--saw) calc(100% - var(--saw) * 222),
+    0% calc(100% - var(--saw) * 223),
+    var(--saw) calc(100% - var(--saw) * 224),
+    0% calc(100% - var(--saw) * 225),
+    var(--saw) calc(100% - var(--saw) * 226),
+    0% calc(100% - var(--saw) * 227),
+    var(--saw) calc(100% - var(--saw) * 228),
+    0% calc(100% - var(--saw) * 229),
+    var(--saw) calc(100% - var(--saw) * 230),
+    0% calc(100% - var(--saw) * 231),
+    var(--saw) calc(100% - var(--saw) * 232),
+    0% calc(100% - var(--saw) * 233),
+    var(--saw) calc(100% - var(--saw) * 234),
+    0% calc(100% - var(--saw) * 235),
+    var(--saw) calc(100% - var(--saw) * 236),
+    0% calc(100% - var(--saw) * 237),
+    var(--saw) calc(100% - var(--saw) * 238),
+    0% calc(100% - var(--saw) * 239),
+    var(--saw) calc(100% - var(--saw) * 240),
+    0% calc(100% - var(--saw) * 241),
+    var(--saw) calc(100% - var(--saw) * 242),
+    0% calc(100% - var(--saw) * 243),
+    var(--saw) calc(100% - var(--saw) * 244),
+    0% calc(100% - var(--saw) * 245),
+    var(--saw) calc(100% - var(--saw) * 246),
+    0% calc(100% - var(--saw) * 247),
+    var(--saw) calc(100% - var(--saw) * 248),
+    0% calc(100% - var(--saw) * 249),
+    var(--saw) calc(100% - var(--saw) * 250),
+    0% calc(100% - var(--saw) * 251),
+    var(--saw) calc(100% - var(--saw) * 252),
+    0% calc(100% - var(--saw) * 253),
+    var(--saw) calc(100% - var(--saw) * 254),
+    0% calc(100% - var(--saw) * 255),
+    var(--saw) calc(100% - var(--saw) * 256),
+    0% calc(100% - var(--saw) * 257),
+    var(--saw) calc(100% - var(--saw) * 258),
+    0% calc(100% - var(--saw) * 259),
+    var(--saw) calc(100% - var(--saw) * 260),
+    0% calc(100% - var(--saw) * 261),
+    var(--saw) calc(100% - var(--saw) * 262),
+    0% calc(100% - var(--saw) * 263),
+    var(--saw) calc(100% - var(--saw) * 264),
+    0% calc(100% - var(--saw) * 265),
+    var(--saw) calc(100% - var(--saw) * 266),
+    0% calc(100% - var(--saw) * 267),
+    var(--saw) calc(100% - var(--saw) * 268),
+    0% calc(100% - var(--saw) * 269),
+    var(--saw) calc(100% - var(--saw) * 270),
+    0% calc(100% - var(--saw) * 271),
+    var(--saw) calc(100% - var(--saw) * 272),
+    0% calc(100% - var(--saw) * 273),
+    var(--saw) calc(100% - var(--saw) * 274),
+    0% calc(100% - var(--saw) * 275),
+    var(--saw) calc(100% - var(--saw) * 276),
+    0% calc(100% - var(--saw) * 277),
+    var(--saw) calc(100% - var(--saw) * 278),
+    0% calc(100% - var(--saw) * 279),
+    var(--saw) calc(100% - var(--saw) * 280),
+    0% calc(100% - var(--saw) * 281),
+    var(--saw) calc(100% - var(--saw) * 282),
+    0% calc(100% - var(--saw) * 283),
+    var(--saw) calc(100% - var(--saw) * 284),
+    0% calc(100% - var(--saw) * 285),
+    var(--saw) calc(100% - var(--saw) * 286),
+    0% calc(100% - var(--saw) * 287),
+    var(--saw) calc(100% - var(--saw) * 288),
+    0% calc(100% - var(--saw) * 289),
+    var(--saw) calc(100% - var(--saw) * 290),
+    0% calc(100% - var(--saw) * 291),
+    var(--saw) calc(100% - var(--saw) * 292),
+    0% calc(100% - var(--saw) * 293),
+    var(--saw) calc(100% - var(--saw) * 294),
+    0% calc(100% - var(--saw) * 295),
+    var(--saw) calc(100% - var(--saw) * 296),
+    0% calc(100% - var(--saw) * 297),
+    var(--saw) calc(100% - var(--saw) * 298),
+    0% calc(100% - var(--saw) * 299),
+    var(--saw) calc(100% - var(--saw) * 300),
+    0% calc(100% - var(--saw) * 301),
+    var(--saw) calc(100% - var(--saw) * 302),
+    0% calc(100% - var(--saw) * 303),
+    var(--saw) calc(100% - var(--saw) * 304),
+    0% calc(100% - var(--saw) * 305),
+    var(--saw) calc(100% - var(--saw) * 306),
+    0% calc(100% - var(--saw) * 307),
+    var(--saw) calc(100% - var(--saw) * 308),
+    0% calc(100% - var(--saw) * 309),
+    var(--saw) calc(100% - var(--saw) * 310),
+    0% calc(100% - var(--saw) * 311),
+    var(--saw) calc(100% - var(--saw) * 312),
+    0% calc(100% - var(--saw) * 313),
+    var(--saw) calc(100% - var(--saw) * 314),
+    0% calc(100% - var(--saw) * 315),
+    var(--saw) calc(100% - var(--saw) * 316),
+    0% calc(100% - var(--saw) * 317),
+    var(--saw) calc(100% - var(--saw) * 318),
+    0% calc(100% - var(--saw) * 319),
+    var(--saw) calc(100% - var(--saw) * 320),
+    0% calc(100% - var(--saw) * 321),
+    var(--saw) calc(100% - var(--saw) * 322),
+    0% calc(100% - var(--saw) * 323),
+    var(--saw) calc(100% - var(--saw) * 324),
+    0% calc(100% - var(--saw) * 325),
+    var(--saw) calc(100% - var(--saw) * 326),
+    0% calc(100% - var(--saw) * 327),
+    var(--saw) calc(100% - var(--saw) * 328),
+    0% calc(100% - var(--saw) * 329),
+    var(--saw) calc(100% - var(--saw) * 330),
+    0% calc(100% - var(--saw) * 331),
+    var(--saw) calc(100% - var(--saw) * 332),
+    0% calc(100% - var(--saw) * 333),
+    var(--saw) calc(100% - var(--saw) * 334),
+    0% calc(100% - var(--saw) * 335),
+    var(--saw) calc(100% - var(--saw) * 336),
+    0% calc(100% - var(--saw) * 337),
+    var(--saw) calc(100% - var(--saw) * 338),
+    0% calc(100% - var(--saw) * 339),
+    var(--saw) calc(100% - var(--saw) * 340),
+    0% calc(100% - var(--saw) * 341),
+    var(--saw) calc(100% - var(--saw) * 342),
+    0% calc(100% - var(--saw) * 343),
+    var(--saw) calc(100% - var(--saw) * 344),
+    0% calc(100% - var(--saw) * 345),
+    var(--saw) calc(100% - var(--saw) * 346),
+    0% calc(100% - var(--saw) * 347),
+    var(--saw) calc(100% - var(--saw) * 348),
+    0% calc(100% - var(--saw) * 349),
+    var(--saw) calc(100% - var(--saw) * 350),
+    0% calc(100% - var(--saw) * 351),
+    var(--saw) calc(100% - var(--saw) * 352),
+    0% calc(100% - var(--saw) * 353),
+    var(--saw) calc(100% - var(--saw) * 354),
+    0% calc(100% - var(--saw) * 355),
+    var(--saw) calc(100% - var(--saw) * 356),
+    0% calc(100% - var(--saw) * 357),
+    var(--saw) calc(100% - var(--saw) * 358),
+    0% calc(100% - var(--saw) * 359),
+    var(--saw) calc(100% - var(--saw) * 360),
+    0% calc(100% - var(--saw) * 361),
+    var(--saw) calc(100% - var(--saw) * 362),
+    0% calc(100% - var(--saw) * 363),
+    var(--saw) calc(100% - var(--saw) * 364),
+    0% calc(100% - var(--saw) * 365),
+    var(--saw) calc(100% - var(--saw) * 366),
+    0% calc(100% - var(--saw) * 367),
+    var(--saw) calc(100% - var(--saw) * 368),
+    0% calc(100% - var(--saw) * 369),
+    var(--saw) calc(100% - var(--saw) * 370),
+    0% calc(100% - var(--saw) * 371),
+    var(--saw) calc(100% - var(--saw) * 372),
+    0% calc(100% - var(--saw) * 373),
+    var(--saw) calc(100% - var(--saw) * 374),
+    0% calc(100% - var(--saw) * 375),
+    var(--saw) calc(100% - var(--saw) * 376),
+    0% calc(100% - var(--saw) * 377),
+    var(--saw) calc(100% - var(--saw) * 378),
+    0% calc(100% - var(--saw) * 379),
+    var(--saw) calc(100% - var(--saw) * 380),
+    0% calc(100% - var(--saw) * 381),
+    var(--saw) calc(100% - var(--saw) * 382),
+    0% calc(100% - var(--saw) * 383),
+    var(--saw) calc(100% - var(--saw) * 384),
+    0% calc(100% - var(--saw) * 385),
+    var(--saw) calc(100% - var(--saw) * 386),
+    0% calc(100% - var(--saw) * 387),
+    var(--saw) calc(100% - var(--saw) * 388),
+    0% calc(100% - var(--saw) * 389),
+    var(--saw) calc(100% - var(--saw) * 390),
+    0% calc(100% - var(--saw) * 391),
+    var(--saw) calc(100% - var(--saw) * 392),
+    0% calc(100% - var(--saw) * 393),
+    var(--saw) calc(100% - var(--saw) * 394),
+    0% calc(100% - var(--saw) * 395),
+    var(--saw) calc(100% - var(--saw) * 396),
+    0% calc(100% - var(--saw) * 397),
+    var(--saw) calc(100% - var(--saw) * 398),
+    0% calc(100% - var(--saw) * 399),
+    var(--saw) calc(100% - var(--saw) * 400),
+    0% calc(100% - var(--saw) * 401),
+    var(--saw) calc(100% - var(--saw) * 402),
+    0% calc(100% - var(--saw) * 403),
+    var(--saw) calc(100% - var(--saw) * 404),
+    0% calc(100% - var(--saw) * 405),
+    var(--saw) calc(100% - var(--saw) * 406),
+    0% calc(100% - var(--saw) * 407),
+    var(--saw) calc(100% - var(--saw) * 408),
+    0% calc(100% - var(--saw) * 409),
+    var(--saw) calc(100% - var(--saw) * 410),
+    0% calc(100% - var(--saw) * 411),
+    var(--saw) calc(100% - var(--saw) * 412),
+    0% calc(100% - var(--saw) * 413),
+    var(--saw) calc(100% - var(--saw) * 414),
+    0% calc(100% - var(--saw) * 415),
+    var(--saw) calc(100% - var(--saw) * 416),
+    0% calc(100% - var(--saw) * 417),
+    var(--saw) calc(100% - var(--saw) * 418),
+    0% calc(100% - var(--saw) * 419),
+    var(--saw) calc(100% - var(--saw) * 420),
+    0% calc(100% - var(--saw) * 421),
+    var(--saw) calc(100% - var(--saw) * 422),
+    0% calc(100% - var(--saw) * 423),
+    var(--saw) calc(100% - var(--saw) * 424),
+    0% calc(100% - var(--saw) * 425),
+    var(--saw) calc(100% - var(--saw) * 426),
+    0% calc(100% - var(--saw) * 427),
+    var(--saw) calc(100% - var(--saw) * 428),
+    0% calc(100% - var(--saw) * 429),
+    var(--saw) calc(100% - var(--saw) * 430),
+    0% calc(100% - var(--saw) * 431),
+    var(--saw) calc(100% - var(--saw) * 432),
+    0% calc(100% - var(--saw) * 433),
+    var(--saw) calc(100% - var(--saw) * 434),
+    0% calc(100% - var(--saw) * 435),
+    var(--saw) calc(100% - var(--saw) * 436)
   );
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.6);
 
-  /* slide/fade: driven by which pane has focus (data-radial-focus) */
-  transform: translateX(0);
-  opacity: 1;
+  /* Default to hidden - only [data-radial-focus="options"/"subfolder"]
+     below reveals it. Previously this defaulted to visible and only the
+     "sections" state hid it, which meant the panel showed up on load
+     (before app.js has set data-radial-focus on <body> yet) and any
+     other moment that attribute wasn't exactly "sections". */
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
   transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
               opacity 2s linear;
 }
 
-/* Sections focused (i.e. B was pressed, or focus returned to the gear):
-   the list fades out over 2s and slides back off the right edge, leaving
-   the gear clear. */
+/* Sections focused (i.e. B was pressed, or focus returned to the gear),
+   and the default/initial state before app.js sets data-radial-focus at
+   all: the list stays off-screen, leaving the gear clear. */
 body.layout-user-factory-central[data-radial-focus="sections"] #item-panel {
   transform: translateX(100%);
   opacity: 0;
@@ -382,6 +1075,7 @@ body.layout-user-factory-central[data-radial-focus="options"] #item-panel,
 body.layout-user-factory-central[data-radial-focus="subfolder"] #item-panel {
   transform: translateX(0);
   opacity: 1;
+  pointer-events: auto;
   transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
               opacity 260ms linear;
 }
@@ -410,4 +1104,11 @@ body.layout-user-factory-central #clock-wrap {
   right: 16px; bottom: 12px; top: auto; left: auto;
   align-items: flex-end;
   z-index: 7;
+}
+
+/* now-playing: lifted to end just above the open-programs bar (72px
+   tall, flush with the bottom edge) instead of the base CyberRadial
+   position, which this theme's gear layout doesn't use. */
+body.layout-user-factory-central #now-playing {
+  left: 24px; right: auto; top: auto; bottom: 96px;
 }

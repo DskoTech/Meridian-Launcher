@@ -1,0 +1,8 @@
+{
+  "id": "phone_link",
+  "label": "Phone Link",
+  "version": "2.0",
+  "type": "webapp",
+  "url": "https://messages.google.com/web/conversations",
+  "description": "Google Messages for web, boxed into a Meridian NetBrowse instance pinned to this section - connect your phone (via the QR pairing flow Google Messages shows on first load) to see and reply to your texts from Meridian Launcher. Uses Meridian NetBrowse's virtual mouse (A: left click, B: right click), Start: on-screen keyboard, and a stripped-down menu with only Exit Program."
+}

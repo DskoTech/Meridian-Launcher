@@ -6,6 +6,9 @@ import os
 import sys
 import traceback
 
+from crash_logger import install_crash_logging
+install_crash_logging("onscreenmenu")
+
 try:
 
     import psutil
@@ -31,13 +34,26 @@ def _another_instance_already_running():
     """Checks whether a different process is already running
     onscreenmenu.exe, so a second launch (e.g. from a shortcut/macro that
     fires even though it's already open) can quietly bow out instead of
-    running two overlays at once."""
+    running two overlays at once.
+
+    A PyInstaller --onefile build's bootloader briefly runs as its OWN
+    process (that also shows up named "onscreenmenu.exe") before it
+    extracts and execs the real app as a child - so on every single
+    compiled launch, there are two "onscreenmenu.exe" processes alive for
+    a moment: the bootloader (this process's parent) and this process
+    itself. Only skipping my_pid missed that, so this check saw its own
+    bootloader parent and concluded "another instance is already running"
+    every time, immediately exiting - which is exactly why it looked like
+    onscreenmenu "doesn't run" once compiled, despite working fine from
+    source (where the process is named python.exe/pythonw.exe, never
+    triggering this path at all). Skipping the parent PID too fixes it."""
 
     if psutil is None:
 
         return False
 
     my_pid = os.getpid()
+    my_parent_pid = os.getppid()
 
     try:
 
@@ -45,7 +61,7 @@ def _another_instance_already_running():
 
             try:
 
-                if proc.pid == my_pid:
+                if proc.pid in (my_pid, my_parent_pid):
 
                     continue
 
