@@ -97,6 +97,37 @@ def _run(cmd):
         return False, str(e)
 
 
+def another_instance_running(exe_name: str) -> bool:
+    """Whether a DIFFERENT process is already running this same exe name -
+    excludes both our own PID and our own PARENT's PID.
+
+    Excluding the parent matters for any compiled --onefile app: its
+    PyInstaller bootloader briefly runs as its own process (sharing the
+    same exe name) before extracting and exec'ing the real app as a
+    child, so on every single compiled launch there are, for a moment,
+    two processes alive that would both match this name - the bootloader
+    (this process's parent) and this process itself. Only excluding our
+    own PID (not the parent's too) means every compiled launch falsely
+    concludes "another instance is already running" and exits
+    immediately - this was a real bug found in onscreenmenu's own
+    single-instance check; every app doing this same kind of check
+    should exclude both."""
+    if psutil is None:
+        return False
+    my_pid = os.getpid()
+    my_parent_pid = os.getppid()
+    exe_name = exe_name.lower()
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            if proc.pid in (my_pid, my_parent_pid):
+                continue
+            if (proc.info.get("name") or "").lower() == exe_name:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            continue
+    return False
+
+
 def is_process_running(exe_name: str) -> bool:
     """Case-insensitive check for whether a process with this executable
     name (e.g. 'onscreenmenu.exe') is currently running."""
@@ -110,6 +141,29 @@ def is_process_running(exe_name: str) -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
             continue
     return False
+
+
+def kill_process(exe_name: str):
+    """Terminates every running process with this executable name
+    (case-insensitive). Used by the Start menu's "Launch/Close
+    onscreenmenu" toggle."""
+    if psutil is None:
+        return False, "psutil not available."
+    exe_name = exe_name.lower()
+    found = False
+    try:
+        for proc in psutil.process_iter(["name"]):
+            try:
+                if (proc.info.get("name") or "").lower() == exe_name:
+                    found = True
+                    proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if not found:
+            return True, None  # already not running - not an error
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def open_folder(path):

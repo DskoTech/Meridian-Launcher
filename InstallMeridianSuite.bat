@@ -8,13 +8,17 @@ REM  Does everything, in order:
 REM    1. Elevates itself to Administrator if it isn't already.
 REM    2. Installs Python (3.12 x64, all-users, on PATH) if no
 REM       Python is found.
-REM    3. Installs every pip dependency all five apps need to
+REM    3. Installs every pip dependency all apps need to
 REM       build (pywebview, PySide6, pygame, pyinstaller, ...).
-REM    4. Compiles all five apps with their own build scripts.
-REM    5. Stages the built apps plus osm.bat, osk.bat,
-REM       MakeUnmakeShell.ps1, README.md, CONTROLS_README.txt,
-REM       and the Meridian_Exporter Playnite extension into one
-REM       flat folder and installs it to C:\Program Files\DskoTech.
+REM    4. Compiles all seven apps with their own build scripts
+REM       (Meridian Launcher, CyberDeckBrowser, Meridian Explorer,
+REM       Meridian FileBrowse + its shell-handler trampoline,
+REM       onscreenmenu, Meridian Game Library).
+REM    5. Stages the built apps, the Plugins/ and examples/
+REM       folders, plus osm.bat, osk.bat, MakeUnmakeShell.ps1,
+REM       README.md, CONTROLS_README.txt, and the
+REM       Meridian_Exporter Playnite extension into one flat
+REM       folder and installs it to C:\Program Files\DskoTech.
 REM    6. Downloads and silently installs the runtime
 REM       dependencies end users need: the WebView2 Runtime and
 REM       the VC++ 2015-2022 x64 Redistributable (plus ffmpeg
@@ -130,7 +134,7 @@ REM ---------------------------------------------------------
 REM  3. Compile all five apps using their own build scripts,
 REM     exactly like CompileAndPackage.bat does.
 REM ---------------------------------------------------------
-echo [3/6] Compiling all five apps ^(this is the slow part^)...
+echo [3/6] Compiling all seven apps ^(this is the slow part^)...
 set "FAILED="
 
 echo   - Meridian Launcher...
@@ -158,6 +162,19 @@ if not exist "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" (
     set "FAILED=1"
 )
 
+echo   - Meridian FileBrowse ^(+ its default-shell-browser trampoline^)...
+pushd "%ROOT%Meridian_FileBrowse"
+call "Build_Meridian_FileBrowse.bat" < NUL
+popd
+if not exist "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" (
+    echo     [ERROR] "Meridian FileBrowse.exe" was not produced.
+    set "FAILED=1"
+)
+if not exist "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse Shell Handler.exe" (
+    echo     [WARN] "Meridian FileBrowse Shell Handler.exe" was not produced -
+    echo            the "Make default shell browser" setting won't be offered.
+)
+
 echo   - onscreenmenu...
 pushd "%ROOT%onscreenmenu"
 call "buildonscreenmenu.bat" < NUL
@@ -182,7 +199,7 @@ if defined FAILED (
     echo   Nothing has been installed.
     goto :fail
 )
-echo   OK - all five apps compiled.
+echo   OK - all seven apps compiled.
 echo.
 
 REM ---------------------------------------------------------
@@ -202,7 +219,14 @@ mkdir "%STAGE%"
 REM onefile apps - single exes straight in
 copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul || set "FAILED=1"
 copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul || set "FAILED=1"
 copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul || set "FAILED=1"
+
+REM default-shell-browser trampolines - best-effort, not required for the
+REM apps themselves to work, only for the "make default" settings
+if exist "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse Shell Handler.exe" (
+    copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse Shell Handler.exe" "%STAGE%\" >nul
+)
 
 REM onedir apps - full dist contents flattened in
 robocopy "%ROOT%CyberDeckBrowser\dist\CyberDeckBrowser" "%STAGE%" /E /NFL /NDL /NJH /NJS >nul
@@ -219,6 +243,11 @@ copy /y "%ROOT%README.md"            "%STAGE%\" >nul || set "FAILED=1"
 copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul || set "FAILED=1"
 robocopy "%ROOT%Meridian_Exporter" "%STAGE%\Meridian_Exporter" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%themes" "%STAGE%\themes" /E /NFL /NDL /NJH /NJS >nul
+REM Plugins/ (auto-scanned custom sections) and examples/ (the blank
+REM plugin template) ride along too, so a fresh install has both the
+REM built-in Start plugin and the template ready to go, not just the exes.
+robocopy "%ROOT%Plugins" "%STAGE%\Plugins" /E /NFL /NDL /NJH /NJS >nul
+robocopy "%ROOT%examples" "%STAGE%\examples" /E /NFL /NDL /NJH /NJS >nul
 copy /y "%ROOT%ImportMeridianexporter.bat" "%STAGE%\" >nul
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 

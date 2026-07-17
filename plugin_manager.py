@@ -1,16 +1,37 @@
 """Meridian Launcher plugin system.
 
-A "plugin" is a folder under Plugins/ containing:
-  - plugin.json   {"id": "start", "label": "Start", "version": "1.0"}
-  - backend.py    exposes list_items() and activate_item(item_id)
+A "plugin" is a folder under Plugins/ containing a plugin.json manifest,
+plus (for "list" plugins) a backend.py. Three plugin types:
 
-Plugins are auto-discovered on startup and appended as hideable custom
-sections after the last manually-added custom section. Each plugin gets
-its own settings entry (visible: bool, default False) persisted in
-settings.json under "plugins".
+  - "list" (default): plugin.json + backend.py exposing list_items() and
+    activate_item(item_id) — a plain data-driven list, navigated the same
+    way as any built-in section (see Plugins/Start/ for an example).
 
-A plugin's backend.py is loaded as an isolated module (not merged into
-Meridian Launcher's own namespace), so plugin code stays in its own
+  - "webapp": plugin.json only, with a "url" field. Boxed into a Meridian
+    NetBrowse instance pointed at that URL when the section is opened —
+    the same embedded-browser-in-a-box mechanism the built-in Browser
+    section uses, just permanently pinned to one site instead of
+    following internally-launched links. Gets its own dedicated section
+    in the Sections bar.
+
+  - "option": same boxed-NetBrowse mechanism as "webapp" (needs a "url"
+    field too), but does NOT get its own section — instead it shows up as
+    a list entry inside an existing section named by its "section" field
+    (e.g. "chat"). Multiple option plugins targeting the same section id
+    all appear together as that section's list. Used for the Telegram/
+    Discord/Messenger/Snapchat/Phone Link plugins, which all show up
+    together as entries in the "Chat" section rather than five separate
+    sections.
+
+Plugins are auto-discovered on startup. "list"/"webapp" plugins are
+appended as hideable sections after the last manually-added custom
+section; "option" plugins are hideable list entries within whichever
+section their "section" field names. Each plugin gets its own settings
+entry (visible: bool, default False) persisted in settings.json under
+"plugins".
+
+A "list" plugin's backend.py is loaded as an isolated module (not merged
+into Meridian Launcher's own namespace), so plugin code stays in its own
 source files and never becomes part of the main program.
 """
 
@@ -19,7 +40,16 @@ import json
 import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+# Frozen-aware: when compiled with PyInstaller, __file__ resolves into
+# PyInstaller's own temp extraction folder (sys._MEIPASS et al), NOT the
+# real folder MeridianLauncher.exe actually sits in on disk — using it
+# directly here was why the compiled build never found a real Plugins/
+# folder placed next to the exe. sys.executable is the actual exe path in
+# a frozen build, matching main.py's own BASE_DIR logic exactly.
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
 PLUGINS_DIR = BASE_DIR / "Plugins"
 
 _loaded_backends = {}  # plugin_id -> module
@@ -35,12 +65,18 @@ def _plugin_json(folder: Path):
         return None
     pid = data.get("id") or folder.name
     label = data.get("label") or folder.name
-    return {"id": pid, "label": label, "path": str(folder)}
+    ptype = data.get("type") or "list"
+    info = {"id": pid, "label": label, "path": str(folder), "type": ptype}
+    if ptype in ("webapp", "option"):
+        info["url"] = data.get("url", "")
+    if ptype == "option":
+        info["section"] = data.get("section") or "chat"
+    return info
 
 
 def scan_plugins():
-    """Returns a list of {"id", "label", "path"} for every valid plugin
-    folder found under Plugins/, in directory-listing order (stable enough
+    """Returns a list of plugin info dicts for every valid plugin folder
+    found under Plugins/, in directory-listing order (stable enough
     across runs on the same machine/filesystem)."""
     PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
     found = []
@@ -51,6 +87,15 @@ def scan_plugins():
         if info:
             found.append(info)
     return found
+
+
+def get_plugin_url(plugin_id):
+    """For "webapp"/"option" plugins: the fixed URL they're boxed to.
+    Empty string if the plugin has no url set."""
+    for info in scan_plugins():
+        if info["id"] == plugin_id:
+            return info.get("url", "")
+    return ""
 
 
 def _backend_path(plugin_id):

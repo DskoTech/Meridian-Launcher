@@ -44,7 +44,7 @@ class ControllerListener:
     def __init__(self, controls, on_action, on_any, on_quit_combo, on_foreground_combo,
                  on_raw_button=None, on_y_hold_complete=None, foreground_trigger_getter=None,
                  cooldown_scale_getter=None,
-                 prefer_xinput=False):
+                 prefer_xinput=False, input_backend=None):
         """
         controls: dict following DEFAULT_CONTROLS shape (from controller_controls.json)
         on_action(action_name): called for confirm/back/up/down/left/right
@@ -56,10 +56,20 @@ class ControllerListener:
             used for the kiosk-mode secret unlock sequence.
         on_y_hold_complete(): called once after Y has been held continuously
             for Y_HOLD_SECONDS — another kiosk-mode exit path.
+        input_backend: "xinput" (default), "gameinput", "directinput",
+            "sdl3", or "auto" (try all four, XInput first) — the
+            persisted Settings > Controls choice. prefer_xinput is kept
+            for backwards compatibility and just forces "xinput" if set,
+            same as before this option existed.
         """
-        # prefer_xinput forces the XInput backend; otherwise GameInput is
-        # tried first and falls back to XInput on its own.
-        self.gamepad = open_gamepad(prefer=("xinput",) if prefer_xinput else None)
+        if prefer_xinput:
+            prefer = ("xinput",)
+        elif input_backend and input_backend != "auto":
+            prefer = (input_backend,)
+        else:
+            prefer = ("xinput", "gameinput", "directinput", "sdl3")
+        self.gamepad = open_gamepad(prefer=prefer)
+        self.input_backend = input_backend or "xinput"
         self.prefer_xinput = bool(prefer_xinput)
         self.controls = controls
         self.on_action = on_action
@@ -188,6 +198,13 @@ class ControllerListener:
                 else:
                     self._y_hold_start = None
                     self._y_fired = False
+
+                # Start, pressed alone (not part of the Start+Back
+                # foreground combo): opens a context menu on the current
+                # selection where one exists (currently just the Photos
+                # section's Edit / Set as Background popup).
+                if "START" in rising and "BACK" not in pressed:
+                    self.on_action("menu_start")
 
                 # confirm / back as direct button mappings, edge-triggered
                 for action_name in ("confirm", "back"):

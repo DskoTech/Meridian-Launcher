@@ -80,6 +80,11 @@ def default_settings():
         "folders": {"music": [], "photos": [], "videos": []},
         "sections": sections,
         "custom_sections": [],  # [{"id": "...", "label": "..."}]
+        # Built-in fixed sections (Music/Photos/Videos/Apps/Games/
+        # Emulators/Chat/Streaming/Web/Files/Macros) a person has chosen
+        # to hide from the sections bar entirely. Empty by default - all
+        # visible, same as always.
+        "hidden_builtin_sections": [],
         # Discovered Plugins/ folders: {plugin_id: {"visible": bool}}.
         # Hidden by default; populated/merged by plugin_manager.scan_plugins()
         # on startup and via the Settings > Plugins "Rescan" button.
@@ -114,6 +119,11 @@ def default_settings():
         # battle-tested path; GameInput adds Guide-button reporting and
         # broader native device support on Win11.
         "prefer_xinput": False,
+        # "xinput" (default), "gameinput", "directinput", "sdl3", or "auto"
+        # (try all four, XInput first). Settings > Controls cycles this;
+        # prefer_xinput above is the older on/off toggle, kept for anyone
+        # who already has it set, but input_backend is authoritative now.
+        "input_backend": "xinput",
         # Open folder paths in Meridian Explorer instead of Windows
         # Explorer (suite-internal routing; system-wide handling is the
         # separate MeridianExplorerShellIntegration.bat)
@@ -129,6 +139,11 @@ def default_settings():
         "load_subfolders": True,
         "video_fullscreen": False,
         "battery_indicator": True,
+        # Off by default: force borderless-fullscreen on whatever window an
+        # .exe opens, for apps that ignore the normal "start maximized"
+        # request or only appear maximized with chrome still showing. See
+        # fullscreen_helper.py.
+        "fullscreen_helper_enabled": False,
         "auto_shuffle_songs": True,  # when a song ends, load a random one instead of the next in list order
         # Global toggle: also run osm.bat when System section items that
         # shell out to Windows (Task Manager, Control Panel, Recycle Bin,

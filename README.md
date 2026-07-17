@@ -6,10 +6,74 @@ keyboard, mouse, or game controller.
 
 **This build targets Windows only.** Most of its features — launching
 .exe/.bat files, opening Explorer/Control Panel/Task Manager, shutdown/sleep/
-hibernate, and XInput controller support — are Windows-specific, so there's
-no meaningful cross-platform version of this particular feature set.
+hibernate, and controller support — are Windows-specific, so there's no
+meaningful cross-platform version of this particular feature set.
 
-## This revision
+See also: **CHANGELOG.md** (dated, itemized history of every revision),
+**FEATURES.md** (what the whole suite does, section by section), and
+**CUSTOMIZATION.md** (themes, Plugins, settings, everything you can
+change without touching code).
+
+## Latest revision — Plugins, Explorer/Browser sections, and a batch of
+## real bugfixes
+
+This pass added a full plugin system and two new embedded-app sections,
+then went through several rounds of bug reports against them (plus some
+long-standing bugs found along the way that predate this work entirely).
+
+**New:**
+- **Plugins system**: a `Plugins/` folder next to the exe, auto-scanned on
+  startup and from Settings > Plugins. Two plugin types: `"list"` (a plain
+  data-driven list, like the bundled **Start** plugin — pulls your Windows
+  Start Menu into a section) and `"webapp"` (boxes a **Meridian NetBrowse**
+  instance pinned to one site into its own section — used for the
+  **Telegram / Discord / Messenger / Snapchat / Phone Link** plugins,
+  Phone Link pointed at Google Messages for web). An `examples/` folder
+  holds a heavily-commented blank-plugin template. Plugins are hidden by
+  default; enable them from Settings > Plugins, no restart needed.
+- **Explorer section**: right after Desktop when enabled. Desktop folders
+  now show up in the Desktop section and open into this section (boxing
+  **Meridian FileBrowse**, a separate-source-files fork of Meridian
+  Explorer) if it's on, or standalone Meridian Explorer / Windows Explorer
+  if it's off.
+- **Browser section**: right after Explorer when enabled. Internally-
+  launched URLs open here (boxing **Meridian NetBrowse**, a fork of
+  CyberDeckBrowser) if it's on, or CyberDeckBrowser / the system default
+  browser if it's off.
+- **Meridian FileBrowse** and **Meridian NetBrowse**: both boxed into
+  their section's list-frame area rather than full-screen, both fully
+  exit ("Exit Program") back to the Sections bar, and Meridian Launcher's
+  own controls come back automatically when they close. Both build as
+  single `.exe` files with no visible console.
+- **System section**: added Command Prompt, PowerShell, Microsoft Store,
+  and Windows Update.
+- **Game Library**: non-big-5 platforms (anything besides Steam/GOG/Epic/
+  Amazon/Luna) now get their own section per platform instead of one
+  shared "Other" bucket.
+- **Photos**: Start button over a photo opens an Edit / Set as Background
+  popup. Edit uses the file's actual associated "edit" program rather than
+  hard-requiring `mspaint.exe`.
+- **Controller input backend**: XInput is now the default (Settings >
+  Controls has a cycle button for XInput / GameInput / DirectInput / SDL3
+  / Auto). GameInput's vtable-probing approach turned out to only
+  reliably decode buttons, not sticks/triggers, across multiple
+  independent test reports — a real bug in that approach, not one
+  person's hardware — so it's opt-in now instead of the default.
+
+**Fixed** (see CHANGELOG.md for the full list): item-panel showing at
+launch before a section was picked; several z-index/paint-order bugs in
+the Factory Central theme; the compiled build not finding `Plugins/`
+(PyInstaller's temp extraction folder was being used instead of the real
+exe folder); `osm.bat` toggling onscreenmenu closed instead of just
+not re-opening it; onscreenmenu's single-instance check false-positiving
+against its own PyInstaller bootloader process on every compiled launch;
+a dead-code bug in Meridian Explorer/FileBrowse where the controller's
+D-pad/stick/A/B never actually reached the options popup (keyboard
+worked because it's a separate, correctly-structured code path); boxed
+apps sometimes measuring the panel's on-screen position before its
+slide-in animation had actually moved it there.
+
+## Earlier revisions
 
 Renamed the program (internally and externally) from **Meridian** to
 **Meridian Launcher** — window title, app title, build output

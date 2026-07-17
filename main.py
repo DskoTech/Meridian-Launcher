@@ -18,6 +18,14 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from crash_logger import install_crash_logging
+install_crash_logging("Meridian Launcher")
+
+import system_actions
+if system_actions.another_instance_running("MeridianLauncher.exe"):
+    sys.exit(0)
+import fullscreen_helper
 from urllib.parse import urlparse, parse_qs
 
 import webview
@@ -117,6 +125,7 @@ store.ensure_controls_files()
 
 _explorer_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian FileBrowse instance, if any
 _browser_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian NetBrowse instance, if any
+_plugin_webapp_procs = {}  # plugin_id -> Popen handle, for "webapp"-type plugins (Telegram/Discord/etc)
 
 
 def _rescan_plugins():
@@ -129,10 +138,16 @@ def _rescan_plugins():
     merged = {}
     for info in discovered:
         pid = info["id"]
-        merged[pid] = {
+        entry = {
             "label": info["label"],
+            "type": info.get("type", "list"),
             "visible": bool(existing.get(pid, {}).get("visible", False)),
         }
+        if info.get("type") in ("webapp", "option"):
+            entry["url"] = info.get("url", "")
+        if info.get("type") == "option":
+            entry["section"] = info.get("section", "chat")
+        merged[pid] = entry
     SETTINGS["plugins"] = merged
     store.save_settings(SETTINGS)
     return discovered
@@ -204,6 +219,34 @@ class MediaHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _handle_plugin_exited(self, parsed):
+        """Fast path for handing focus/controls back to Meridian Launcher
+        the INSTANT a boxed CyberDeckBrowser window closes, rather than
+        waiting for proc.wait() to notice the whole process has actually
+        exited. QtWebEngine/Chromium teardown after closeEvent can take a
+        while even after the window itself has visually gone - CyberDeck-
+        Browser calls this (best-effort, from its own closeEvent) right
+        before it starts that teardown, so this doesn't wait on it at all.
+        The proc.wait()-based watcher threads still run as a backup/
+        cleanup path in case this call never arrives (e.g. a crash)."""
+        qs = parse_qs(parsed.query)
+        which = qs.get("which", [""])[0]
+        try:
+            suspend_main_controls(False)
+            escaped = which.replace("'", "\\'")
+            webview.windows[0].evaluate_js(
+                f"window.onEmbeddedPluginExited && window.onEmbeddedPluginExited('{escaped}')"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        except Exception:
+            try:
+                self.send_error(500)
+            except Exception:
+                pass
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/internal/open-explorer":
@@ -211,6 +254,9 @@ class MediaHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/internal/open-browser":
             self._handle_open_browser(parsed)
+            return
+        if parsed.path == "/internal/plugin-exited":
+            self._handle_plugin_exited(parsed)
             return
         if parsed.path != "/media":
             self.send_error(404)
@@ -577,6 +623,21 @@ def _section_store(section_id):
     return None
 
 
+def _section_launches_with_osm(section_id):
+    """Whether launching something from this section should also bring up
+    onscreenmenu. Sections with their own stored settings (apps/games/
+    emulators/chat/streaming/custom) use their own "launch_with_osm" flag.
+    Desktop has no such entry (it's scanned live from the real Windows
+    Desktop, not a user-managed list), so it previously silently never
+    triggered osm.bat at all - defaulting to True here (same default every
+    other section already uses) instead of treating a missing entry as
+    "don't launch" fixes that."""
+    sec = _section_store(section_id)
+    if sec is not None:
+        return sec.get("launch_with_osm", True)
+    return True
+
+
 def _scan_desktop_folder():
     """Whatever's sitting on the user's actual Windows Desktop right now —
     shortcuts, exes, files, folders — re-scanned fresh every time the
@@ -668,18 +729,14 @@ def _maybe_launch_osm():
 
 
 def _maybe_launch_onscreenmenu():
-    """Best-effort launch of onscreenmenu.exe from the app's own folder, but
-    only if it isn't already running — used after opening the app data
-    folder so the on-screen menu companion is available to navigate it with
-    a controller."""
+    """Best-effort launch of the on-screen menu companion via osm.bat (not
+    onscreenmenu.exe directly) from the app's own folder, but only if
+    onscreenmenu.exe isn't already running — used after opening the app
+    data folder so the on-screen menu companion is available to navigate
+    it with a controller."""
     if system_actions.is_process_running("onscreenmenu.exe"):
         return
-    exe = BASE_DIR / "onscreenmenu.exe"
-    if exe.exists():
-        try:
-            system_actions.launch_path(str(exe), args=[WINDOW_MODE_REQUEST_FLAG])
-        except Exception:
-            pass
+    _maybe_launch_osm()
 
 
 def _apply_kiosk_disable():
@@ -892,15 +949,20 @@ class Api:
         # and it's installed alongside) or Windows Explorer otherwise.
         if path and os.path.isdir(path):
             ok, err = _open_folder_routed(path)
-            if ok and section_id:
-                sec = _section_store(section_id)
-                if sec is not None and sec.get("launch_with_osm", True):
-                    _maybe_launch_osm()
+            if ok and section_id and _section_launches_with_osm(section_id):
+                _maybe_launch_osm()
             return {"ok": ok, "error": err}
-        ok, err = system_actions.launch_path(path)
+        if (SETTINGS.get("fullscreen_helper_enabled")
+                and path and os.path.splitext(path)[1].lower() == ".exe"):
+            ok, err = fullscreen_helper.launch_and_enforce_fullscreen(path)
+            if not ok:
+                # Fall back to the normal launch path rather than failing
+                # the launch outright if the helper couldn't run.
+                ok, err = system_actions.launch_path(path)
+        else:
+            ok, err = system_actions.launch_path(path)
         if ok and section_id:
-            sec = _section_store(section_id)
-            if sec is not None and sec.get("launch_with_osm", True):
+            if _section_launches_with_osm(section_id):
                 _maybe_launch_osm()
             if section_id == "games":
                 _record_recent_game(path)
@@ -931,6 +993,16 @@ class Api:
     # ---------------- Desktop section (auto-populated, off by default) ----------------
     def list_desktop_items(self):
         return _with_icons(_scan_desktop_folder())
+
+    def set_builtin_section_visible(self, section_id, visible):
+        hidden = set(SETTINGS.get("hidden_builtin_sections", []))
+        if visible:
+            hidden.discard(section_id)
+        else:
+            hidden.add(section_id)
+        SETTINGS["hidden_builtin_sections"] = sorted(hidden)
+        store.save_settings(SETTINGS)
+        return SETTINGS
 
     def set_desktop_section_enabled(self, enabled):
         SETTINGS["desktop_section_enabled"] = bool(enabled)
@@ -981,6 +1053,55 @@ class Api:
         return SETTINGS
 
     # ---------------- Plugins (auto-discovered custom sections) ----------------
+    def load_plugin_webapp_box(self, plugin_id, x, y, w, h):
+        """Boxes a CyberDeckBrowser instance pinned to a plugin's fixed
+        URL (Telegram/Discord/Messenger/Snapchat/etc — see Plugins/*/plugin.json
+        "url") into that plugin section's list-frame box. Same mechanism as
+        the Browser section's load_browser_box, but launched with
+        --minimal-menu (Y/X menus stripped to just "Exit Program") and
+        tracked per plugin_id so multiple webapp plugins never clobber each
+        other's process. (Meridian NetBrowse used to be a separate app for
+        this — merged back into CyberDeckBrowser itself via --box=/
+        --minimal-menu, since running two full QtWebEngine/Chromium
+        bundles side by side was the single biggest contributor to the
+        suite's compiled size.)"""
+        global _plugin_webapp_procs
+        url = plugin_manager.get_plugin_url(plugin_id)
+        if not url:
+            return {"ok": False, "error": "This plugin has no url configured in its plugin.json."}
+        exe = BASE_DIR / "CyberDeckBrowser.exe"
+        if not exe.exists():
+            return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
+        self.unload_plugin_webapp_box(plugin_id)
+        try:
+            args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}", "--minimal-menu",
+                    f"--notify-exit={plugin_id}", url]
+            proc = subprocess.Popen(
+                args, cwd=str(BASE_DIR),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            _plugin_webapp_procs[plugin_id] = proc
+            suspend_main_controls(True)
+            threading.Thread(target=_watch_plugin_webapp_exit, args=(plugin_id, proc), daemon=True).start()
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def unload_plugin_webapp_box(self, plugin_id):
+        """Terminate the boxed process for this plugin, if any, so it
+        doesn't keep running in the background once the user leaves that
+        section, and hand Meridian Launcher's own controls back."""
+        global _plugin_webapp_procs
+        proc = _plugin_webapp_procs.pop(plugin_id, None)
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+        suspend_main_controls(False)
+        return {"ok": True, "error": None}
+
     def rescan_plugins(self):
         """Re-scan Plugins/ on demand (Settings > Plugins > Rescan)."""
         for pid in list(SETTINGS.get("plugins", {}).keys()):
@@ -989,14 +1110,39 @@ class Api:
         return SETTINGS
 
     def list_plugins(self):
-        """Ordered list of discovered plugins with their visibility, in the
-        order they should appear after the last custom section."""
+        """Ordered list of discovered plugins with their visibility. "list"/
+        "webapp" plugins appear after the last custom section; "option"
+        plugins don't get their own section at all — see
+        list_section_options() for how those surface instead."""
         discovered = plugin_manager.scan_plugins()
         out = []
         for info in discovered:
             pid = info["id"]
             entry = SETTINGS.get("plugins", {}).get(pid, {"visible": False})
-            out.append({"id": pid, "label": info["label"], "visible": bool(entry.get("visible", False))})
+            item = {
+                "id": pid, "label": info["label"], "type": info.get("type", "list"),
+                "visible": bool(entry.get("visible", False)),
+            }
+            if info.get("type") == "option":
+                item["section"] = info.get("section", "chat")
+            out.append(item)
+        return out
+
+    def list_section_options(self, section_id):
+        """[{"id","label","pluginId"}] — the enabled "option"-type plugins
+        targeting this section id (e.g. "chat"), in discovery order. Used
+        to build a section (like Chat) whose entries are individually
+        toggleable plugins rather than a fixed list."""
+        discovered = plugin_manager.scan_plugins()
+        out = []
+        for info in discovered:
+            if info.get("type") != "option" or info.get("section", "chat") != section_id:
+                continue
+            pid = info["id"]
+            entry = SETTINGS.get("plugins", {}).get(pid, {"visible": False})
+            if not entry.get("visible", False):
+                continue
+            out.append({"id": pid, "label": info["label"]})
         return out
 
     def set_plugin_visible(self, plugin_id, visible):
@@ -1009,7 +1155,10 @@ class Api:
         return plugin_manager.list_items(plugin_id)
 
     def activate_plugin_item(self, plugin_id, item_id):
-        return plugin_manager.activate_item(plugin_id, item_id)
+        result = plugin_manager.activate_item(plugin_id, item_id)
+        if isinstance(result, dict) and result.get("ok") and SETTINGS.get("launch_system_with_osm", True):
+            _maybe_launch_osm()
+        return result
 
     # ---------------- macros ----------------
     def list_macro_items(self):
@@ -1348,7 +1497,10 @@ class Api:
         self.unload_explorer_box()
         try:
             args = [str(exe), path, f"--box={int(x)},{int(y)},{int(w)},{int(h)}"]
-            _explorer_box_proc = subprocess.Popen(args, cwd=str(BASE_DIR))
+            _explorer_box_proc = subprocess.Popen(
+                args, cwd=str(BASE_DIR),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
             suspend_main_controls(True)
             threading.Thread(target=_watch_explorer_box_exit, args=(_explorer_box_proc,), daemon=True).start()
             return {"ok": True, "error": None}
@@ -1391,20 +1543,25 @@ class Api:
         return {"ok": ok, "error": err, "route": "system_browser"}
 
     def load_browser_box(self, url, x, y, w, h):
-        """Launch (or relaunch, for a new URL) Meridian NetBrowse — the
-        Browser-section-embedded fork of CyberDeck Browser, kept in its
-        own separate source files (Meridian_NetBrowse/) — sized/positioned
-        via its --box=X,Y,W,H arg to sit inside the Browser section's
-        list-frame box. Never OS fullscreen. Same controller suspend/
-        watcher pattern as Meridian FileBrowse."""
+        """Launch (or relaunch, for a new URL) CyberDeckBrowser boxed into
+        the Browser section — sized/positioned via its --box=X,Y,W,H arg
+        to sit inside the section's list-frame box, never OS fullscreen.
+        Same controller suspend/watcher pattern as Meridian FileBrowse.
+        (Meridian NetBrowse used to be a separate app for this — merged
+        back into CyberDeckBrowser itself, since running two full
+        QtWebEngine/Chromium bundles side by side was the single biggest
+        contributor to the suite's compiled size.)"""
         global _browser_box_proc
-        exe = BASE_DIR / "Meridian NetBrowse.exe"
+        exe = BASE_DIR / "CyberDeckBrowser.exe"
         if not exe.exists():
-            return {"ok": False, "error": "Meridian NetBrowse.exe not found in the app folder."}
+            return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
         self.unload_browser_box()
         try:
-            args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}"] + ([url] if url else [])
-            _browser_box_proc = subprocess.Popen(args, cwd=str(BASE_DIR))
+            args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}", "--notify-exit=browser"] + ([url] if url else [])
+            _browser_box_proc = subprocess.Popen(
+                args, cwd=str(BASE_DIR),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
             suspend_main_controls(True)
             threading.Thread(target=_watch_browser_box_exit, args=(_browser_box_proc,), daemon=True).start()
             return {"ok": True, "error": None}
@@ -1457,6 +1614,34 @@ class Api:
     def quit_app(self):
         os._exit(0)
 
+    def minimize_launcher(self):
+        """Start menu's "Minimize Launcher" option."""
+        try:
+            webview.windows[0].minimize()
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def toggle_onscreenmenu(self):
+        """Start menu's "Launch/Close onscreenmenu" option: if
+        onscreenmenu.exe is already running, terminate it; otherwise
+        launch it via osm.bat from the local folder (never both — no
+        double-launching)."""
+        try:
+            if system_actions.is_process_running("onscreenmenu.exe"):
+                ok, err = system_actions.kill_process("onscreenmenu.exe")
+                return {"ok": ok, "error": err}
+            bat = BASE_DIR / "osm.bat"
+            if not bat.exists():
+                return {"ok": False, "error": "osm.bat not found in the app folder."}
+            subprocess.Popen(
+                ["cmd.exe", "/c", str(bat)], cwd=str(BASE_DIR),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ---------------- appearance ----------------
     # Background & overlay are now per-theme (keyed by the active layout),
     # so each theme can carry its own look. An unset theme falls back to
@@ -1489,6 +1674,44 @@ class Api:
             SETTINGS.setdefault("background_by_theme", {})[self._layout_key()] = paths[0]
             store.save_settings(SETTINGS)
         return SETTINGS
+
+    def set_background_from_path(self, path):
+        """Same as set_background(), but for a path the person already
+        picked in-app (the Photos section's Start-button "Set as
+        Background" option) rather than a fresh file-picker dialog."""
+        if not path or not os.path.isfile(path):
+            return None
+        SETTINGS.setdefault("background_by_theme", {})[self._layout_key()] = path
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def edit_photo(self, path):
+        """Photos section's Start-button "Edit" option: opens the photo
+        with whatever program Windows has associated with the "edit"
+        action for that file type (usually Paint for images, but this no
+        longer hard-requires mspaint.exe specifically — some Windows
+        installs don't have it on PATH, or replace it with the Photos
+        app's own editor), and brings up the on-screen menu (same pattern
+        every other launch in this app follows) since editing needs
+        on-screen typing/menu access same as anything else."""
+        if not path or not os.path.isfile(path):
+            return {"ok": False, "error": "That file no longer exists."}
+        try:
+            # ShellExecute's "edit" verb - resolves to whatever program is
+            # actually registered for editing this file type, same concept
+            # as right-click > Edit in Windows Explorer.
+            os.startfile(path, "edit")
+        except OSError:
+            try:
+                # No "edit" verb registered for this file type - fall back
+                # to just opening it with the plain default program.
+                os.startfile(path)
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        self._run_osm_batch()
+        return {"ok": True, "error": None}
 
     def clear_background(self):
         SETTINGS.setdefault("background_by_theme", {}).pop(self._layout_key(), None)
@@ -1549,6 +1772,11 @@ class Api:
 
     def set_battery_indicator(self, enabled):
         SETTINGS["battery_indicator"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_fullscreen_helper_enabled(self, enabled):
+        SETTINGS["fullscreen_helper_enabled"] = bool(enabled)
         store.save_settings(SETTINGS)
         return SETTINGS
 
@@ -1631,7 +1859,10 @@ class Api:
         return tasks_win.list_open_tasks()
 
     def focus_task(self, hwnd):
-        return {"ok": tasks_win.focus_task(hwnd)}
+        ok = tasks_win.focus_task(hwnd)
+        if ok and SETTINGS.get("launch_system_with_osm", True):
+            _maybe_launch_osm()
+        return {"ok": ok}
 
     def close_task(self, hwnd):
         return {"ok": tasks_win.close_task(hwnd)}
@@ -1645,12 +1876,32 @@ class Api:
         restart_controller()
         return SETTINGS
 
+    def set_input_backend(self, backend):
+        """Settings > Controls "Input backend" cycle button: xinput
+        (default) -> gameinput -> directinput -> sdl3 -> auto -> xinput...
+        Restarts the listener so the change takes effect without
+        relaunching. XInput is the default because it's the plain, stable,
+        fully-public Win32 API and correctly reports every button/trigger/
+        stick; GameInput's vtable-slot probing has only ever reliably
+        decoded buttons, not sticks/triggers, across multiple independent
+        reports - that's a real bug in that approach, not a one-off local
+        issue, so it's opt-in now rather than the default."""
+        if backend not in ("xinput", "gameinput", "directinput", "sdl3", "auto"):
+            return SETTINGS
+        SETTINGS["input_backend"] = backend
+        # Keep the older boolean in sync for anything still reading it.
+        SETTINGS["prefer_xinput"] = (backend == "xinput")
+        store.save_settings(SETTINGS)
+        restart_controller()
+        return SETTINGS
+
     def controller_debug(self):
         """Deep diagnostics for the Settings controller debugger: which
         backend is live, what GameInput is doing poll-by-poll, and the raw
         state the pad is reporting right now."""
         import gameinput_api
         out = {
+            "input_backend": SETTINGS.get("input_backend", "xinput"),
             "prefer_xinput": bool(SETTINGS.get("prefer_xinput", False)),
             "env_override": os.environ.get("MERIDIAN_INPUT_BACKEND", "") or None,
             "backend": None,
@@ -1928,6 +2179,24 @@ def _watch_browser_box_exit(proc):
         pass
 
 
+def _watch_plugin_webapp_exit(plugin_id, proc):
+    """Same idea for a boxed webapp plugin (Telegram/Discord/Messenger/
+    Snapchat/etc): notices when its "Exit Program" menu action closes the
+    window and hands focus + controls back to Meridian Launcher."""
+    proc.wait()
+    if _plugin_webapp_procs.get(plugin_id) is not proc:
+        return  # already unloaded via normal navigation; nothing to do
+    _plugin_webapp_procs.pop(plugin_id, None)
+    suspend_main_controls(False)
+    try:
+        escaped = plugin_id.replace("'", "\\'")
+        webview.windows[0].evaluate_js(
+            f"window.onEmbeddedPluginExited && window.onEmbeddedPluginExited('{escaped}')"
+        )
+    except Exception:
+        pass
+
+
 def restart_controller():
     """Stop the running listener and start a fresh one, so a backend change
     (prefer_xinput) applies without relaunching the app."""
@@ -2031,7 +2300,7 @@ def start_controller():
         on_quit_combo=_quit_via_combo,
         on_foreground_combo=_bring_to_foreground,
         foreground_trigger_getter=lambda: SETTINGS.get("foreground_trigger", "start_select"),
-        prefer_xinput=bool(SETTINGS.get("prefer_xinput", False)),
+        input_backend=SETTINGS.get("input_backend", "xinput"),
         cooldown_scale_getter=lambda: _NAV_COOLDOWN_SCALE[0],
         on_raw_button=_controller_raw_button,
         on_y_hold_complete=_on_y_hold_complete,

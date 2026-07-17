@@ -366,6 +366,111 @@ The era that took Meridian from a single HTML file to a working suite.
   sections; thumbnail and subfolder bar swapped to the top-left; taskbar
   horizontal along the bottom-left, stopping before the clock/battery.
 
+## v48 — Plugins, Explorer/Browser sections, Meridian FileBrowse/NetBrowse,
+## input backend overhaul
+
+- **Plugins system** (`Plugins/`, `plugin_manager.py`, `examples/`):
+  auto-scanned on startup and via Settings > Plugins' Rescan button, no
+  restart needed for a toggle or rescan to take effect (previously it did).
+  Manifest types: `"list"` (data-driven list, own section — the bundled
+  **Start** plugin pulls the Windows Start Menu in, "Run..." pinned
+  first), `"webapp"` (boxes a Meridian NetBrowse instance pinned to one
+  URL into its own section), and `"option"` (surfaces as a list item
+  inside another section instead of getting its own). Bundled webapp
+  plugins: **Telegram**, **Discord**, **Messenger**, **Snapchat**,
+  **Phone Link** (Google Messages for web). `examples/BlankSection/` is a
+  commented template for a new `"list"` plugin.
+- **Explorer section** (right after Desktop) and **Browser section**
+  (right after Explorer), both off by default. Desktop folders (now shown
+  at all — previously skipped entirely) route into Explorer; internally-
+  launched URLs route into Browser; both fall back through a standalone
+  app then the OS default when their section is off.
+- **Meridian FileBrowse** (`Meridian_FileBrowse/`) and **Meridian
+  NetBrowse** (`Meridian_NetBrowse/`): separate-source-files forks of
+  Meridian Explorer and CyberDeckBrowser, launched with `--box=X,Y,W,H` to
+  size/position into their section's box instead of covering the screen.
+  NetBrowse additionally drops the cyberpunk first-boot prompt/aesthetic
+  options and gets a `--minimal-menu` mode (Y/X reduced to "Exit Program"
+  only) for the Chat-section webapp plugins. Both build as single `.exe`
+  files, windowed (no console).
+- **System section**: Command Prompt, PowerShell, Microsoft Store,
+  Windows Update.
+- **Game Library**: non-big-5 platforms get their own section per
+  *platform* (added a `Platform` field to the Playnite exporter) instead
+  of one shared "Other" bucket; removed the Playnite filter-presets
+  feature entirely per request.
+- **Photos**: Start over a photo opens an Edit / Set as Background popup;
+  Edit uses the file's actual default "edit" program instead of hard-
+  requiring `mspaint.exe`.
+- **Controller input backend overhaul**: added real **DirectInput**
+  (`dinput8.dll`, custom `DIDATAFORMAT`) and **SDL3** (`SDL3.dll`) backends
+  alongside GameInput/XInput. **XInput is now the default** (was
+  GameInput) — Settings > Controls cycles XInput / GameInput / DirectInput
+  / SDL3 / Auto, applied live. GameInput's vtable-slot-probing approach
+  turned out to only reliably decode buttons, not sticks/triggers, across
+  multiple independent reports, so it moved from default to opt-in.
+- Onscreen-menu launching unified to always go through `osm.bat` (was
+  sometimes `onscreenmenu.exe` directly) across every app that needs it.
+- Dawning Horizon's open-programs bar now shrinks its height at runtime
+  if a long item list would otherwise collide with it.
+
+**Bugs found and fixed this pass** (several pre-dating this work entirely):
+item-panel showing at launch before `data-radial-focus` was ever set;
+`Plugins/` not found in compiled builds (PyInstaller temp-extraction
+folder used instead of the real exe folder, same class of bug as GameInput
+DLL path issues seen before); `osm.bat` closing onscreenmenu instead of
+leaving it alone when already running; onscreenmenu's single-instance
+check false-positiving against its own PyInstaller `--onefile` bootloader
+process on literally every compiled launch (fine from source, where the
+process is named `python.exe` and never triggers the check); a dead-code
+bug in Meridian Explorer/FileBrowse where the controller's D-pad/stick/A/B
+never reached the options popup at all (missing `if self.state == "menu":`
+header, orphaned under the "properties" state's `continue` — keyboard
+worked fine via its own, correctly-structured path); the same file's
+`open_quick_access_menu()` silently no-op'ing instead of opening on an
+out-of-range selection; boxed apps occasionally rendering in the wrong
+place by measuring the panel's box before its slide-in transition had
+actually moved it; NetBrowse's browser view not filling its window
+(QWebEngineView sized before the native window was shown); NetBrowse's
+build failing on `qrc_qmake_qtlabs_assetdownloader_init.cpp.obj` (a
+blanket `--collect-all PySide6` pulling in unused QtQuick/QML machinery);
+and a long tail of Factory Central z-index/cascade bugs — the gear
+rendering translucent (glow layer sharing its z-index), decorative layers
+painting above instead of behind other content (`position:fixed` +
+`z-index:0` paints above normal-flow content, not below), rings not
+centered on the gear (`#task-bar`'s `backdrop-filter` making it the
+containing block for its own fixed-position children), the gear/sections
+hugging the left edge (a base rule sets `--hub-cx`/`--hub-cy`/`--orbit-r`
+directly on `#top-bar`, which silently wins over a theme's `body`-level
+override of the same properties), icon/label colors drifting as the
+category carousel scrolled (`:nth-of-type` counts DOM position, not
+logical section identity — switched to a stable per-section index), and
+clicking a section loading its content without ever opening the slide-in
+panel.
+
+## v49 — Compiled size/memory optimization
+
+- **CyberDeckBrowser and Meridian NetBrowse** (the suite's two QtWebEngine
+  apps, and by far the biggest contributors to a 2GB+ compiled size)
+  switched from a blanket `--collect-all PySide6` to collecting only the
+  Qt modules actually imported (QtWidgets/QtGui/QtCore/QtWebEngine*/
+  QtNetwork), with ~25 unused Qt modules (QtQuick/QML, QtMultimedia,
+  QtPdf, QtBluetooth, QtSql, Qt3D, QtCharts, and more — verified unused
+  via a source grep first) explicitly excluded. CyberDeckBrowser
+  (`--onedir`) also gets its QtWebEngine locale files trimmed to en-US
+  only after building (it ships several dozen by default).
+- Removed an unused `pygame` entry from CyberDeckBrowser's and Meridian
+  NetBrowse's `Requirements.txt` — neither actually imports it, so it
+  wasn't bloating the compiled output, just pip install time.
+- **Reality check**: two Chromium-based browsers (CyberDeckBrowser and
+  Meridian NetBrowse both embed QtWebEngine, which bundles a full
+  Chromium build each) are inherently large — Blink/V8/GPU/codec support
+  can't be excluded without breaking web rendering. This pass removes the
+  *unnecessary* bloat layered on top of that unavoidable baseline; it
+  won't shrink the suite to a small footprint, but should meaningfully
+  reduce it. Worth measuring the actual before/after size on a real build
+  to see how much this specific pass recovered.
+
 ---
 
 ## Conventions

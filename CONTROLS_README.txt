@@ -22,10 +22,12 @@ Controller:
   D-pad or Left stick ... Navigate: up/down through lists, left/right across
                           sections and panels
   Y (tap) ............... Jump to the subfolder / filter side panel
+  Start (over a photo) .. Edit / Set as Background popup (Photos section)
   X (tap) ............... Jump to / away from the open-programs bar (a
                           controller taskbar replacement, in every theme). On the bar: navigate
                           along it, A refocuses the highlighted program,
-                          B returns to the sections bar
+                          B returns to the sections bar. Blocked entirely
+                          while Explorer/Browser/a webapp plugin is loaded.
   X (hold 3 seconds) .... Close the highlighted task on the open-programs
                           bar (asks for confirmation unless the "Close
                           tasks without prompt" setting is on)
@@ -45,10 +47,35 @@ Keyboard:
   Space ................. Back
   Arrow keys ............ Navigate
   \ (backslash) ......... Jump to the subfolder / filter side panel
+  ContextMenu key ....... Same as Start on a controller (Edit / Set as
+                          Background popup over a photo)
   Shift ................. Jump to / away from the open-programs bar
   Delete ................ Close the highlighted task on the open-programs bar
   Kiosk code ............ Up, Up, Down, Down, Left, Right, Left, Right, B, A
                           (arrow keys plus the literal B and A keys)
+
+Sections (Settings toggles, off by default unless noted):
+  Desktop .............. On by default. Shows what's on your actual
+                          Windows Desktop, folders included now - clicking
+                          a folder routes to Explorer (if on) or standalone
+                          Meridian Explorer / Windows Explorer (if off).
+  Explorer ............. Right after Desktop. Boxes Meridian FileBrowse
+                          into the section instead of a fixed list.
+  Browser .............. Right after Explorer. Boxes Meridian NetBrowse,
+                          pinned to whatever URL was internally launched.
+  Chat ................. Telegram / Discord / Messenger / Snapchat /
+                          Phone Link show up here as "webapp" plugins (or
+                          as their own sections instead - see
+                          CUSTOMIZATION.md for the "option" vs "webapp"
+                          plugin type).
+  Plugins .............. Settings > Plugins lists everything auto-scanned
+                          from the Plugins/ folder, with a toggle per
+                          plugin and a Rescan button. See CUSTOMIZATION.md.
+
+Controller input backend (Settings > Controls): a cycle button steps
+through XInput (default) / GameInput / DirectInput / SDL3 / Auto. XInput
+is the default because it's the plain, stable, fully-public API and
+correctly reports every button/trigger/stick.
 
 Remapping: confirm / back / up / down / left / right are remappable in
 controller_controls.json and keyboard_controls.json in the app data folder
@@ -165,7 +192,9 @@ Controller:
                           Move 2 Other Side, Copy 2 Other Side, Delete)
   Select (hold) ......... Enter multi-select mode
   R3 (click stick) ...... "Select all" prompt
-  Start ................. Quit the app
+  Start ................. Open the options popup (same as Y) - "Exit
+                          Program" is a selectable item inside it, not an
+                          instant action on Start anymore
 
   In popups/menus: D-pad or stick up/down to move, A to confirm, B to cancel.
   Delete and select-all prompts: A = yes, B = no.
@@ -174,7 +203,9 @@ Keyboard:
   Arrow up/down ......... Move within the pane
   Arrow left/right, Tab . Switch panes
   Enter ................. Open / confirm (in prompts: yes; Y also = yes)
-  Escape ................ Close menu / cancel (at top level: quit)
+  Escape ................ Close menu / cancel (at top level: quit - keyboard
+                          Escape still quits directly; only the controller's
+                          Start button was changed to open the menu instead)
   Backspace ............. Go up a folder / cancel prompts (N also = no)
   Page Up / Page Down ... Fast scroll
   M ..................... Options menu
@@ -212,6 +243,48 @@ below with a wide VOICE INPUT button on its bottom row:
   Select ................ Voice input (triggers Windows voice typing, Win+H)
   Physical keyboard ..... Types directly; arrows move, Ctrl+S saves,
                           Esc exits (twice to discard unsaved changes)
+
+--------------------------------------------------------------------------------
+ 6. MERIDIAN FILEBROWSE
+--------------------------------------------------------------------------------
+A separate-source-files fork of Meridian Explorer, boxed into Meridian
+Launcher's Explorer section (never full-screen - sized/positioned to that
+section's list-frame box). Same controls as Meridian Explorer above, with
+one difference: since it's always launched boxed by Meridian Launcher,
+"Start" opening the options popup and "Exit Program" inside that popup are
+the ONLY way it closes - closing it hands focus and controls back to
+Meridian Launcher automatically (watched for on Meridian Launcher's side,
+not something you need to do anything extra for).
+
+"Make Meridian FileBrowse the default shell browser" (a Settings > Macros
+option, once its shell-handler trampoline is built) routes Windows folder
+opens through Meridian Launcher's Explorer section instead of Windows
+Explorer or standalone Meridian Explorer.
+
+--------------------------------------------------------------------------------
+ 7. MERIDIAN NETBROWSE
+--------------------------------------------------------------------------------
+A separate-source-files fork of CyberDeckBrowser, boxed into Meridian
+Launcher's Browser section (and into Chat-section webapp plugins like
+Telegram/Discord/Messenger/Snapchat/Phone Link) - never full-screen. Same
+controller/keyboard/mouse layout as CyberDeckBrowser above (virtual mouse
+via the left stick, A/B click, D-pad for the on-screen keyboard and
+popups), with these differences from the standalone browser:
+  - No first-boot cyberpunk-effects prompt, and no cyberpunk aesthetic
+    options in Settings (HUD/CRT/scanlines/glitch) - always off.
+  - The Y (Browser) and X (Tools) menus are stripped down to a single
+    "Exit Program" entry - New Tab and the URL/search entry point have
+    been removed entirely, and there's nothing else in either menu to
+    navigate to since a boxed instance is meant to stay on the one site/
+    section it was loaded for.
+  - Exit Program (either menu, or the [x] button in the corner) closes it
+    the same way as Meridian FileBrowse above: Meridian Launcher notices
+    and restores its own controls/focus automatically.
+
+"Make Meridian NetBrowse the default system web browser" (a Settings >
+Macros option, once its shell-handler trampoline is built) routes links
+through Meridian Launcher's Browser section instead of CyberDeckBrowser or
+the system default browser.
 
 ================================================================================
  Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026
