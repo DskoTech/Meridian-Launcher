@@ -85,7 +85,8 @@ class MainWindow(QMainWindow):
         self,
         config,
         startup_url=None,
-        box=None
+        box=None,
+        minimal_menu=False
     ):
 
         super().__init__()
@@ -96,6 +97,13 @@ class MainWindow(QMainWindow):
         self.startup_url = startup_url
 
         self.box = box
+
+        # True for the Telegram/Discord/Messenger/Snapchat/etc. plugin
+        # webapps — Meridian Launcher boxes Meridian NetBrowse pinned to
+        # one site for those, so the Y/X menus are stripped down to just
+        # "Exit Program" instead of the full browser chrome (tabs,
+        # bookmarks, history, etc. don't make sense pinned to one app).
+        self.minimal_menu = minimal_menu
 
         #
         # Window setup
@@ -157,6 +165,14 @@ class MainWindow(QMainWindow):
             startup_url
 
         )
+
+        # The tab bar itself (not just "New Tab" in the menu) is hidden
+        # unless this is the actual Browser section - a webapp plugin
+        # (Telegram/Discord/etc, minimal_menu=True) is meant to stay on
+        # the one site it was loaded for, so a tab strip has nothing
+        # useful to show and just clutters a single-site view.
+        if self.minimal_menu:
+            self.browser.tabBar().hide()
 
         self.browser.close_requested.connect(
             self.close
@@ -331,13 +347,29 @@ class MainWindow(QMainWindow):
         # Menus (Y / X)
         #
 
-        self.browser_menu = BrowserMenu(
-            self.handle_browser_menu_select
-        )
+        if self.minimal_menu:
+            # Stripped down: no tabs/bookmarks/history/etc — the only
+            # thing either menu button offers is exiting back to Meridian
+            # Launcher's Sections bar.
+            self.browser_menu = CyberMenu(
+                "Menu",
+                ["Exit Program"],
+                self.handle_minimal_menu_select
+            )
 
-        self.tools_menu = ToolsMenu(
-            self.handle_tools_menu_select
-        )
+            self.tools_menu = CyberMenu(
+                "Menu",
+                ["Exit Program"],
+                self.handle_minimal_menu_select
+            )
+        else:
+            self.browser_menu = BrowserMenu(
+                self.handle_browser_menu_select
+            )
+
+            self.tools_menu = ToolsMenu(
+                self.handle_tools_menu_select
+            )
 
         self.browser_menu.hide()
 
@@ -474,11 +506,23 @@ class MainWindow(QMainWindow):
                 self.windowFlags() | Qt.FramelessWindowHint
             )
 
+            # Show BEFORE resizing: QWebEngineView (the central widget here)
+            # can get stuck rendering at whatever size it was at when the
+            # native window was first created, if move()/resize() happen
+            # first and show() only afterward — the window itself ends up
+            # the right box size/position, but the browser content inside
+            # doesn't repaint to fill it. Showing first, then moving/
+            # resizing, avoids that; the explicit browser.resize() below is
+            # an extra safety net so the central widget is never left at a
+            # stale size even if Qt's own central-widget layout pass lags
+            # a frame behind the window resize.
+            self.show()
+
             self.move(x, y)
 
             self.resize(max(200, w), max(150, h))
 
-            self.show()
+            self.browser.resize(self.centralWidget().size())
 
         elif config.get(
 
@@ -806,6 +850,22 @@ class MainWindow(QMainWindow):
     # ---- Tools (X) menu actions ----
     #
 
+    def handle_minimal_menu_select(
+        self,
+        item
+    ):
+        """The only thing either menu (Y/X) offers in minimal-menu mode
+        (see __init__) — closes the window; Meridian Launcher's watcher
+        thread notices and moves the section selector back to the
+        Sections bar, restoring its own controls."""
+
+        self.close_popup()
+
+        if item == "Exit Program":
+
+            self.close()
+
+
     def handle_tools_menu_select(
         self,
         item
@@ -822,10 +882,6 @@ class MainWindow(QMainWindow):
 
                 browser.refresh_page()
 
-        elif item == "Enter URL":
-
-            self.open_url_bar()
-
         elif item == "Previous Page":
 
             if browser:
@@ -837,10 +893,6 @@ class MainWindow(QMainWindow):
             if browser:
 
                 browser.go_forward()
-
-        elif item == "New Tab":
-
-            self.browser.new_tab()
 
         elif item == "Close Tab":
 
@@ -1275,7 +1327,15 @@ class MainWindow(QMainWindow):
     ):
 
         """
-        Shutdown cleanly.
+        Shutdown cleanly. Explicitly quits the whole QApplication here
+        (not just accepting the event) so this always actually ends the
+        process, whether triggered by the Tools/Browser menu's "Exit
+        Program" or by the [x] button in the tab bar's corner (both just
+        call self.close(), which arrives here either way). Meridian
+        Launcher's watcher thread is polling for this process to exit, so
+        if anything ever kept the app alive after the window closed, the
+        "Exit Program" signal to Meridian Launcher would silently never
+        fire.
         """
 
         if hasattr(
@@ -1290,3 +1350,5 @@ class MainWindow(QMainWindow):
 
 
         event.accept()
+
+        QApplication.instance().quit()

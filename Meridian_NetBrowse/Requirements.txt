@@ -2,4 +2,3 @@ pySide6
 pywin32
 pillow
 psutil
-pygame

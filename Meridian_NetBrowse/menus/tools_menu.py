@@ -21,13 +21,9 @@ class ToolsMenu(CyberMenu):
 
                 "Refresh",
 
-                "Enter URL",
-
                 "Previous Page",
 
                 "Next Page",
-
-                "New Tab",
 
                 "Close Tab",
 

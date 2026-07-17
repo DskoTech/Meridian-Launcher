@@ -17,7 +17,7 @@ performs the click when explicitly asked to.
 """
 
 
-from PySide6.QtGui import QGuiApplication
+import ctypes
 
 
 from .mouse_events import (
@@ -45,16 +45,23 @@ class ControllerCursor:
 
 
         #
-        # Get screen dimensions
+        # Get screen dimensions - in the SAME (physical-pixel) coordinate
+        # space move_mouse() uses (ctypes GetSystemMetrics), not Qt's
+        # QScreen.geometry(), which reports DPI-scaled LOGICAL pixels for
+        # a DPI-aware process. On a 4K display at 200% Windows scaling
+        # those disagree by exactly 2x in each axis (1920x1080 logical vs
+        # 3840x2160 physical) - tracking position against the smaller
+        # logical bounds while move_mouse() normalizes against the larger
+        # physical ones meant the cursor could only ever reach the
+        # top-left quarter of the actual screen, regardless of how far
+        # the stick was pushed.
         #
 
-        screen = QGuiApplication.primaryScreen()
+        user32 = ctypes.windll.user32
 
-        geometry = screen.geometry()
+        self.width = user32.GetSystemMetrics(0)
 
-        self.width = geometry.width()
-
-        self.height = geometry.height()
+        self.height = user32.GetSystemMetrics(1)
 
 
         #

@@ -1,8 +1,8 @@
 """
-CyberDeck Loading Screen
+Meridian NetBrowse Loading Screen
 
-Brief startup sequence shown before the main
-window appears.
+Brief, plain startup screen shown before the main window appears -
+generic (no cyberpunk styling), since Meridian NetBrowse itself has none.
 """
 
 
@@ -17,213 +17,74 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 
 
-
-
 MESSAGES = [
-
-    "INITIALIZING SYSTEM...",
-
-    "LOADING INPUT DRIVERS...",
-
-    "CALIBRATING CONTROLLER...",
-
-    "NETWORK READY",
-
-    "INPUT SYSTEM READY",
-
-    "WELCOME"
-
+    "Starting...",
+    "Loading...",
+    "Almost ready...",
 ]
-
-
 
 
 class LoadingScreen(QWidget):
 
-
     finished = Signal()
 
-
-
     def __init__(self):
-
         super().__init__()
 
-        self.setWindowFlags(
-
-            Qt.FramelessWindowHint
-
-        )
-
-        self.setStyleSheet(
-
-            "background-color: #05060c;"
-
-        )
-
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setStyleSheet("background-color: #1c1e22;")
 
         layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
 
-        layout.setAlignment(
-            Qt.AlignCenter
-        )
+        title = QLabel("Meridian NetBrowse")
+        title_font = QFont()
+        title_font.setPointSize(20)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        title.setStyleSheet("color: #e8e8e8;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
 
-
-        title = QLabel(
-            "CYBERDECKBROWSER OS"
-        )
-
-        title_font = QFont(
-            "Consolas"
-        )
-
-        title_font.setStyleHint(
-            QFont.Monospace
-        )
-
-        title_font.setPointSize(
-            28
-        )
-
-        title_font.setBold(
-            True
-        )
-
-        title.setFont(
-            title_font
-        )
-
-        title.setStyleSheet(
-            "color:#00ffff; letter-spacing: 4px;"
-        )
-
-        title.setAlignment(
-            Qt.AlignCenter
-        )
-
-        layout.addWidget(
-            title
-        )
-
-
-        self.status_label = QLabel(
-            ""
-        )
-
-        status_font = QFont(
-            "Consolas"
-        )
-
-        status_font.setStyleHint(
-            QFont.Monospace
-        )
-
-        status_font.setPointSize(
-            11
-        )
-
-        self.status_label.setFont(
-            status_font
-        )
-
-        self.status_label.setStyleSheet(
-            "color:#b000ff; margin-top: 24px;"
-        )
-
-        self.status_label.setAlignment(
-            Qt.AlignCenter
-        )
-
-        layout.addWidget(
-            self.status_label
-        )
-
+        self.status_label = QLabel("")
+        status_font = QFont()
+        status_font.setPointSize(10)
+        self.status_label.setFont(status_font)
+        self.status_label.setStyleSheet("color: #9a9a9a; margin-top: 16px;")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.status_label)
 
         self.progress_bar = QProgressBar()
-
-        self.progress_bar.setFixedWidth(
-            420
-        )
-
-        self.progress_bar.setRange(
-            0,
-            100
-        )
-
-        self.progress_bar.setTextVisible(
-            False
-        )
-
+        self.progress_bar.setFixedWidth(320)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(False)
         self.progress_bar.setStyleSheet(
-
             """
             QProgressBar {
-                background:#101020;
-                border:2px solid #00ffff;
-                border-radius:4px;
-                height:14px;
+                border: 1px solid #3a3d42;
+                border-radius: 4px;
+                background-color: #26282c;
+                margin-top: 20px;
             }
-
             QProgressBar::chunk {
-                background:#00ffff;
-                border-radius:2px;
+                background-color: #5b8def;
+                border-radius: 3px;
             }
             """
-
         )
+        layout.addWidget(self.progress_bar)
 
-        layout.addWidget(
-            self.progress_bar,
-            0,
-            Qt.AlignCenter
-        )
-
-
-        self.index = 0
-
-        self.timer = QTimer()
-
-        self.timer.timeout.connect(
-            self._advance
-        )
-
-        self.timer.start(
-            380
-        )
-
-
+        self._step = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._advance)
+        self._timer.start(220)
 
     def _advance(self):
-
-        if self.index >= len(MESSAGES):
-
-            self.timer.stop()
-
+        if self._step < len(MESSAGES):
+            self.status_label.setText(MESSAGES[self._step])
+        progress = int(min(100, (self._step + 1) * (100 / len(MESSAGES))))
+        self.progress_bar.setValue(progress)
+        self._step += 1
+        if self._step > len(MESSAGES):
+            self._timer.stop()
             self.finished.emit()
-
-            return
-
-
-        self.status_label.setText(
-            MESSAGES[self.index]
-        )
-
-        self.progress_bar.setValue(
-
-            int(
-
-                (self.index + 1)
-
-                /
-
-                len(MESSAGES)
-
-                *
-
-                100
-
-            )
-
-        )
-
-        self.index += 1

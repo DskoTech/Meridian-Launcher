@@ -88,6 +88,7 @@ def main():
     config["glitch_enabled"] = False
 
     box = _parse_box_arg()
+    minimal_menu = "--minimal-menu" in sys.argv
 
     #
     # Meridian Launcher passes --window-mode=borderless-fullscreen when it
@@ -130,27 +131,21 @@ def main():
 
 
     #
-    # Keeps references alive once created inside
-    # the closures below (otherwise Python would
-    # garbage-collect them).
+    # A brief, generic loading screen (no cyberpunk styling - see
+    # ui/loading_screen.py) before MainWindow appears. Boxed the same way
+    # MainWindow is, so it doesn't flash full-screen for an instant when
+    # launched into a section's box.
     #
 
     state = {}
 
-
     def _apply_geometry(widget):
-        """Used for the loading screen only — MainWindow applies its own
-        geometry internally (see ui/main_window.py), reading config["__box_geometry"]."""
         if box:
             x, y, w, h = box
             widget.move(x, y)
             widget.resize(max(200, w), max(150, h))
             widget.show()
         elif config.get("fullscreen", True):
-            # Already frameless, so "fullscreen" just means covering the
-            # primary screen exactly — not Qt's showFullScreen() state,
-            # which behaves like a real fullscreen mode switch on some
-            # platforms. Borderless windowed instead.
             screen_geo = QApplication.primaryScreen().geometry()
             widget.move(screen_geo.x(), screen_geo.y())
             widget.resize(screen_geo.width(), screen_geo.height())
@@ -159,37 +154,20 @@ def main():
             widget.resize(600, 300)
             widget.show()
 
-
-    def start_loading_screen():
-
-        loading = LoadingScreen()
-
-        _apply_geometry(loading)
-
-        state["loading"] = loading
-
-        loading.finished.connect(
-            start_main_window
-        )
-
-
     def start_main_window():
-
         window = MainWindow(
             config,
             startup_url,
-            box
+            box,
+            minimal_menu
         )
-
         state["window"] = window
-
         state["loading"].close()
 
-
-    # No first-boot cyberpunk-effects prompt in Meridian NetBrowse — go
-    # straight to the loading screen every time.
-    start_loading_screen()
-
+    loading = LoadingScreen()
+    _apply_geometry(loading)
+    state["loading"] = loading
+    loading.finished.connect(start_main_window)
 
     sys.exit(
         app.exec()
