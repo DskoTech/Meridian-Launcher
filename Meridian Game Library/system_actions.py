@@ -23,25 +23,67 @@ PROTECTED_PROCESSES = {
 }
 
 
-def launch_path(path: str):
-    """Launch an .exe or .bat. Returns (ok, error_message).
+SW_SHOWMAXIMIZED = 3
+
+
+def launch_path(path: str, args=None):
+    """Launch an .exe or .bat, requesting a maximized window. Returns
+    (ok, error_message).
+
+    Windows has no way to force an arbitrary app into true borderless
+    fullscreen from the outside — that's an app-specific concept apps opt
+    into themselves (F11, in-app settings, etc). The closest universal
+    equivalent a launcher can request is "start maximized", via the
+    show_cmd/STARTUPINFO window-show hint below. It's a hint, not a
+    guarantee: well-behaved apps honor it, some ignore it and remember
+    their own last window size/position instead.
 
     os.startfile resolves file associations the same way double-clicking in
     Explorer would, which matters for .bat/.cmd: Windows can't CreateProcess
     those directly (subprocess.Popen(["x.bat"]) raises WinError 193), they
     have to be handed to cmd.exe. os.startfile does that for us.
+
+    args: optional list of extra command-line arguments. Used for the other
+    Meridian apps (CyberDeckBrowser.exe, "Meridian Game Library.exe",
+    onscreenmenu.exe), which understand a --window-mode=borderless-fullscreen
+    flag requesting they open in windowed (borderless) fullscreen rather
+    than whatever window mode they last had saved — that request only
+    works for apps we actually wrote, unlike the maximize hint above, which
+    is the best that can be asked of an arbitrary third-party program.
+    os.startfile can't pass arguments, so when args are given this always
+    goes through subprocess.Popen instead.
     """
     if not path or not os.path.isfile(path):
         return False, "File not found."
     try:
-        if hasattr(os, "startfile"):
-            os.startfile(path)
+        if args:
+            ext = os.path.splitext(path)[1].lower()
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = SW_SHOWMAXIMIZED
+            if ext in (".bat", ".cmd"):
+                subprocess.Popen(["cmd.exe", "/c", path] + list(args), cwd=os.path.dirname(path) or None,
+                                  startupinfo=startupinfo)
+            else:
+                subprocess.Popen([path] + list(args), cwd=os.path.dirname(path) or None, shell=False,
+                                  startupinfo=startupinfo)
+        elif hasattr(os, "startfile"):
+            try:
+                # show_cmd param requires Python 3.10+
+                os.startfile(path, show_cmd=SW_SHOWMAXIMIZED)
+            except TypeError:
+                os.startfile(path)
         else:
             ext = os.path.splitext(path)[1].lower()
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = SW_SHOWMAXIMIZED
             if ext in (".bat", ".cmd"):
-                subprocess.Popen(["cmd.exe", "/c", path], cwd=os.path.dirname(path) or None)
+                subprocess.Popen(["cmd.exe", "/c", path], cwd=os.path.dirname(path) or None,
+                                  startupinfo=startupinfo)
             else:
-                subprocess.Popen([path], cwd=os.path.dirname(path) or None, shell=False)
+                subprocess.Popen([path], cwd=os.path.dirname(path) or None, shell=False,
+                                  startupinfo=startupinfo)
         return True, None
     except Exception as e:
         return False, str(e)
@@ -53,6 +95,37 @@ def _run(cmd):
         return True, None
     except Exception as e:
         return False, str(e)
+
+
+def another_instance_running(exe_name: str) -> bool:
+    """Whether a DIFFERENT process is already running this same exe name -
+    excludes both our own PID and our own PARENT's PID.
+
+    Excluding the parent matters for any compiled --onefile app: its
+    PyInstaller bootloader briefly runs as its own process (sharing the
+    same exe name) before extracting and exec'ing the real app as a
+    child, so on every single compiled launch there are, for a moment,
+    two processes alive that would both match this name - the bootloader
+    (this process's parent) and this process itself. Only excluding our
+    own PID (not the parent's too) means every compiled launch falsely
+    concludes "another instance is already running" and exits
+    immediately - this was a real bug found in onscreenmenu's own
+    single-instance check; every app doing this same kind of check
+    should exclude both."""
+    if psutil is None:
+        return False
+    my_pid = os.getpid()
+    my_parent_pid = os.getppid()
+    exe_name = exe_name.lower()
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            if proc.pid in (my_pid, my_parent_pid):
+                continue
+            if (proc.info.get("name") or "").lower() == exe_name:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            continue
+    return False
 
 
 def is_process_running(exe_name: str) -> bool:
@@ -68,6 +141,29 @@ def is_process_running(exe_name: str) -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
             continue
     return False
+
+
+def kill_process(exe_name: str):
+    """Terminates every running process with this executable name
+    (case-insensitive). Used by the Start menu's "Launch/Close
+    onscreenmenu" toggle."""
+    if psutil is None:
+        return False, "psutil not available."
+    exe_name = exe_name.lower()
+    found = False
+    try:
+        for proc in psutil.process_iter(["name"]):
+            try:
+                if (proc.info.get("name") or "").lower() == exe_name:
+                    found = True
+                    proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if not found:
+            return True, None  # already not running - not an error
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def open_folder(path):
@@ -121,6 +217,34 @@ def open_control_panel():
 
 def open_task_manager():
     return _run(["taskmgr.exe"])
+
+
+def open_command_prompt():
+    """Opens a normal (non-elevated) Command Prompt window."""
+    return _run(["cmd.exe"])
+
+
+def open_powershell():
+    """Opens a normal (non-elevated) Windows PowerShell window."""
+    return _run(["powershell.exe"])
+
+
+def open_microsoft_store():
+    # ms-windows-store: is the URI scheme handler for the Store app, same
+    # as clicking its tile — os.startfile resolves it like a link.
+    try:
+        os.startfile("ms-windows-store:")
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def open_windows_update():
+    try:
+        os.startfile("ms-settings:windowsupdate")
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def shutdown():
@@ -349,7 +473,7 @@ def bluetooth_set_enabled(device_id: str, enabled: bool):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
-            err = result.stderr.strip() or "Couldn't change device state (try running Meridian Game Library as Administrator)."
+            err = result.stderr.strip() or "Couldn't change device state (try running Meridian Launcher as Administrator)."
             return False, err
         return True, None
     except Exception as e:
@@ -379,3 +503,84 @@ def close_all_except(whitelist_names):
         except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
             continue
     return {"ok": True, "error": None, "closed": closed}
+
+
+def register_netbrowse_default_browser(trampoline_exe_path):
+    """Registers the Meridian NetBrowse shell trampoline (NOT Meridian
+    NetBrowse.exe itself) as a capable browser for http/https/ftp links and
+    .htm/.html files, current-user only, no admin. Self-contained here
+    (rather than importing Meridian_NetBrowse/default_browser.py) since
+    that source tree isn't guaranteed to sit next to Meridian Launcher.exe
+    in a packaged install — only the compiled exes are. As with any
+    Windows default-browser registration, actually becoming THE default is
+    one more click in Settings > Default apps."""
+    if not hasattr(os, "startfile"):  # good enough proxy for "not on Windows"
+        return False, "Windows only."
+    try:
+        import winreg
+    except ImportError:
+        return False, "Windows only."
+
+    PROGID = "MeridianNetBrowseHTML"
+    APPREG = "MeridianNetBrowse"
+
+    def _set(path, value, name=None):
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, path)
+        try:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+        finally:
+            winreg.CloseKey(key)
+
+    try:
+        cmd = f'"{trampoline_exe_path}" "%1"'
+        _set(rf"Software\Classes\{PROGID}", "Meridian NetBrowse Document")
+        _set(rf"Software\Classes\{PROGID}\DefaultIcon", f'"{trampoline_exe_path}",0')
+        _set(rf"Software\Classes\{PROGID}\shell\open\command", cmd)
+
+        capbase = r"Software\MeridianNetBrowse\Capabilities"
+        _set(capbase, "Meridian NetBrowse", "ApplicationName")
+        _set(capbase, "Routes links through Meridian Launcher's Browser section", "ApplicationDescription")
+        for scheme in ("http", "https", "ftp"):
+            _set(capbase + r"\URLAssociations", PROGID, scheme)
+        for ext in (".htm", ".html"):
+            _set(capbase + r"\FileAssociations", PROGID, ext)
+        _set(r"Software\RegisteredApplications", capbase, APPREG)
+
+        for scheme in ("http", "https"):
+            try:
+                _set(rf"Software\Classes\{scheme}\shell\open\command", cmd)
+            except Exception:
+                pass
+
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def launch_ps1_elevated(path, args=None):
+    """Run a PowerShell script elevated — a UAC prompt for just that one
+    process, not the whole app — via ShellExecuteW's "runas" verb.
+    Returns (ok, error_message, needs_admin_relaunch). needs_admin_relaunch
+    is True when even the per-process elevation attempt failed (e.g. the
+    UAC prompt was declined, or something about the environment blocks it
+    outright), which is the caller's cue to offer restarting Meridian
+    Launcher itself as administrator instead.
+    """
+    if not path or not os.path.isfile(path):
+        return False, "File not found.", False
+    try:
+        import ctypes
+        arg_str = " ".join(f'"{a}"' for a in (args or []))
+        params = f'-NoProfile -ExecutionPolicy Bypass -File "{path}"' + (f" {arg_str}" if arg_str else "")
+        # SW_SHOWNORMAL = 1. Return value > 32 means success; <= 32 is an
+        # HINSTANCE-shaped error code (5 = access denied / UAC declined).
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "powershell.exe", params, os.path.dirname(path) or None, 1
+        )
+        if result > 32:
+            return True, None, False
+        if result == 5:
+            return False, "Administrator permission was declined.", True
+        return False, f"Couldn't launch elevated (error code {result}).", True
+    except Exception as e:
+        return False, str(e), True

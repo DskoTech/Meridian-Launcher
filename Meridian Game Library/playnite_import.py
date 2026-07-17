@@ -134,59 +134,56 @@ def get_library(store_key, playnite_settings):
     return entries
 
 
-def filter_presets_path(playnite_settings):
-    # Always a sibling of the main export, whatever that path is — the
-    # exporter writes both files into the same folder, so following the
-    # (possibly user-overridden) export path keeps the pair together.
-    return str(Path(get_export_path(playnite_settings)).with_name("playnite_filter_presets.json"))
+def _platform_slug(raw_platform):
+    """Turns a raw Playnite Platform string ("PC", "PlayStation 4", a
+    blank/None for games with no platform tagged, etc.) into a stable id
+    safe to use as a section id."""
+    name = (raw_platform or "").strip() or "Unspecified"
+    slug = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
+    return slug or "unspecified", name
 
 
-def get_filter_presets(playnite_settings):
-    """
-    Saved Playnite filter presets, as exported by Export-MeridianFilterPresets:
-    [{"id": ..., "name": ..., "game_ids": [...]}]. Membership was resolved
-    inside Playnite (its own GetFilteredGames), so this never evaluates
-    filter rules itself. Returns [] when the presets file doesn't exist —
-    which just means the exporter predates this feature or hasn't run yet,
-    not an error.
-    """
-    path = filter_presets_path(playnite_settings)
-    try:
-        with open(path, encoding="utf-8-sig") as f:  # -sig: PowerShell BOM, same as the main export
-            raw = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return []
-    if isinstance(raw, dict):  # ConvertTo-Json collapses a 1-element array to a bare object
-        raw = [raw]
-    presets = []
-    for p in raw or []:
-        if not isinstance(p, dict) or not p.get("Name"):
-            continue
-        presets.append({
-            "id": str(p.get("Id") or p.get("Name")),
-            "name": p.get("Name"),
-            "game_ids": [str(g) for g in (p.get("GameIds") or [])],
-        })
-    return presets
+def _is_big_five(source):
+    return (_matches_store(source, "steam") or _matches_store(source, "gog") or
+            _matches_store(source, "epic") or _matches_store(source, "amazon"))
 
 
-def get_filter_library(preset_id, playnite_settings):
-    """
-    Entries for one filter-preset section: the main export's games,
-    narrowed to the ids Playnite said match that preset. Returns None
-    (like get_library) if the main export isn't available, so callers can
-    tell "not connected" apart from "connected but empty".
-    """
+def get_other_sources(playnite_settings):
+    """[{"id", "name", "count"}] for every DISTINCT platform among games
+    whose SOURCE isn't Steam/GOG/Epic/Amazon(/Luna/Prime) — each platform
+    becomes its own section instead of being lumped into one "Other"
+    catch-all bucket. Grouped by Playnite's Platform field (e.g. "PC",
+    "PlayStation 4", "Nintendo Switch"), not by the (often much more
+    fragmented, one-off-launcher-specific) Source string — "which
+    storefront" still decides what's excluded as big-5, but "which
+    platform" decides how what's left gets bucketed."""
     raw = _load_raw_export(playnite_settings)
     if raw is None:
-        return None
-    preset = next((p for p in get_filter_presets(playnite_settings) if p["id"] == str(preset_id)), None)
-    if preset is None:
         return []
-    wanted = set(preset["game_ids"])
-    entries = [_entry_from_game(g) for g in raw if str(g.get("Id")) in wanted]
-    entries.sort(key=lambda e: (not e["installed"], e["title"].lower()))
-    return entries
+    buckets = {}  # slug -> {"id", "name", "count"}
+    for game in raw:
+        if _is_big_five(game.get("Source") or ""):
+            continue
+        slug, name = _platform_slug(game.get("Platform"))
+        bucket = buckets.setdefault(slug, {"id": slug, "name": name, "count": 0})
+        bucket["count"] += 1
+    return sorted(buckets.values(), key=lambda b: b["name"].lower())
+
+
+def get_other_source_library(source_id, playnite_settings):
+    """Games belonging to one specific non-big-5 platform (by the slug id
+    from get_other_sources), in the same entry shape scan_library uses."""
+    raw = _load_raw_export(playnite_settings)
+    if raw is None:
+        return []
+    out = []
+    for game in raw:
+        if _is_big_five(game.get("Source") or ""):
+            continue
+        slug, _name = _platform_slug(game.get("Platform"))
+        if slug == source_id:
+            out.append(_entry_from_game(game))
+    return out
 
 
 def export_summary(playnite_settings):

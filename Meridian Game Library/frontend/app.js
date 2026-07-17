@@ -87,27 +87,26 @@ const STORE_CONFIG = {
   other: makeStoreConfig("other", "Other"),
 };
 
-// Filter-preset sections reuse the whole game_grid pipeline; the only
-// real differences are (a) the library fetch needs the preset id, handled
-// by refreshGameGridPanel branching to pnfilter_get_library, and (b)
-// launch/install go through the preset-agnostic pnfilter_* Api methods,
-// since a game in a preset is still just a Playnite game.
-function makeFilterPresetConfig(label) {
+// Non-big-5 storefront sections (Ubisoft Connect, itch.io, sideloaded/
+// manually-added games, etc.) — one section per distinct Playnite platform
+// instead of one shared "Other" catch-all. Same game_grid pipeline
+// as everything else; only the library fetch/launch need the platform id.
+function makeOtherSourceConfig(label) {
   return {
-    ...makeStoreConfig("pnfilter", label),
+    ...makeStoreConfig("other", label),
     api: {
-      login: "playnite_status",
-      getLibrary: null, // never called directly — refreshGameGridPanel handles presets itself
-      syncLibrary: "pnfilter_touch",
-      install: "pnfilter_install",
-      uninstall: "pnfilter_launch",
-      launch: "pnfilter_launch",
+      login: "other_login",
+      getLibrary: null, // never called directly — refreshGameGridPanel handles these itself
+      syncLibrary: "other_sync_library", // just a delay+trigger before refreshItemPanel re-fetches this section properly; its own return value is unused
+      install: "other_install",
+      uninstall: "other_uninstall",
+      launch: "other_launch", // launch_game() only needs the game id, not which source it came from
     },
   };
 }
 
 function storeConfigFor(cat) {
-  if (cat && cat.preset != null) return makeFilterPresetConfig(cat.label);
+  if (cat && cat.otherSource != null) return makeOtherSourceConfig(cat.label);
   return STORE_CONFIG[cat.store];
 }
 
@@ -159,7 +158,7 @@ const state = {
   folderStack: { music: [], photos: [], videos: [] }, // subfolder browsing, per kind
   gameFilter: {}, // per category id: "all" | "installed" | "not_installed"
   gameLibraryFull: {}, // per category id: unfiltered entries, so filtering doesn't need a refetch
-  filterPresets: [], // [{id, name, count}] saved Playnite filter presets, when that toggle is on
+  otherSources: [], // [{id, name, count}] distinct non-big-5 platforms, when that toggle is on
   userThemes: [], // discovered themes from the themes/ folder
   userThemeCss: {}, // { __active: slug } tracks which user theme CSS is injected
   gridFocus: "list", // "list" | "filter" — which pane has directional focus in a game_grid section
@@ -204,75 +203,48 @@ setInterval(updateBatteryIndicator, 30000);
 
 // ---------------- category list (fixed + custom + settings + system) ----------------
 
-// Playnite filter-preset sections: one section per saved Playnite filter
-// preset (see set_playnite_filter_sections / the MeridianExporter
-// extension), slotted after the fixed storefront sections. Presets are
-// fetched once into state.filterPresets (loadFilterPresets) rather than
-// per-build, since buildCategories has to stay synchronous.
-function filterPresetCategories(settings) {
-  if (!settings || !settings.playnite_filter_sections) return [];
+// Non-big-5 platform sections: on by default (other_source_sections).
+// One section per distinct Playnite platform (Ubisoft Connect, itch.io,
+// manually-added games, etc.) instead of one shared "Other" catch-all.
+// Platforms are fetched once into state.otherSources (loadOtherSources)
+// rather than per-build, since buildCategories has to stay synchronous.
+function otherSourceCategories(settings) {
+  if (!settings || !settings.other_source_sections) return [];
   if ((settings.game_import_source || "playnite") !== "playnite") return [];
-  return (state.filterPresets || []).map((p, i) => ({
-    id: `pnfilter_${p.id}`,
-    label: p.name,
+  return (state.otherSources || []).map((s, i) => ({
+    id: `other_source_${s.id}`,
+    label: s.name,
     kind: "game_grid",
-    store: "pnfilter",
-    preset: p.id,
-    color: PALETTE[i % PALETTE.length],
+    store: "other",
+    otherSource: s.id,
+    color: PALETTE[(i + 3) % PALETTE.length],
   }));
 }
 
 function buildCategories(settings) {
+  // When other_source_sections is on, the static "Other" catch-all is
+  // replaced entirely by the dynamic per-platform sections below - a game
+  // should show up in exactly one section, not both.
+  const useOtherSources = settings && settings.other_source_sections &&
+    (settings.game_import_source || "playnite") === "playnite";
+  const fixed = useOtherSources ? FIXED_CATEGORIES.filter((c) => c.id !== "other") : FIXED_CATEGORIES;
   return [
-    ...FIXED_CATEGORIES,
-    ...filterPresetCategories(settings),
+    ...fixed,
+    ...otherSourceCategories(settings),
     { id: "settings", label: "Settings", kind: "settings", color: "var(--accent-settings)" },
   ];
 }
 
 
-// Renders playnite_filter_diagnostics() into the settings panel.
-async function updatePlayniteFilterDebug() {
-  const box = document.getElementById("playnite-filter-debug");
-  if (!box) return;
-  let d;
-  try { d = await api().playnite_filter_diagnostics(); }
-  catch (e) { box.textContent = "diagnostics unavailable: " + e; return; }
-  const L = [];
-  L.push(`toggle on      : ${d.toggle_on ? "yes" : "NO  <-- turn on 'Playnite filter sections' above"}`);
-  L.push(`import source  : ${d.import_source}`);
-  L.push(`export file    : ${d.export_path || "(not resolved)"}`);
-  L.push(`  exists       : ${d.export_exists ? "yes" : "NO  <-- run 'Export library for Meridian' in Playnite"}`);
-  L.push(`presets file   : ${d.presets_path || "(n/a)"}`);
-  L.push(`  exists       : ${d.presets_exists ? "yes" : "NO  <-- the extension didn't write it (is it v1.1?)"}`);
-  if (d.presets_exists) {
-    L.push(`  size         : ${d.presets_bytes} bytes   json: ${d.presets_json_type || "?"}`);
-    L.push(`  raw presets  : ${d.presets_count_raw}`);
-    if (d.presets_parse_error) L.push(`  PARSE ERROR  : ${d.presets_parse_error}`);
-    L.push(`  preview      : ${(d.presets_preview || "").replace(/\s+/g, " ").slice(0, 120)}`);
-  }
-  L.push(`parsed presets : ${d.presets_parsed}`);
-  if (d.preset_names && d.preset_names.length) L.push(`  names        : ${d.preset_names.join(", ")}`);
-  if (d.error) L.push(`error          : ${d.error}`);
-  if (d.presets_exists && d.presets_count_raw === 0) {
-    L.push("");
-    L.push(">> The file is there but empty: Playnite exported zero presets.");
-    L.push("   Check you actually have saved filter presets in Playnite, then");
-    L.push("   re-run Extensions > 'Export library for Meridian' \u2014 its dialog");
-    L.push("   reports how many it found.");
-  }
-  box.textContent = L.join("\n");
-}
-
-async function loadFilterPresets(settings) {
-  if (settings && settings.playnite_filter_sections && (settings.game_import_source || "playnite") === "playnite") {
+async function loadOtherSources(settings) {
+  if (settings && settings.other_source_sections && (settings.game_import_source || "playnite") === "playnite") {
     try {
-      state.filterPresets = (await api().playnite_filter_presets()) || [];
+      state.otherSources = (await api().list_other_game_sources()) || [];
     } catch (e) {
-      state.filterPresets = [];
+      state.otherSources = [];
     }
   } else {
-    state.filterPresets = [];
+    state.otherSources = [];
   }
 }
 
@@ -970,15 +942,15 @@ async function refreshGameGridPanel(cat) {
   state.settings = settings;
   const cfg = storeConfigFor(cat);
 
-  // Playnite filter-preset section: same grid, same filter sidebar, but
-  // the entries come from pnfilter_get_library(preset id). Re-read on
-  // every visit — it's a local file read, effectively instant.
-  if (cat.preset != null) {
-    const res = await api().pnfilter_get_library(cat.preset);
+  // A non-big-5 platform section (Ubisoft Connect, itch.io, manually-
+  // added/sideloaded games, etc.) - same grid/sidebar, entries come from
+  // other_source_get_library(platform id) instead of a fixed store method.
+  if (cat.otherSource != null) {
+    const res = await api().other_source_get_library(cat.otherSource);
     const entries = (res && res.entries) || [];
     state.gameLibraryFull[cat.id] = entries;
     const filtered = applyGameFilter(cat.id, entries);
-    state.items = filtered.length ? filtered : [{ __empty: true, message: `No games match the "${cat.label}" Playnite filter yet \u2014 adjust the preset in Playnite, then re-export.` }];
+    state.items = filtered.length ? filtered : [{ __empty: true, message: `No games found under "${cat.label}" yet \u2014 re-export from Playnite if you just added some.` }];
     state.selected = Math.min(state.selected, state.items.length - 1);
     renderGameFilterSidebar(cat);
     renderItemList(cat);
@@ -1577,19 +1549,19 @@ async function renderSettings() {
   importBlock.appendChild(importNote);
   c.appendChild(importBlock);
 
-  // Playnite filter-preset sections
-  const pfBlock = buildToggleBlock(
-    "Playnite filter sections",
-    settings.playnite_filter_sections,
+  // Non-big-5 platform sections (on by default)
+  const osBlock = buildToggleBlock(
+    "Other-platform sections",
+    settings.other_source_sections,
     async () => {
-      await api().set_playnite_filter_sections(!settings.playnite_filter_sections);
+      await api().set_other_source_sections(!settings.other_source_sections);
       await refreshAfterSettingsChange();
     },
-    settings.playnite_filter_sections
-      ? `Your saved Playnite filter presets show as their own sections${state.filterPresets && state.filterPresets.length ? ` (${state.filterPresets.length} found)` : " (none found yet \u2014 re-run the Meridian export in Playnite after updating the extension)"}.`
-      : "Off \u2014 turn on to pull your saved Playnite filter presets in as similarly named sections.",
+    settings.other_source_sections
+      ? `Anything outside Steam/GOG/Epic/Amazon(/Luna) gets its own section instead of one shared "Other" bucket${state.otherSources && state.otherSources.length ? ` (${state.otherSources.length} found: ${state.otherSources.map((s) => s.name).join(", ")})` : " (none found — everything you have is in the big 5, or nothing's exported yet)"}.`
+      : `Off \u2014 everything outside Steam/GOG/Epic/Amazon(/Luna) shares one "Other" section instead.`,
   );
-  c.appendChild(pfBlock);
+  c.appendChild(osBlock);
 
   // open-programs bar behavior
   c.appendChild(buildToggleBlock(
@@ -1603,20 +1575,6 @@ async function renderSettings() {
       ? "Holding X on an open-programs bar item closes it immediately."
       : "Holding X on an open-programs bar item asks to confirm first.",
   ));
-
-  // Filter-preset diagnostics: shows exactly where the reader looks and what
-  // it found, so "presets aren't showing" is answerable instead of a guess.
-  const fpBlock = document.createElement("div");
-  fpBlock.className = "settings-block";
-  fpBlock.innerHTML = `<h3>Playnite filter presets \u2014 diagnostics</h3>
-    <pre id="playnite-filter-debug" class="controller-debug">checking\u2026</pre>`;
-  const fpRefresh = document.createElement("button");
-  fpRefresh.className = "btn-link";
-  fpRefresh.textContent = "Re-check";
-  fpRefresh.addEventListener("click", () => updatePlayniteFilterDebug());
-  fpBlock.appendChild(fpRefresh);
-  c.appendChild(fpBlock);
-  setTimeout(updatePlayniteFilterDebug, 0);
 
   // Foreground trigger: how to bring Meridian Game Library to the front when it's in
   // the background. Input is always received in the background, but only
@@ -1897,7 +1855,7 @@ function buildPlayniteConnectionBlock(settings) {
 async function refreshAfterSettingsChange() {
   const settings = await api().get_settings();
   state.settings = settings;
-  await loadFilterPresets(settings);
+  await loadOtherSources(settings);
   state.categories = buildCategories(settings);
   if (state.catIndex >= state.categories.length) state.catIndex = state.categories.length - 1;
   renderCategories();
@@ -3034,7 +2992,7 @@ async function boot() {
   state.settings = settings;
   state.keyboardControls = kc;
   await loadUserThemes(); // discover themes/ at startup so drop-ins just appear
-  await loadFilterPresets(settings);
+  await loadOtherSources(settings);
   state.categories = buildCategories(settings);
 
   // The controls hint text was removed per design; these spans may be

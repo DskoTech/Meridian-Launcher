@@ -18,6 +18,13 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from crash_logger import install_crash_logging
+install_crash_logging("Meridian Game Library")
+
+import system_actions
+if system_actions.another_instance_running("Meridian Game Library.exe"):
+    sys.exit(0)
 from urllib.parse import urlparse, parse_qs
 
 import webview
@@ -762,6 +769,30 @@ class Api:
     def other_get_library(self):
         return self._store_get_library("other")
 
+    def other_source_get_library(self, source_id):
+        """Games under one specific non-big-5 platform (PC, PlayStation,
+        Nintendo Switch, etc, for anything whose SOURCE isn't Steam/GOG/
+        Epic/Amazon) — each platform becomes its own section instead of
+        everything sharing one "Other" bucket. Playnite-only; Heroic's
+        library is already just epic/gog/other with no further per-
+        platform breakdown to make."""
+        if self._import_source() == "heroic":
+            return {"entries": []}
+        entries = playnite_import.get_other_source_library(source_id, self._playnite_settings())
+        return {"entries": self._entries_with_media_urls(entries or [])}
+
+    def list_other_game_sources(self):
+        """[{"id", "name", "count"}] for Settings and for buildCategories to
+        turn into one section per distinct non-big-5 platform."""
+        if self._import_source() == "heroic":
+            return []
+        return playnite_import.get_other_sources(self._playnite_settings())
+
+    def set_other_source_sections(self, enabled):
+        SETTINGS["other_source_sections"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
     def steam_sync_library(self, force=False):
         return self._store_sync_library("steam", force)
 
@@ -1272,77 +1303,6 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
-    # ---------------- Playnite filter-preset sections ----------------
-    # Saved Playnite filter presets, surfaced as their own sections. The
-    # membership is resolved inside Playnite itself (see the exporter's
-    # Export-MeridianFilterPresets) so Meridian never has to reimplement
-    # Playnite's filter logic — it just reads name + matching game ids.
-
-    def set_playnite_filter_sections(self, enabled):
-        SETTINGS["playnite_filter_sections"] = bool(enabled)
-        store.save_settings(SETTINGS)
-        return SETTINGS
-
-    def playnite_filter_diagnostics(self):
-        """Why filter-preset sections aren't showing up. Reports the exact
-        file the reader looks at, whether it exists, what's in it, and how
-        many presets parsed — so this is diagnosable instead of guesswork."""
-        import json as _json
-        out = {"toggle_on": bool(SETTINGS.get("playnite_filter_sections")),
-               "import_source": SETTINGS.get("game_import_source", "playnite")}
-        try:
-            cfg = self._playnite_settings()
-            export = playnite_import.get_export_path(cfg)
-            out["export_path"] = export
-            out["export_exists"] = bool(export and os.path.isfile(export))
-            preset_path = None
-            if export:
-                preset_path = os.path.join(os.path.dirname(export),
-                                           "playnite_filter_presets.json")
-            out["presets_path"] = preset_path
-            out["presets_exists"] = bool(preset_path and os.path.isfile(preset_path))
-            if out["presets_exists"]:
-                raw = open(preset_path, "r", encoding="utf-8-sig").read()
-                out["presets_bytes"] = len(raw)
-                out["presets_preview"] = raw[:180]
-                try:
-                    data = _json.loads(raw)
-                    out["presets_json_type"] = type(data).__name__
-                    out["presets_count_raw"] = (
-                        len(data) if isinstance(data, list) else (1 if isinstance(data, dict) else 0))
-                except Exception as e:
-                    out["presets_parse_error"] = str(e)
-            parsed = playnite_import.get_filter_presets(cfg)
-            out["presets_parsed"] = len(parsed or [])
-            out["preset_names"] = [p.get("name") for p in (parsed or [])][:12]
-        except Exception as e:
-            out["error"] = "%s: %s" % (type(e).__name__, e)
-        return out
-
-    def playnite_filter_presets(self):
-        """[{id, name, count}] for every saved preset in the export, or []
-        if the presets file isn't there yet (older exporter, or Playnite
-        hasn't synced since installing the updated one)."""
-        presets = playnite_import.get_filter_presets(self._playnite_settings())
-        return [{"id": p["id"], "name": p["name"], "count": len(p.get("game_ids") or [])} for p in presets]
-
-    def pnfilter_get_library(self, preset_id):
-        entries = playnite_import.get_filter_library(preset_id, self._playnite_settings())
-        return {"entries": self._entries_with_media_urls(entries or [])}
-
-    def pnfilter_launch(self, game_id):
-        # A game in a filter section is still just a Playnite game — same
-        # launch path as the storefront sections.
-        playnite_import.launch_game(game_id, self._playnite_settings())
-
-    def pnfilter_install(self, game_id):
-        playnite_import.show_in_playnite(game_id)
-
-    def pnfilter_touch(self, force=False):
-        # No-op stand-in for the storefront syncLibrary hook: filter
-        # sections re-read the export on every panel refresh anyway.
-        return {"ok": True}
-
     # ---------------- settings: app data folder ----------------
     def open_app_data_folder(self):
         """Opens %LOCALAPPDATA%\\Meridian Launcher\\Meridian Game Library\\
@@ -1359,16 +1319,17 @@ class Api:
 # --------------------------------------------------------------------------
 
 def _maybe_launch_onscreenmenu():
-    """Best-effort launch of onscreenmenu.exe from the app's own folder, but
-    only if it isn't already running — used after opening the app data
-    folder so the on-screen menu companion is available to navigate it with
-    a controller."""
+    """Best-effort launch of the on-screen menu companion via osm.bat (not
+    onscreenmenu.exe directly) from the app's own folder, but only if
+    onscreenmenu.exe isn't already running — used after opening the app
+    data folder so the on-screen menu companion is available to navigate
+    it with a controller."""
     if system_actions.is_process_running("onscreenmenu.exe"):
         return
-    exe = BASE_DIR / "onscreenmenu.exe"
-    if exe.exists():
+    bat = BASE_DIR / "osm.bat"
+    if bat.exists():
         try:
-            system_actions.launch_path(str(exe))
+            system_actions.launch_path(str(bat))
         except Exception:
             pass
 

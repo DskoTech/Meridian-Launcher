@@ -99,7 +99,10 @@ def default_settings():
         # When on, each saved Playnite filter preset (exported by the
         # MeridianExporter extension) becomes its own section in the
         # category row, named after the preset.
-        "playnite_filter_sections": False,
+        # On by default: anything other than Steam/GOG/Epic/Amazon(/Luna)
+        # gets its own section (one per distinct Playnite Source string)
+        # instead of all being lumped into a single "Other" bucket.
+        "other_source_sections": True,
         "close_tasks_without_prompt": False,
         # How to bring the app to the foreground when it's in the background:
         # "start_select" (Start+Select together), "xbox" (Guide button, when

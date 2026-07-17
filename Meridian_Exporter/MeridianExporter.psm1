@@ -50,6 +50,26 @@ function Get-MeridianSourceName {
     return "Unknown"
 }
 
+# Platform name(s) for the game (Playnite lets a game be tagged with more
+# than one, e.g. "PC" and "Windows"; joined with " / " when there's more
+# than one). Falls back to "Unknown" - same defensive shape as
+# Get-MeridianSourceName above, since $game.Platforms can be empty/null
+# depending on how the game was added.
+function Get-MeridianPlatformName {
+    param($game)
+
+    try {
+        if ($game.Platforms -and $game.Platforms.Count -gt 0) {
+            $names = @($game.Platforms | ForEach-Object { $_.Name } | Where-Object { $_ })
+            if ($names.Count -gt 0) {
+                return ($names -join " / ")
+            }
+        }
+    } catch { }
+
+    return "Unknown"
+}
+
 function Get-MeridianPlayAction {
     param($game)
 
@@ -96,6 +116,7 @@ function Export-MeridianLibrary {
             Id                = $game.Id.ToString()
             Name              = $game.Name
             Source            = Get-MeridianSourceName $game
+            Platform          = Get-MeridianPlatformName $game
             IsInstalled       = [bool]$game.IsInstalled
             InstallDirectory  = $game.InstallDirectory
             CoverImagePath    = $coverPath
@@ -108,8 +129,6 @@ function Export-MeridianLibrary {
     }
 
     $exported | ConvertTo-Json -Depth 4 | Out-File -LiteralPath $exportPath -Encoding utf8
-
-    Export-MeridianFilterPresets $exportDir
 }
 
 # Also snapshot the user's saved filter presets, with membership resolved
@@ -125,107 +144,6 @@ function Export-MeridianLibrary {
 # genres) so presets aren't left empty. If a preset uses filter fields the
 # fallback doesn't understand, it's still exported by name (possibly with
 # fewer/zero games) rather than crashing the export.
-function Export-MeridianFilterPresets {
-    param($exportDir)
-
-    $presetPath = Join-Path $exportDir "playnite_filter_presets.json"
-    $presetsOut = @()
-
-    try {
-        $allGames = @($PlayniteApi.Database.Games)
-        foreach ($preset in $PlayniteApi.Database.FilterPresets) {
-            $gameIds = @()
-            $settings = $preset.Settings
-            $resolved = $false
-
-            # Primary: let Playnite evaluate the preset.
-            try {
-                $matched = $PlayniteApi.Database.GetFilteredGames($settings)
-                if ($null -ne $matched) {
-                    foreach ($g in $matched) { $gameIds += $g.Id.ToString() }
-                    $resolved = $true
-                }
-            } catch { }
-
-            # Fallback: evaluate the common filter fields ourselves.
-            if (-not $resolved -and $null -ne $settings) {
-                foreach ($g in $allGames) {
-                    if (Test-MeridianGameMatchesPreset $g $settings) {
-                        $gameIds += $g.Id.ToString()
-                    }
-                }
-            }
-
-            $presetsOut += [PSCustomObject]@{
-                Id      = $preset.Id.ToString()
-                Name    = $preset.Name
-                GameIds = $gameIds
-            }
-        }
-    } catch {
-        $PlayniteApi.Dialogs.ShowErrorMessage("Meridian: filter preset export failed: $($_.Exception.Message)", "Meridian Exporter")
-    }
-
-    # ConvertTo-Json turns a single-element array into a bare object;
-    # Meridian's reader handles both shapes, so no wrapping gymnastics here.
-    # Force an array wrapper so an empty result still writes "[]".
-    ,$presetsOut | ConvertTo-Json -Depth 4 | Out-File -LiteralPath $presetPath -Encoding utf8
-}
-
-# Best-effort local evaluation of a FilterPresetSettings against one game,
-# covering the fields people most commonly build presets from. Anything not
-# handled here is simply ignored (treated as "no constraint").
-function Test-MeridianGameMatchesPreset {
-    param($game, $settings)
-
-    try {
-        # free-text name search
-        if ($settings.Name -and $settings.Name.Trim().Length -gt 0) {
-            if (-not $game.Name -or ($game.Name.ToLower().IndexOf($settings.Name.ToLower()) -lt 0)) {
-                return $false
-            }
-        }
-        # installed / uninstalled toggles
-        if ($settings.IsInstalled -eq $true -and -not $game.IsInstalled) { return $false }
-        if ($settings.IsUnInstalled -eq $true -and $game.IsInstalled) { return $false }
-        if ($settings.Hidden -ne $true -and $game.Hidden) { return $false }
-        if ($settings.Favorite -eq $true -and -not $game.Favorite) { return $false }
-
-        # id-list filters: Source / Genre / Platform / Category. Each
-        # FilterItemProperties exposes .Ids; a game matches if it carries at
-        # least one of the requested ids.
-        if (-not (Test-MeridianIdFilter $settings.Source  $game.SourceId))       { return $false }
-        if (-not (Test-MeridianIdFilter $settings.Genre   $game.GenreIds))       { return $false }
-        if (-not (Test-MeridianIdFilter $settings.Platform $game.PlatformIds))   { return $false }
-        if (-not (Test-MeridianIdFilter $settings.Category $game.CategoryIds))   { return $false }
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-function Test-MeridianIdFilter {
-    param($filterItem, $gameIds)
-    # No constraint set -> always passes.
-    if ($null -eq $filterItem -or $null -eq $filterItem.Ids -or $filterItem.Ids.Count -eq 0) {
-        return $true
-    }
-    if ($null -eq $gameIds) { return $false }
-    # normalize a single-id (Guid) to a list
-    $ids = @()
-    if ($gameIds -is [System.Collections.IEnumerable] -and -not ($gameIds -is [string])) {
-        $ids = @($gameIds)
-    } else {
-        $ids = @($gameIds)
-    }
-    foreach ($want in $filterItem.Ids) {
-        foreach ($have in $ids) {
-            if ($have -and $want -and ($have.ToString() -eq $want.ToString())) { return $true }
-        }
-    }
-    return $false
-}
-
 # Runs automatically on every Playnite startup and after every library sync
 # (manual or automatic), so Meridian's data stays reasonably fresh without
 # you doing anything. Install-state changes specifically may lag until the

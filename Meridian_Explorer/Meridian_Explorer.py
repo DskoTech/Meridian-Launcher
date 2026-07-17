@@ -1,5 +1,9 @@
 import os
 import sys
+
+from crash_logger import install_crash_logging
+install_crash_logging("Meridian Explorer")
+
 try:
     from meridian_editors import run_text_editor, run_hex_editor
 except Exception:  # editors are optional; the browser must still run
@@ -22,20 +26,21 @@ def _app_base_dir():
 
 
 def launch_onscreenmenu():
-    """Start the onscreenmenu controller overlay if it's present next to us.
-    Used when a native Windows dialog (e.g. the 'Open with' picker) is about
-    to appear, so it can be driven with a controller. Best-effort: silently
-    does nothing if onscreenmenu isn't found."""
+    """Start the onscreenmenu controller overlay via osm.bat (not
+    onscreenmenu.exe directly) if it's present next to us. Used when a
+    native Windows dialog (e.g. the 'Open with' picker) is about to
+    appear, so it can be driven with a controller. Best-effort: silently
+    does nothing if osm.bat isn't found."""
     base = _app_base_dir()
-    for cand in ("onscreenmenu.exe", os.path.join("onscreenmenu", "onscreenmenu.exe")):
-        exe = os.path.join(base, cand)
-        if os.path.isfile(exe):
-            try:
-                subprocess.Popen([exe], cwd=base)
-            except Exception:
-                pass
+    bat = os.path.join(base, "osm.bat")
+    if os.path.isfile(bat):
+        try:
+            subprocess.Popen(["cmd.exe", "/c", bat], cwd=base)
             return True
-    # source fallback: run the .py if present
+        except Exception:
+            pass
+    # source fallback: run onscreenmenu's .py directly if present (osm.bat
+    # itself is missing, e.g. running from source rather than an install)
     py = os.path.join(base, "onscreenmenu", "onscreenmenu.py")
     if os.path.isfile(py):
         try:
@@ -72,6 +77,16 @@ def _is_image_file(name):
 # another external app). Without this, the window drops to the background
 # and stops receiving controller/keyboard input until manually restored.
 os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
+# Keep SDL/pygame explicitly DPI-unaware. Meridian Launcher computes the
+# --box=X,Y,W,H geometry for boxed mode from its own (Chromium/WebView2)
+# logical/CSS pixel space — a DPI-AWARE pygame window would instead size
+# and position itself in physical pixels, which disagree by exactly the
+# Windows scaling factor (e.g. 2x at 200% on a 4K display) and would
+# confine/misplace the window the same way an earlier bug confined
+# CyberDeckBrowser's virtual cursor to a quarter of the screen. Explicit
+# rather than relying on whatever a given PyInstaller build happens to
+# default to.
+os.environ.setdefault("SDL_WINDOWS_DPI_AWARENESS", "unaware")
 import pygame
 # GameInput backend (fixes Windows 11 Xbox fullscreen experience, where
 # SDL/pygame joysticks can receive no input at all). SDLJoystickShim exposes
@@ -361,6 +376,7 @@ class Pane:
                 subprocess.Popen(["open", full_path])
             else:
                 subprocess.Popen(["xdg-open", full_path])
+            launch_onscreenmenu()
         except Exception:
             pass
     # ---- multi-select helpers --------------------------------------- #
@@ -478,23 +494,25 @@ class MeridianExplorer:
         self.flash_until = 0
         self._last_click_time = 0
         self._last_click_pos = None
-        # Controller: prefer the Windows GameInput API (required for input
-        # inside the Xbox fullscreen experience; also survives hot-plugging),
-        # fall back to classic pygame/SDL joysticks, then legacy XInput.
+        # Controller: gameinput_api.open_gamepad() already tries XInput
+        # (the default - plain, stable, fully-public API, correctly
+        # reports every button/trigger/stick) then GameInput, DirectInput,
+        # and SDL3 in one unified call with proper plausibility checks -
+        # no need to hand-roll a separate fallback chain here (this used
+        # to prefer GameInput first, which had known reliability issues
+        # with sticks/triggers on real hardware).
         self.joysticks = []
         if open_gamepad is not None:
-            pad = open_gamepad(prefer=("gameinput",))
+            pad = open_gamepad()
             if pad is not None:
                 self.joysticks = [SDLJoystickShim(pad)]
         if not self.joysticks:
+            # Last resort: raw pygame/SDL2 joystick, if gameinput_api
+            # itself couldn't find anything usable.
             pygame.joystick.init()
             self.joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
             for j in self.joysticks:
                 j.init()
-        if not self.joysticks and open_gamepad is not None:
-            pad = open_gamepad(prefer=("xinput",))
-            if pad is not None:
-                self.joysticks = [SDLJoystickShim(pad)]
         self.running = True
         # Apply the saved sort to the initial pane listings.
         self.sync_sort()
@@ -850,8 +868,15 @@ class MeridianExplorer:
         user added can be removed; the built-in entries (This PC, the user
         folders, drives) can't."""
         items = self.quick_access_items()
-        if not (0 <= self.quick_selected < len(items)):
+        if not items:
             return
+        # Clamp rather than bail out: an out-of-range quick_selected (e.g.
+        # after the rail's contents changed) previously meant this whole
+        # function returned without ever setting self.state = "menu" - so
+        # Start looked like it did nothing and the selector stayed stuck
+        # on the file pane instead of moving into the popup.
+        if not (0 <= self.quick_selected < len(items)):
+            self.quick_selected = max(0, min(self.quick_selected, len(items) - 1))
         label, path = items[self.quick_selected]
         self.menu_options = ["Open", "Copy", "Cut", "Paste"]
         # only user-added shortcuts are removable
@@ -885,7 +910,7 @@ class MeridianExplorer:
                     self.menu_options.append("Undo Move")
                 if self.redo_stack:
                     self.menu_options.append("Redo Move")
-                self.menu_options += ["Switch Pane Modes", "Cancel"]
+                self.menu_options += ["Switch Pane Modes", "Exit Program", "Cancel"]
                 self.menu_is_multi = False
                 self.menu_selected = 0
                 self.menu_pane_index = self.active_pane
@@ -915,7 +940,7 @@ class MeridianExplorer:
                 self.menu_options.append("Undo Move")
             if self.redo_stack:
                 self.menu_options.append("Redo Move")
-            self.menu_options += ["Switch Pane Modes", "Cancel"]
+            self.menu_options += ["Switch Pane Modes", "Exit Program", "Cancel"]
             self.menu_is_multi = False
         self.menu_selected = 0
         self.menu_pane_index = self.active_pane
@@ -958,6 +983,13 @@ class MeridianExplorer:
         )
         if choice == "Cancel":
             self.close_menu()
+            return
+        if choice == "Exit Program":
+            # Meridian Launcher's watcher thread notices this process end
+            # and moves the section selector back to the Sections bar,
+            # restoring its own controls (see the Start-button comment
+            # near handle_controller for the fuller explanation).
+            self.running = False
             return
         if choice == "Switch Pane Modes":
             # Cycle: dual -> single -> quick access (rail + wide pane) -> dual
@@ -1384,6 +1416,7 @@ class MeridianExplorer:
                 if (pressed(0) or pressed(1)) and self.cooldown.ready("c_a", 0.5):
                     self.state = "browse"
                 continue
+            if self.state == "menu":
                 if j.get_numhats() > 0:
                     _, hat_y = j.get_hat(0)
                     if hat_y == 1 and self.cooldown.ready("c_menu_up"):
@@ -1487,7 +1520,11 @@ class MeridianExplorer:
             if pressed(9) and self.cooldown.ready("btn_r3") and self.state == "browse":
                 self.state = "confirm_selectall"
             if pressed(7) and self.cooldown.ready("btn_start"):
-                self.running = False
+                # Start now moves the selector into the same options popup
+                # Y opens, rather than quitting immediately - "Exit Program"
+                # lives inside that popup as a selectable item instead.
+                self.open_options_menu()
+                continue
     # ------------------------------------------------------------------ #
     # DRAWING
     # ------------------------------------------------------------------ #
@@ -1508,7 +1545,7 @@ class MeridianExplorer:
         if self.multi_active:
             hints = "A: Toggle Select Y: Options B: Cancel Multi-Select"
         else:
-            hints = "A: Confirm B: Back Y: Options LB/RB: Switch Pane L-Stick R/RT: Fast Scroll Hold Select: Multi R3: Select All Start: Quit"
+            hints = "A: Confirm B: Back Y/Start: Options LB/RB: Switch Pane L-Stick R/RT: Fast Scroll Hold Select: Multi R3: Select All"
         text = self.font_footer.render(hints, True, COL_DIM_TEXT)
         self.screen.blit(text, (30, y + (FOOTER_HEIGHT - text.get_height()) // 2))
     def quick_access_items(self):
