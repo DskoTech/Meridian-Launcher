@@ -273,6 +273,25 @@ html, body {
   padding: 18px;
 }
 
+/* ---------------- embedded plugin sections (Explorer/Browser/webapp
+   plugins) ----------------
+   While one of these is loaded, the taskbar fades out and stops taking
+   input (it's blocked at the JS level too — see isEmbeddedPluginSectionActive
+   in app.js), and the options/item box is free to reach the actual bottom
+   edge of the screen instead of stopping short to leave room for it.
+   !important because each theme sets its own bottom-offset math for
+   #item-panel (Factory Central, CyberRadial, etc all differ) - this needs
+   to win over all of them uniformly rather than needing a matching
+   override written into every theme file individually. */
+.embedded-plugin-active #task-bar {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms ease;
+}
+.embedded-plugin-active #item-panel {
+  bottom: 0 !important;
+}
+
 /* ---------------- subfolder nav ---------------- */
 /* same row as the options bar, sitting between it and the thumbnail */
 
@@ -581,6 +600,48 @@ body[data-radial-focus]:not([data-radial-focus="options"]) .item-row.selected {
 #confirm-actions button { padding: 8px 18px; border: 1px solid var(--line); background: transparent; color: var(--text-hi); cursor: pointer; font-size: 13px; font-weight: 600; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
 #confirm-yes { border-color: var(--active-accent); color: var(--active-accent); }
 #confirm-no.settings-focus, #confirm-yes.settings-focus { outline: 2px solid var(--active-accent); outline-offset: 2px; }
+
+#photo-menu-overlay { z-index: 62; background: rgba(2,10,5,0.85); }
+#photo-menu-box {
+  background: linear-gradient(160deg, rgba(14,42,22,0.92), rgba(4,14,8,0.94));
+  border: 1px solid var(--line); padding: 26px; width: 320px;
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+  box-shadow: 0 30px 60px -20px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+#photo-menu-box h3 { margin: 0 0 14px; font-family: var(--font-display); font-weight: 700; font-size: 15px; letter-spacing: 0.05em; }
+#photo-menu-actions { display: flex; flex-direction: column; gap: 10px; }
+#photo-menu-actions button { padding: 10px 18px; border: 1px solid var(--line); background: transparent; color: var(--text-hi); cursor: pointer; font-size: 13px; font-weight: 600; text-align: left; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
+#photo-menu-actions button.settings-focus { outline: 2px solid var(--active-accent); outline-offset: 2px; border-color: var(--active-accent); color: var(--active-accent); }
+
+#start-menu-overlay { z-index: 62; background: rgba(2,10,5,0.85); }
+#start-menu-box {
+  background: linear-gradient(160deg, rgba(14,42,22,0.92), rgba(4,14,8,0.94));
+  border: 1px solid var(--line); padding: 26px; width: 340px;
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+  box-shadow: 0 30px 60px -20px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+#start-menu-box h3 { margin: 0 0 14px; font-family: var(--font-display); font-weight: 700; font-size: 15px; letter-spacing: 0.05em; }
+#start-menu-actions { display: flex; flex-direction: column; gap: 10px; }
+#start-menu-actions button { padding: 10px 18px; border: 1px solid var(--line); background: transparent; color: var(--text-hi); cursor: pointer; font-size: 13px; font-weight: 600; text-align: left; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
+#start-menu-actions button.settings-focus { outline: 2px solid var(--active-accent); outline-offset: 2px; border-color: var(--active-accent); color: var(--active-accent); }
+
+#tutorial-overlay { z-index: 63; background: rgba(2,10,5,0.9); }
+#tutorial-box {
+  background: linear-gradient(160deg, rgba(14,42,22,0.94), rgba(4,14,8,0.96));
+  border: 1px solid var(--line); padding: 28px; width: 640px; max-height: 80vh; overflow-y: auto;
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+  box-shadow: 0 30px 60px -20px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+#tutorial-box h3 { margin: 0 0 14px; font-family: var(--font-display); font-weight: 700; font-size: 16px; letter-spacing: 0.05em; color: var(--active-accent); }
+#tutorial-body { white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: 12.5px; line-height: 1.6; color: var(--text-hi); }
+#tutorial-box .settings-note { margin-top: 16px; opacity: 0.7; }
+
+/* "Close Section" (Start menu): item-panel is normally shown/hidden via
+   the data-radial-focus-driven transform/opacity states, not a plain
+   class - !important here so this wins over that regardless of which
+   state is currently active, restored the next time any section opens
+   (refreshItemPanel/selectCategory clear this class again). */
+#item-panel.hidden { display: none !important; }
 .btn-danger { border-color: #ff6b5b !important; color: #ff6b5b !important; }
 .btn-danger:hover { border-color: #ff4433 !important; color: #ff4433 !important; }
 
@@ -747,33 +808,50 @@ body.layout-cyberradial .category.active .label::after {
   pointer-events: none;
 }
 
-/* Content row: options bar (widest, left) | subfolder bar | large
-   thumbnail (right), all three side by side in the same row. Bottom of
-   the content area stops short of the reserved control-bar strip. */
+/* Content row: subfolder bar (left, next to the section hub) | options
+   bar (widest) | large thumbnail (right). Bottom of the content area
+   stops short of the reserved control-bar strip. */
 body.layout-cyberradial #content-area {
   display: grid;
-  grid-template-columns: 1fr 220px auto;
+  grid-template-columns: 220px 1fr auto;
   grid-template-rows: 1fr;
   column-gap: 20px;
   padding: 24px 60px 106px 320px;
   align-items: start;
 }
 body.layout-cyberradial #item-panel {
-  grid-column: 1; grid-row: 1;
+  grid-column: 2; grid-row: 1;
   max-width: none; width: 100%; margin: 0;
   border-width: 3px;
-  /* stops just above the now-playing bar (62px tall, 24px off the
-     bottom); content scrolls internally past that point rather than
-     pushing the panel — or the page — taller */
-  max-height: calc(100vh - 24px - 62px - 24px - 72px); /* extra 72px clears the open-programs bar */
+  /* now-playing lives top-left in this theme (see #now-playing override
+     below), so the panel only needs to clear the bottom taskbar strip,
+     not a second reservation for now-playing too. */
+  max-height: calc(100vh - 24px - 24px - 72px); /* 72px clears the open-programs bar */
   overflow-y: auto;
 }
+/* The subfolder-nav (220px) and preview-pane (auto) grid columns are
+   defined on #content-area itself, so they reserve their track width
+   even when both children are display:none (an empty/absent grid item
+   doesn't shrink the track it would have occupied - the template is
+   fixed on the container regardless of what's actually placed in it).
+   That left item-panel's "1fr" column needlessly squeezed by ~240px+
+   whenever both siblings are hidden (Explorer/Browser/webapp-plugin
+   sections, which show neither) - most visible as the boxed Meridian
+   FileBrowse/NetBrowse appearing too narrow. Collapse those columns to
+   zero in that case so item-panel's column claims the full width. */
+body.layout-cyberradial #content-area:has(#subfolder-nav.hidden):has(#preview-pane.hidden) {
+  grid-template-columns: 1fr !important;
+}
 
-/* subfolder bar: same row as the options bar, sitting between it and the
-   thumbnail, in both Gallery and List style */
+/* subfolder bar: same row as the options bar, to its LEFT, between the
+   section hub and the options bar, in both Gallery and List style. Its
+   width can be shrunk from JS (syncSubfolderNavWidth in app.js) when the
+   active section's glow would otherwise collide with it — see that
+   function for details; the margin-left/width set there are inline
+   styles that outrank this 100% default. */
 body.layout-cyberradial #subfolder-nav {
   position: static;
-  grid-column: 2; grid-row: 1;
+  grid-column: 1; grid-row: 1;
   width: 100%;
 }
 
@@ -786,6 +864,13 @@ body.layout-cyberradial #preview-pane {
 }
 body.layout-cyberradial #preview-img {
   max-height: calc(50vh - 60px);
+}
+
+/* now-playing / music player: top-left corner in this theme, clear of
+   the section hub (which lives further left, inside the 320px content
+   inset) and clear of the options/subfolder columns below it. */
+body.layout-cyberradial #now-playing {
+  left: 24px; right: auto; top: 24px; bottom: auto;
 }
 
 /* Bottom strip: the 5 control bubbles, horizontal, scaled to the music
@@ -962,7 +1047,14 @@ body.layout-dawninghorizon #content-area {
   padding: 8px 40px 40px;
 }
 body.layout-dawninghorizon #item-panel {
-  margin-left: 25vw; max-width: 920px; width: auto;
+  margin-left: 25vw;
+  /* Stops before the taskbar's reserved zone (right:40px + width:100px =
+     140px from the edge) plus a 24px gap, whenever that's more
+     restrictive than the normal 920px cap — auto-adjusts with the
+     viewport instead of a flat max-width that could run into the
+     taskbar on some window sizes. */
+  max-width: min(920px, calc(100vw - 25vw - 164px));
+  width: auto;
   background: none; border: none; clip-path: none; padding: 0;
 }
 body.layout-dawninghorizon #subfolder-nav {
@@ -1094,9 +1186,11 @@ body.layout-nighthorizon #clock-wrap {
   align-items: center;
 }
 
-/* now-playing: touching the right edge of the screen */
+/* now-playing: touching the right edge of the screen, and lifted to end
+   just above the open-programs bar (72px tall, flush with the bottom
+   edge — see #task-bar.taskbar-pos-night) instead of overlapping it. */
 body.layout-nighthorizon #now-playing {
-  left: auto; right: 0; bottom: 24px;
+  left: auto; right: 0; bottom: 96px;
 }
 
 /* flip the pill from [> to <] — same treatment CyberRadial already got */

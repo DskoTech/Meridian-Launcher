@@ -70,7 +70,7 @@ class LoadingScreen(QWidget):
 
 
         title = QLabel(
-            "CYBERDECKBROWSER OS"
+            "NOW LOADING..."
         )
 
         title_font = QFont(

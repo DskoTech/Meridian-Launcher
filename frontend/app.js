@@ -28,6 +28,7 @@ const ICONS = {
   run: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 9l4 3-4 3z" fill="currentColor" stroke="none"/></svg>`,
   desktop: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>`,
   explorer: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 13l2 2 4-4"/></svg>`,
+  browser: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.5 6 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-6-3.5-9s1-6.5 3.5-9z"/></svg>`,
   power: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v8"/><path d="M6.3 6.3a9 9 0 1011.4 0"/></svg>`,
   sleep: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>`,
   hibernate: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v20M2 12h20M5 5l14 14M19 5L5 19"/></svg>`,
@@ -117,6 +118,9 @@ const CAROUSEL_ANCHOR = 3;
 const state = {
   categories: [],
   catIndex: 0,
+  chatOptions: [], // [{id, label}] enabled option-type plugins targeting the Chat section
+  chatPluginActive: null, // pluginId currently boxed from within the Chat list, if any
+  sectionManuallyClosed: false, // true after "Close Section" from the Start menu, until any section is re-opened
   items: [],
   selected: 0,
   settings: null,
@@ -170,6 +174,14 @@ setInterval(updateBatteryIndicator, 30000);
 
 // ---------------- category list (fixed + custom + settings + system) ----------------
 
+async function loadChatOptions() {
+  try {
+    state.chatOptions = (await api().list_section_options("chat")) || [];
+  } catch (e) {
+    state.chatOptions = [];
+  }
+}
+
 function buildCategories(settings) {
   const custom = (settings.custom_sections || []).map((cs, i) => ({
     id: cs.id, label: cs.label, kind: "exe_list", color: PALETTE[i % PALETTE.length],
@@ -177,13 +189,27 @@ function buildCategories(settings) {
   // Plugins: auto-discovered Plugins/ folders, appended after the last
   // manually-added custom section. Hidden by default; a plugin only
   // shows up here once enabled from Settings > Plugins.
-  const plugins = Object.entries(settings.plugins || {})
-    .filter(([, p]) => p.visible)
-    .map(([pid, p], i) => ({
-      id: `plugin:${pid}`, pluginId: pid, label: p.label, kind: "plugin_list",
-      color: PALETTE[(custom.length + i) % PALETTE.length],
-    }));
-  const base = [...FIXED_CATEGORIES, ...custom, ...plugins];
+  //
+  // Special case: the "start" plugin (Windows Start Menu list) always
+  // rides right after Desktop instead of here, when Desktop is enabled —
+  // it's pulled out of this generic list and inserted directly into
+  // afterDesktop below. When Desktop is off, "right after Desktop" is
+  // moot, so it stays in its normal spot here instead of vanishing.
+  const pluginToCategory = ([pid, p], i) => ({
+    id: `plugin:${pid}`, pluginId: pid, label: p.label,
+    kind: p.type === "webapp" ? "plugin_webapp" : "plugin_list",
+    color: PALETTE[(custom.length + i) % PALETTE.length],
+  });
+  const visiblePluginEntries = Object.entries(settings.plugins || {})
+    .filter(([, p]) => p.visible && p.type !== "option");
+  const startEntry = visiblePluginEntries.find(([pid]) => pid === "start");
+  const pinStartAfterDesktop = !!(startEntry && settings.desktop_section_enabled);
+  const plugins = visiblePluginEntries
+    .filter(([pid]) => !(pinStartAfterDesktop && pid === "start"))
+    .map(pluginToCategory);
+  const hiddenBuiltins = new Set(settings.hidden_builtin_sections || []);
+  const visibleFixed = FIXED_CATEGORIES.filter((c) => !hiddenBuiltins.has(c.id));
+  const base = [...visibleFixed, ...custom, ...plugins];
   // Kiosk mode hides Settings and System entirely — the only ways back out
   // are the secret code, a 45s Y hold, or hand-editing settings.json.
   const withSystem = settings.window_mode === "kiosk" ? base : [
@@ -196,6 +222,7 @@ function buildCategories(settings) {
   if (!settings.desktop_section_enabled) return withSystem;
   const desktopCat = { id: "desktop", label: "Desktop", kind: "desktop_list", color: "var(--accent-desktop)" };
   const afterDesktop = [];
+  if (pinStartAfterDesktop) afterDesktop.push(pluginToCategory(startEntry, 0));
   if (settings.explorer_section_enabled) {
     afterDesktop.push({ id: "explorer", label: "Explorer", kind: "explorer_section", color: "var(--accent-files)" });
   }
@@ -236,11 +263,24 @@ function ensureCategoryElement(cat) {
     wrap.className = "category";
     wrap.addEventListener("click", () => {
       const idx = state.categories.findIndex((c) => c.id === cat.id);
-      if (idx !== -1) selectCategory(idx);
+      if (idx === -1) return;
+      // A mouse click is a direct commit (unlike keyboard/controller
+      // browsing, where confirm is a separate step) - open straight to
+      // "options" so an embedded plugin measures the panel's final
+      // position, not its still-hidden "sections" position.
+      selectCategory(idx, true);
     });
     categoryElements.set(cat.id, wrap);
   }
   wrap.style.setProperty("--cat-color", cat.color);
+  // Stable logical position (index into state.categories, by id) rather
+  // than DOM position — the category row only mounts a moving window of
+  // elements for the carousel, so nth-of-type-based theme styling (color
+  // cycling per section) drifts/repeats unpredictably as that window
+  // slides. Themes that want a stable per-section value (Factory Central's
+  // icon/label color cycling) can key off this instead.
+  const stableIdx = state.categories.findIndex((c) => c.id === cat.id);
+  wrap.style.setProperty("--cat-idx", String(stableIdx === -1 ? 0 : stableIdx));
   wrap.innerHTML = `<div class="icon-ring">${iconFor(cat.id)}</div><div class="label">${escapeHtml(cat.label)}</div>`;
   return wrap;
 }
@@ -575,6 +615,7 @@ function applyLayoutClass() {
   applyUserThemeClass();
   applyDawningThemeColor(state.settings);
   applyTaskbarPlacement();
+  syncSubfolderNavWidth();
   applyIconSize();
   // theme changed -> its own background & overlay apply
   if (state.settings) { applyBackground(state.settings); applyOverlay(state.settings); }
@@ -591,23 +632,54 @@ function applyIconSize() {
 
 // ---------------- category selection (always live, no separate "enter" step) ----------------
 
-function selectCategory(i) {
+// Shared by every path that can change state.catIndex: makes sure any
+// boxed Meridian FileBrowse/NetBrowse instance (a dedicated Explorer/
+// Browser/webapp section, OR one launched as a Chat-section option) is
+// actually terminated rather than left running invisibly in the
+// background, whenever the destination isn't the category it's tied to.
+// Previously only selectCategory did this — goToSettingsFor,
+// refreshAfterSettingsChange, and refreshCategoriesAndLand could all move
+// catIndex away from an active embedded section without ever unloading it.
+function unloadEmbeddedBoxIfLeaving(newIndex) {
   const prevCat = state.categories[state.catIndex];
-  if (prevCat && prevCat.kind === "explorer_section" && i !== state.catIndex) {
+  if (prevCat && prevCat.kind === "explorer_section" && newIndex !== state.catIndex) {
     api().unload_explorer_box();
   }
-  if (prevCat && prevCat.kind === "browser_section" && i !== state.catIndex) {
+  if (prevCat && prevCat.kind === "browser_section" && newIndex !== state.catIndex) {
     api().unload_browser_box();
   }
+  if (prevCat && prevCat.kind === "plugin_webapp" && newIndex !== state.catIndex) {
+    api().unload_plugin_webapp_box(prevCat.pluginId);
+  }
+  if (state.chatPluginActive && newIndex !== state.catIndex) {
+    api().unload_plugin_webapp_box(state.chatPluginActive);
+    state.chatPluginActive = null;
+  }
+}
+
+function selectCategory(i, openImmediately) {
+  unloadEmbeddedBoxIfLeaving(i);
+  el("item-panel").classList.remove("hidden");
   state.catIndex = i;
   state.selected = 0;
   state.mediaFocus = "list";
-  state.radialFocus = "sections";
+  // A direct commit (mouse click) goes straight to "options" so the
+  // panel is already in its final on-screen position by the time
+  // refreshItemPanel measures it for an embedded plugin - flipping this
+  // AFTER refreshItemPanel (as a separate step) meant Explorer/Browser/
+  // webapp sections measured the panel while it was still in the
+  // "sections" (off-screen/hidden) position, producing a bogus box
+  // geometry that sometimes rendered the boxed app in the wrong place or
+  // made it look like it had opened as a separate external window.
+  state.radialFocus = openImmediately ? "options" : "sections";
   state.sectionsBrowseIndex = i;
-  document.body.dataset.radialFocus = "sections";
+  document.body.dataset.radialFocus = state.radialFocus;
   state.settingsCursor = 0;
   applyAccent();
   renderCategories();
+  const newCat = state.categories[i];
+  const nowEmbedded = !!(newCat && (newCat.kind === "explorer_section" || newCat.kind === "browser_section" || newCat.kind === "plugin_webapp"));
+  document.body.classList.toggle("embedded-plugin-active", nowEmbedded);
   refreshItemPanel();
 }
 
@@ -661,17 +733,31 @@ function setRadialFocusRaw(next) {
 // (they just navigated back into the section that's already showing) skip
 // straight to options without reloading anything.
 function commitBrowsedSection() {
+  el("item-panel").classList.remove("hidden");
   const targetCat = state.categories[state.sectionsBrowseIndex];
   const sameIndexButEmbedded = state.sectionsBrowseIndex === state.catIndex &&
-    targetCat && (targetCat.kind === "explorer_section" || targetCat.kind === "browser_section");
-  if (state.sectionsBrowseIndex !== state.catIndex || sameIndexButEmbedded) {
+    targetCat && (targetCat.kind === "explorer_section" || targetCat.kind === "browser_section" || targetCat.kind === "plugin_webapp");
+  if (state.sectionsBrowseIndex !== state.catIndex || sameIndexButEmbedded || state.sectionManuallyClosed) {
+    state.sectionManuallyClosed = false;
     state.catIndex = state.sectionsBrowseIndex;
     state.selected = 0;
     state.mediaFocus = "list";
     state.settingsCursor = 0;
     applyAccent();
     renderCategories();
+    // radial-focus flips to "options" BEFORE refreshItemPanel (not after):
+    // an embedded plugin (Explorer/Browser/webapp section) measures
+    // #item-panel's on-screen box the instant it loads, and that box is
+    // only in its final position once the "options" slide-in state is
+    // active - measuring while still in the "sections" (off-screen/
+    // hidden) state gave a bogus box position, which is why boxed apps
+    // sometimes rendered in the wrong place or looked like they'd opened
+    // as a separate/external window instead of inside the panel.
+    document.body.dataset.radialFocus = "options";
+    state.radialFocus = "options";
+    state.mediaFocus = targetCat && targetCat.kind === "subfolder" ? "folders" : "list";
     refreshItemPanel();
+    return;
   }
   setRadialFocusRaw("options");
 }
@@ -932,6 +1018,16 @@ async function refreshItemPanel() {
       if (cat.id === "games") {
         const recents = await api().get_recent_games();
         state.items = [GAME_LIBRARY_ITEM, ...recents.map((r) => ({ ...r, __recent: true })), ...items];
+      } else if (cat.id === "chat") {
+        // Discord/Telegram/Messenger/Snapchat/Phone Link etc — enabled
+        // "option"-type plugins targeting this section, alongside
+        // whatever regular launchable items live here too.
+        state.chatOptions = (await api().list_section_options("chat")) || [];
+        const pluginItems = state.chatOptions.map((p) => ({
+          __chatPlugin: true, pluginId: p.id, name: p.label,
+        }));
+        state.items = [...pluginItems, ...items];
+        if (!state.items.length) state.items = [{ __empty: true }];
       } else {
         state.items = items.length ? items : [{ __empty: true }];
       }
@@ -956,6 +1052,11 @@ async function refreshItemPanel() {
       el("preview-pane").classList.add("hidden");
       el("item-panel").innerHTML = `<div class="explorer-box-placeholder empty-msg">Loading Meridian NetBrowse&hellip;</div>`;
       await loadBrowserBox(state.browserPendingUrl || null);
+    } else if (cat.kind === "plugin_webapp") {
+      el("subfolder-nav").classList.add("hidden");
+      el("preview-pane").classList.add("hidden");
+      el("item-panel").innerHTML = `<div class="explorer-box-placeholder empty-msg">Loading ${escapeHtml(cat.label)}&hellip;</div>`;
+      await loadPluginWebappBox(cat.pluginId);
     } else if (cat.kind === "macro_list") {
       el("subfolder-nav").classList.add("hidden");
       el("preview-pane").classList.add("hidden");
@@ -1075,7 +1176,49 @@ function renderSubfolderSidebar(kind) {
     });
     nav.appendChild(row);
   });
+  syncSubfolderNavWidth();
 }
+
+// CyberRadial only: the subfolder bar sits in the column immediately
+// left of the options bar, right next to the section hub. The active
+// section's pill has a glowing ::after extension (210px, see
+// ".category.active .label::after" in style.css) that reaches further
+// right depending on where that section sits on the arc, and can
+// intrude into the subfolder column. Rather than hand-tune a fixed
+// offset for one arc position, this measures the real geometry each
+// time and narrows the bar (shrinking in from its left edge) only when
+// there's an actual overlap, restoring full width otherwise.
+function syncSubfolderNavWidth() {
+  const nav = el("subfolder-nav");
+  if (!nav) return;
+  // Always start clean so we measure the un-shrunk layout first.
+  nav.style.removeProperty("margin-left");
+  nav.style.removeProperty("width");
+  if (!document.body.classList.contains("layout-cyberradial")) return;
+  // Drop-in themes based on cyber_radial (e.g. Factory Central) can fully
+  // reposition #subfolder-nav with their own fixed-position rules; this
+  // collision math is tuned for the base theme's left-arc geometry and
+  // would fight an unrelated layout's inline width instead of helping it.
+  if (document.body.className.indexOf("layout-user-") !== -1) return;
+  if (nav.classList.contains("hidden")) return;
+  const navRect = nav.getBoundingClientRect();
+  if (navRect.width === 0 && navRect.height === 0) return;
+  const activeLabel = document.querySelector(".category.active .label");
+  if (!activeLabel) return;
+  const labelRect = activeLabel.getBoundingClientRect();
+  const GLOW_WIDTH = 210; // matches .category.active .label::after
+  const GAP = 12; // breathing room past the glow's edge
+  const MIN_WIDTH = 60; // never shrink the bar past readability
+  const glowRight = labelRect.right + GLOW_WIDTH;
+  const verticallyOverlaps = labelRect.bottom > navRect.top && labelRect.top < navRect.bottom;
+  if (!verticallyOverlaps || glowRight <= navRect.left) return;
+  const intrude = Math.min(navRect.width - MIN_WIDTH, glowRight - navRect.left + GAP);
+  if (intrude > 0) {
+    nav.style.marginLeft = `${Math.round(intrude)}px`;
+    nav.style.width = `calc(100% - ${Math.round(intrude)}px)`;
+  }
+}
+window.addEventListener("resize", () => syncSubfolderNavWidth());
 
 // ---------------- bigger preview pane (Music/Photos/Videos) ----------------
 
@@ -1116,6 +1259,9 @@ function rowContentFor(cat, item, i) {
     if (item.__gameLibrary) {
       return `<div class="row-visual">${ICONS.games}</div><div class="meta"><div class="title">${escapeHtml(item.name)}</div></div>`;
     }
+    if (item.__chatPlugin) {
+      return `<div class="row-visual">${ICONS.browser || ICONS.generic}</div><div class="meta"><div class="title">${escapeHtml(item.name)}</div></div>`;
+    }
     const iconHtml = item.iconUrl ? `<img src="${item.iconUrl}" alt="">` : (item.is_dir ? ICONS.explorer : iconFor(cat.id));
     const subtitle = item.__recent ? `<div class="subtitle">Recently played</div>` : "";
     return `<div class="row-visual">${iconHtml}</div><div class="meta"><div class="title">${escapeHtml(item.name)}</div>${subtitle}</div>`;
@@ -1153,7 +1299,67 @@ function renderItemList(cat) {
   if (activeEl && typeof activeEl.scrollIntoView === "function") activeEl.scrollIntoView({ block: "nearest" });
   updatePreviewPane();
   alignCategoryRowToList();
+  syncTaskbarSizeToLayout();
+  syncSubfolderNavWidth();
 }
+
+// Dawning Horizon's item-panel grows with its content (normal document
+// flow, no fixed height) while its open-programs bar is a fixed-height
+// column pinned to the top-right - a long list can grow tall enough to
+// visually collide with it. Shrinks the bar's height (from its normal
+// top:24/bottom:64 span) to stop just above wherever the panel's content
+// currently reaches, whenever they'd actually overlap; restores its
+// normal height otherwise. Re-run after any item-list render and on
+// resize, since both the panel's height and the bar's position can change.
+function syncTaskbarSizeToLayout() {
+  const bar = el("task-bar");
+  if (!bar) return;
+  // Always start clean: whichever theme's own logic below applies (if
+  // any) sets exactly what it needs: stale inline styles left over from
+  // a PREVIOUS theme (these are inline, so they'd otherwise outrank that
+  // theme's own CSS rules) is what made the radial taskbar look "too
+  // tall/wide, wrong spot" after having been in Dawning Horizon.
+  bar.style.removeProperty("top");
+  bar.style.removeProperty("bottom");
+  bar.style.removeProperty("height");
+
+  if (document.body.classList.contains("layout-dawninghorizon")) {
+    const panel = el("item-panel");
+    if (!panel || panel.classList.contains("hidden")) return;
+    const panelRect = panel.getBoundingClientRect();
+    if (panelRect.width === 0 && panelRect.height === 0) return;
+    // Always align the bar's top edge with the options list's top edge -
+    // previously this only shrank height on an actual overlap, which
+    // still left it starting noticeably higher/taller than the options
+    // list above the point of collision.
+    const newTop = Math.max(8, Math.round(panelRect.top));
+    bar.style.top = `${newTop}px`;
+    // Bottom edge stays where its CSS normally puts it (64px reserved for
+    // the clock/battery block) - recompute height from the new top so it
+    // still reaches there, rather than leaving a leftover gap.
+    const bottomReserved = 64;
+    const newHeight = Math.max(80, window.innerHeight - newTop - bottomReserved);
+    bar.style.height = `${newHeight}px`;
+    return;
+  }
+
+  // Radial-family themes (CyberRadial, Factory Central, NightHorizon):
+  // the taskbar sits along the bottom and should exactly match the
+  // clock/battery block's real height and bottom offset, so the two read
+  // as one continuous row - measured live (not a hardcoded px height)
+  // so it's correct at any resolution/DPI/zoom instead of just whatever
+  // one reference size it was tuned for.
+  if (bar.classList.contains("taskbar-pos-cyber") || bar.classList.contains("taskbar-pos-night")) {
+    const clock = el("clock-wrap");
+    if (!clock) return;
+    const clockRect = clock.getBoundingClientRect();
+    if (clockRect.height === 0) return;
+    const bottomOffset = Math.max(0, Math.round(window.innerHeight - clockRect.bottom));
+    bar.style.bottom = `${bottomOffset}px`;
+    bar.style.height = `${Math.round(clockRect.height)}px`;
+  }
+}
+window.addEventListener("resize", () => syncTaskbarSizeToLayout());
 
 // ---------------- activating whatever is currently selected ----------------
 
@@ -1192,6 +1398,7 @@ async function activateCurrentSelection() {
   else if (cat.id === "photos") openPhoto(state.selected);
   else if (cat.id === "videos") openVideo(state.selected);
   else if (item.__playnite) launchRecentPlayniteGame(item);
+  else if (cat.kind === "exe_list" && item.__chatPlugin) activateChatPluginItem(item);
   else if (cat.kind === "exe_list") launchAndNotify(item.path, cat.id);
   else if (cat.kind === "desktop_list") {
     if (item.is_dir) activateDesktopEntry(item);
@@ -1215,6 +1422,7 @@ async function activatePluginItem(cat, item) {
 async function goToSettingsFor(cat) {
   const settingsIndex = state.categories.findIndex((c) => c.kind === "settings");
   if (settingsIndex === -1) return;
+  unloadEmbeddedBoxIfLeaving(settingsIndex);
   state.catIndex = settingsIndex;
   state.selected = 0;
   applyAccent();
@@ -1307,18 +1515,32 @@ async function activateFileItem(item) {
   if (res && res.ok === false) showToast(`Couldn't open: ${res.error}`);
 }
 
-async function loadExplorerBox(path) {
+function embeddedBoxGeometry() {
+  // Deliberately NOT just panel.getBoundingClientRect() height: themes
+  // position #item-panel very differently (grid child in the base
+  // layout, position:fixed with its own top/bottom math in Factory
+  // Central, etc), and a plain CSS override meant to make it reach the
+  // bottom doesn't reliably apply across all of them (e.g. "bottom" has
+  // no effect at all on a grid child unless it's also explicitly
+  // positioned). Computing height as "from wherever the panel starts,
+  // straight down to the bottom of the window" sidesteps all of that -
+  // it's correct regardless of which theme/layout scheme is active.
   const panel = el("item-panel");
   const rect = panel.getBoundingClientRect();
+  const x = Math.round(window.screenX + rect.left);
+  const y = Math.round(window.screenY + rect.top);
+  const w = Math.round(rect.width);
+  const h = Math.round(window.innerHeight - rect.top - 4);
+  return { x, y, w, h };
+}
+
+async function loadExplorerBox(path) {
+  const { x, y, w, h } = embeddedBoxGeometry();
   // window.screenX/screenY is the OS position of this window's top-left;
   // adding the panel's in-page rect gives the absolute screen box Meridian
   // Explorer should be sized/positioned into. On HiDPI displays where the
   // OS scale factor isn't 100%, these coordinates may need adjusting for
   // your setup — verify on-device and scale x/y/w/h if it lands offset.
-  const x = Math.round(window.screenX + rect.left);
-  const y = Math.round(window.screenY + rect.top);
-  const w = Math.round(rect.width);
-  const h = Math.round(rect.height);
   state.explorerPendingPath = path;
   const res = await api().load_explorer_box(path || "", x, y, w, h);
   if (res && res.ok === false) {
@@ -1327,16 +1549,30 @@ async function loadExplorerBox(path) {
 }
 
 async function loadBrowserBox(url) {
-  const panel = el("item-panel");
-  const rect = panel.getBoundingClientRect();
-  const x = Math.round(window.screenX + rect.left);
-  const y = Math.round(window.screenY + rect.top);
-  const w = Math.round(rect.width);
-  const h = Math.round(rect.height);
+  const { x, y, w, h } = embeddedBoxGeometry();
   state.browserPendingUrl = url;
   const res = await api().load_browser_box(url || "", x, y, w, h);
   if (res && res.ok === false) {
     el("item-panel").innerHTML = `<div class="empty-msg">${escapeHtml(res.error || "Couldn't load Meridian NetBrowse.")}</div>`;
+  }
+}
+
+async function activateChatPluginItem(item) {
+  // Same boxed-webapp mechanic as a dedicated plugin section (Telegram
+  // etc when it WAS its own section) — just triggered from inside the
+  // Chat list instead of by entering a section. state.chatPluginActive
+  // marks that this came from the list, so onEmbeddedPluginExited returns
+  // to the Chat list on exit instead of the Sections bar.
+  state.chatPluginActive = item.pluginId;
+  document.body.classList.add("embedded-plugin-active");
+  await loadPluginWebappBox(item.pluginId);
+}
+
+async function loadPluginWebappBox(pluginId) {
+  const { x, y, w, h } = embeddedBoxGeometry();
+  const res = await api().load_plugin_webapp_box(pluginId, x, y, w, h);
+  if (res && res.ok === false) {
+    el("item-panel").innerHTML = `<div class="empty-msg">${escapeHtml(res.error || "Couldn't load this app.")}</div>`;
   }
 }
 
@@ -1347,7 +1583,7 @@ async function activateDesktopEntry(item) {
     const idx = state.categories.findIndex((c) => c.kind === "explorer_section");
     if (idx !== -1) {
       state.explorerPendingPath = res.path;
-      selectCategory(idx);
+      selectCategory(idx, true);
     }
   }
 }
@@ -1371,7 +1607,7 @@ async function openInternalUrl(url) {
     const idx = state.categories.findIndex((c) => c.kind === "browser_section");
     if (idx !== -1) {
       state.browserPendingUrl = res.url;
-      selectCategory(idx);
+      selectCategory(idx, true);
     }
   }
 }
@@ -1574,6 +1810,284 @@ function handleConfirmOverlayInput(action) {
 el("confirm-yes").addEventListener("click", () => closeConfirmModal(true));
 el("confirm-no").addEventListener("click", () => closeConfirmModal(false));
 
+// Native, remap-independent fallback: listens on window itself (capture
+// phase, before the app's own custom keyboard-remapping dispatch) for
+// the plain arrow/Enter/Escape keys, guarded by isConfirmOpen() so it
+// only acts while this dialog is actually showing. Deliberately NOT
+// attached to the overlay element itself - keydown only bubbles through
+// actual DOM ancestors of whatever currently has focus, and the overlay
+// isn't necessarily one of those, so a listener on it alone could simply
+// never fire regardless of capture phase.
+window.addEventListener("keydown", (e) => {
+  if (!isConfirmOpen()) return;
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    e.preventDefault();
+    handleConfirmOverlayInput(e.key === "ArrowLeft" ? "left" : "right");
+  } else if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    handleConfirmOverlayInput("confirm");
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    handleConfirmOverlayInput("back");
+  }
+}, true);
+
+// ---------------- photo menu (Start button over a photo) ----------------
+let photoMenuCursor = 0;
+const PHOTO_MENU_ITEMS = ["photo-menu-edit", "photo-menu-background", "photo-menu-cancel"];
+
+function isPhotoMenuOpen() {
+  return !el("photo-menu-overlay").classList.contains("hidden");
+}
+
+function currentPhotoPath() {
+  const cat = state.categories[state.catIndex];
+  if (!cat || cat.id !== "photos") return null;
+  const item = state.items && state.items[state.selected];
+  return item && item.path ? item.path : null;
+}
+
+function handleMenuStart() {
+  if (isPhotoMenuOpen() || isStartMenuOpen() || isTutorialOpen() || isConfirmOpen() || isOverlayOpen() || isOskCapturing()) return;
+  const path = currentPhotoPath();
+  if (path) {
+    photoMenuCursor = 0;
+    el("photo-menu-overlay").classList.remove("hidden");
+    highlightPhotoMenuCursor();
+    return;
+  }
+  openStartMenu();
+}
+
+function closePhotoMenu() {
+  el("photo-menu-overlay").classList.add("hidden");
+}
+
+function highlightPhotoMenuCursor() {
+  PHOTO_MENU_ITEMS.forEach((id, i) => el(id).classList.toggle("settings-focus", i === photoMenuCursor));
+}
+
+async function activatePhotoMenuItem() {
+  const path = currentPhotoPath();
+  const choice = PHOTO_MENU_ITEMS[photoMenuCursor];
+  closePhotoMenu();
+  if (!path) return;
+  if (choice === "photo-menu-edit") {
+    const res = await api().edit_photo(path);
+    if (res && res.ok === false) showToast(`Couldn't open Paint: ${res.error}`);
+  } else if (choice === "photo-menu-background") {
+    const res = await api().set_background_from_path(path);
+    if (res) { state.settings = res; showToast("Background updated"); applyBackground(res); }
+  }
+}
+
+function handlePhotoMenuInput(action) {
+  if (action === "up") { photoMenuCursor = (photoMenuCursor + PHOTO_MENU_ITEMS.length - 1) % PHOTO_MENU_ITEMS.length; highlightPhotoMenuCursor(); }
+  else if (action === "down") { photoMenuCursor = (photoMenuCursor + 1) % PHOTO_MENU_ITEMS.length; highlightPhotoMenuCursor(); }
+  else if (action === "confirm") activatePhotoMenuItem();
+  else if (action === "back") closePhotoMenu();
+}
+
+el("photo-menu-edit").addEventListener("click", (e) => { e.stopPropagation(); photoMenuCursor = 0; activatePhotoMenuItem(); });
+el("photo-menu-background").addEventListener("click", (e) => { e.stopPropagation(); photoMenuCursor = 1; activatePhotoMenuItem(); });
+el("photo-menu-cancel").addEventListener("click", (e) => { e.stopPropagation(); closePhotoMenu(); });
+
+// ---------------- Start menu (Start button, everywhere but photos) ----------------
+let startMenuCursor = 0;
+const START_MENU_ITEMS = [
+  "start-menu-tutorial", "start-menu-close-section", "start-menu-osm",
+  "start-menu-minimize", "start-menu-close-launcher", "start-menu-cancel",
+];
+
+function isStartMenuOpen() {
+  return !el("start-menu-overlay").classList.contains("hidden");
+}
+
+function openStartMenu() {
+  startMenuCursor = 0;
+  el("start-menu-overlay").classList.remove("hidden");
+  highlightStartMenuCursor();
+}
+
+function closeStartMenu() {
+  el("start-menu-overlay").classList.add("hidden");
+}
+
+function highlightStartMenuCursor() {
+  START_MENU_ITEMS.forEach((id, i) => el(id).classList.toggle("settings-focus", i === startMenuCursor));
+}
+
+async function activateStartMenuItem() {
+  const choice = START_MENU_ITEMS[startMenuCursor];
+  if (choice === "start-menu-cancel") { closeStartMenu(); return; }
+  if (choice === "start-menu-tutorial") { closeStartMenu(); openTutorial(); return; }
+  if (choice === "start-menu-close-section") { closeStartMenu(); closeCurrentSection(); return; }
+  if (choice === "start-menu-osm") {
+    closeStartMenu();
+    const res = await api().toggle_onscreenmenu();
+    if (res && res.ok === false) showToast(`Couldn't toggle onscreenmenu: ${res.error}`);
+    return;
+  }
+  if (choice === "start-menu-minimize") { closeStartMenu(); await api().minimize_launcher(); return; }
+  if (choice === "start-menu-close-launcher") { closeStartMenu(); await api().quit_app(); return; }
+}
+
+function handleStartMenuInput(action) {
+  if (action === "up") { startMenuCursor = (startMenuCursor + START_MENU_ITEMS.length - 1) % START_MENU_ITEMS.length; highlightStartMenuCursor(); }
+  else if (action === "down") { startMenuCursor = (startMenuCursor + 1) % START_MENU_ITEMS.length; highlightStartMenuCursor(); }
+  else if (action === "confirm") activateStartMenuItem();
+  else if (action === "back") closeStartMenu();
+}
+
+START_MENU_ITEMS.forEach((id, i) => {
+  el(id).addEventListener("click", (e) => { e.stopPropagation(); startMenuCursor = i; activateStartMenuItem(); });
+});
+
+// "Close Section": hides the options/subfolder/thumbnail panels and moves
+// focus to the Sections bar, without unloading whatever's actually loaded
+// (an embedded Explorer/Browser/webapp plugin keeps running - this is
+// purely a visibility/focus action). They come back automatically the
+// next time any section is opened, since that always re-runs
+// refreshItemPanel/renderItemList, which un-hides whatever that section
+// actually uses.
+function closeCurrentSection() {
+  el("item-panel").classList.add("hidden");
+  el("subfolder-nav").classList.add("hidden");
+  el("preview-pane").classList.add("hidden");
+  state.sectionManuallyClosed = true;
+  state.radialFocus = "sections";
+  document.body.dataset.radialFocus = "sections";
+  renderCategories();
+}
+
+// ---------------- Controls Tutorial (from the Start menu) ----------------
+const TUTORIAL_PAGES = [
+  { title: "Meridian Launcher Controls", key: "launcher" },
+  { title: "Meridian Game Library Controls", key: "gamelibrary" },
+  { title: "Meridian Explorer / FileBrowse Controls", key: "explorer" },
+  { title: "onscreenmenu Controls", key: "osm" },
+  { title: "CyberDeckBrowser / Meridian NetBrowse Controls", key: "cyberdeck" },
+];
+
+const TUTORIAL_TEXT = {
+  launcher:
+`Controller:
+  A - Confirm / select the highlighted item
+  B - Back / close overlays
+  D-pad or Left stick - Navigate lists and sections
+  Y (tap) - Subfolder/filter side panel
+  Start (over a photo) - Edit / Set as Background popup
+  Start (elsewhere) - This menu
+  X (tap) - Jump to/from the open-programs bar
+  X (hold 3s) - Close the highlighted task
+  LB / RB - Previous / next music track
+  LB+RB - Random track
+  Start+Select - Bring Meridian Launcher to the foreground
+  L3+R3 - Quit instantly
+
+Keyboard:
+  Enter - Confirm    Space - Back    Arrow keys - Navigate
+  \\ (backslash) - Subfolder/filter panel
+  ContextMenu key - Same as Start on a controller
+  Shift - Jump to/from the open-programs bar
+  Delete - Close the highlighted task
+
+Mouse/Click: click any section, row, or button directly to activate it.`,
+
+  gamelibrary:
+`Controller:
+  A - Launch/Install the highlighted game
+  B - Back
+  D-pad or Left stick - Navigate
+  Y - Hide/unhide, rename, and other game options
+  Start - Program menu (quick actions, close program)
+  X - Open-programs bar, same as Meridian Launcher
+
+Keyboard:
+  Enter - Confirm    Space/Escape - Back    Arrow keys - Navigate
+
+Mouse/Click: click a game tile to launch/install it; click its corner
+options icon (if shown) for hide/rename/etc.`,
+
+  explorer:
+`Controller:
+  A - Open the highlighted file/folder
+  B - Back / up a folder
+  D-pad or Left stick - Navigate within a pane
+  D-pad Left/Right or Tab - Switch panes
+  Y or Start - Options popup (Open/Copy/Cut/Paste/Rename/Delete/etc,
+    including Exit Program)
+  LB/RB - Switch pane    LT/RT - Fast scroll
+  Hold Select - Multi-select    R3 - Select all
+
+In the built-in text/hex editor:
+  A - Type the highlighted key    B - Backspace/Delete
+  Y - Shift (one-shot)    LB/RB - Move cursor left/right
+  LT/RT - Move cursor up/down    Start - Save
+
+Keyboard: works directly - arrows move, Enter opens, Ctrl+S saves in the
+editor, Esc backs out/exits.
+
+Mouse/Click: click any file/folder/button directly.`,
+
+  osm:
+`onscreenmenu is a transparent controller overlay used to navigate native
+Windows dialogs (like "Open With" pickers) that would otherwise need a
+mouse or keyboard.
+
+Controller:
+  Left stick - Move the on-screen cursor
+  A - Left click    B - Right click
+  Y - Shortcuts menu    X - Key-combo menu
+  Start+Select - Hibernate    L3+R3 - Quit
+
+Keyboard/Mouse: the real keyboard and mouse still work normally alongside
+onscreenmenu at any time.`,
+
+  cyberdeck:
+`Controller:
+  Left stick - Move the virtual mouse cursor (triggers boost its speed)
+  A - Left click    B - Right click
+  Y - Browser menu (History/Downloads/Bookmarks/Translate/Settings/Find)
+  X - Tools menu (Refresh/Enter URL/Previous/Next/New Tab/Close Tab/
+    Close Browser or Exit Program)
+  On-screen keyboard appears automatically in text fields.
+
+Keyboard/Mouse: the real keyboard and mouse work normally too - typing
+into a focused text field, or clicking directly, both work as expected.`,
+};
+
+let tutorialIndex = 0;
+
+function isTutorialOpen() {
+  return !el("tutorial-overlay").classList.contains("hidden");
+}
+
+function openTutorial() {
+  tutorialIndex = 0;
+  renderTutorialPage();
+  el("tutorial-overlay").classList.remove("hidden");
+}
+
+function renderTutorialPage() {
+  const page = TUTORIAL_PAGES[tutorialIndex];
+  el("tutorial-title").textContent = page.title;
+  el("tutorial-body").textContent = TUTORIAL_TEXT[page.key];
+}
+
+function handleTutorialInput(action) {
+  if (action === "left") {
+    tutorialIndex = (tutorialIndex + TUTORIAL_PAGES.length - 1) % TUTORIAL_PAGES.length;
+    renderTutorialPage();
+  } else if (action === "right") {
+    tutorialIndex = (tutorialIndex + 1) % TUTORIAL_PAGES.length;
+    renderTutorialPage();
+  } else if (action === "back") {
+    el("tutorial-overlay").classList.add("hidden");
+    openStartMenu();
+  }
+}
+
 // ---------------- settings ----------------
 
 async function buildPluginsSettingsBlock() {
@@ -1586,8 +2100,8 @@ async function buildPluginsSettingsBlock() {
   rescanBtn.className = "btn-outline";
   rescanBtn.textContent = "Rescan Plugins folder";
   rescanBtn.addEventListener("click", async () => {
-    state.settings = await api().rescan_plugins();
-    renderSettings();
+    await api().rescan_plugins();
+    await refreshAfterSettingsChange();
   });
   wrap.appendChild(rescanBtn);
 
@@ -1609,8 +2123,8 @@ async function buildPluginsSettingsBlock() {
     toggle.className = "toggle-switch" + (p.visible ? " on" : "");
     toggle.innerHTML = `<div class="knob"></div>`;
     toggle.addEventListener("click", async () => {
-      state.settings = await api().set_plugin_visible(p.id, !p.visible);
-      renderSettings();
+      await api().set_plugin_visible(p.id, !p.visible);
+      await refreshAfterSettingsChange();
     });
     row.appendChild(toggle);
     row.appendChild(document.createTextNode(`${p.label} — ${p.visible ? "Shown" : "Hidden"}`));
@@ -1710,18 +2224,34 @@ async function renderSettings(group) {
   c.appendChild(controlsBlock);
   setTimeout(updateControllerStatusLine, 0);
 
-  // Prefer XInput: force the proven backend when GameInput misbehaves.
-  c.appendChild(buildToggleBlock(
-    "Prefer XInput",
-    !!settings.prefer_xinput,
-    async () => {
-      state.settings = await api().set_prefer_xinput(!settings.prefer_xinput);
-      renderSettings();
-    },
-    settings.prefer_xinput
-      ? "Using XInput. Proven and reliable; the Xbox/Guide button isn't reported on this path."
-      : "Using GameInput when available (falls back to XInput). GameInput reports the Xbox/Guide button.",
-  ));
+  // Input backend: cycles xinput (default) -> gameinput -> directinput ->
+  // sdl3 -> auto -> xinput... XInput is the default because it's the
+  // plain, stable, fully-public API and correctly reports every button/
+  // trigger/stick; GameInput's vtable-slot probing has only ever reliably
+  // decoded buttons, not sticks/triggers, on real hardware.
+  const INPUT_BACKEND_ORDER = ["xinput", "gameinput", "directinput", "sdl3", "auto"];
+  const INPUT_BACKEND_LABEL = {
+    xinput: "XInput (default — plain, stable, all buttons/triggers/sticks work)",
+    gameinput: "GameInput (adds Guide-button reporting; sticks/triggers unreliable on some hardware)",
+    directinput: "DirectInput (for older/exotic controllers XInput doesn't recognize)",
+    sdl3: "SDL3 (needs SDL3.dll present next to the exe or on PATH)",
+    auto: "Auto (tries XInput, then GameInput, then DirectInput, then SDL3)",
+  };
+  const currentBackend = settings.input_backend || "xinput";
+  const ibBlock = document.createElement("div");
+  ibBlock.className = "settings-block";
+  ibBlock.innerHTML = `<h3>Controller input backend</h3>
+    <p class="settings-note">${escapeHtml(INPUT_BACKEND_LABEL[currentBackend] || currentBackend)}</p>`;
+  const ibBtn = document.createElement("button");
+  ibBtn.className = "btn-outline";
+  ibBtn.textContent = `Switch backend (currently: ${currentBackend})`;
+  ibBtn.addEventListener("click", async () => {
+    const next = INPUT_BACKEND_ORDER[(INPUT_BACKEND_ORDER.indexOf(currentBackend) + 1) % INPUT_BACKEND_ORDER.length];
+    state.settings = await api().set_input_backend(next);
+    renderSettings();
+  });
+  ibBlock.appendChild(ibBtn);
+  c.appendChild(ibBlock);
 
   // Controller debugger — live diagnostics, refreshed while it's on screen.
   const dbgBlock = document.createElement("div");
@@ -1793,6 +2323,32 @@ async function renderSettings(group) {
           ? "Enabled — Desktop appears as the first section, showing whatever's on your actual Windows Desktop"
           : "Disabled — hidden from the section list",
       ));
+      // Built-in fixed sections: show/hide each one individually. All on
+      // by default (nothing here changes existing behavior unless you
+      // turn one off).
+      const builtinBlock = document.createElement("div");
+      builtinBlock.className = "settings-block";
+      builtinBlock.innerHTML = `<h3>Built-in Sections</h3>
+        <p class="settings-note">Turn off any of these to remove them from the sections bar entirely.</p>`;
+      const hiddenBuiltins = new Set(settings.hidden_builtin_sections || []);
+      FIXED_CATEGORIES.forEach((cat) => {
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        row.style.marginTop = "8px";
+        const isOn = !hiddenBuiltins.has(cat.id);
+        const toggle = document.createElement("div");
+        toggle.className = "toggle-switch" + (isOn ? " on" : "");
+        toggle.innerHTML = `<div class="knob"></div>`;
+        toggle.addEventListener("click", async () => {
+          await api().set_builtin_section_visible(cat.id, !isOn);
+          await refreshAfterSettingsChange();
+        });
+        row.appendChild(toggle);
+        row.appendChild(document.createTextNode(`${cat.label} — ${isOn ? "Shown" : "Hidden"}`));
+        builtinBlock.appendChild(row);
+      });
+      c.appendChild(builtinBlock);
+
       if (settings.desktop_section_enabled) c.appendChild(buildDisplayTypeBlock("desktop"));
 
       // Explorer section — right after Desktop, off by default, no
@@ -2135,6 +2691,19 @@ async function renderSettings(group) {
     async () => { await api().set_battery_indicator(!settings.battery_indicator); renderSettings(); updateBatteryIndicator(); },
   ));
 
+  // Fullscreen Helper: force whatever window a launched .exe opens into
+  // borderless fullscreen, for apps that ignore the normal "start
+  // maximized" request or only appear maximized with title bar/borders
+  // still showing. Off by default — it's a blunt tool, so it's opt-in.
+  c.appendChild(buildToggleBlock(
+    "Fullscreen Helper",
+    !!settings.fullscreen_helper_enabled,
+    async () => { await api().set_fullscreen_helper_enabled(!settings.fullscreen_helper_enabled); renderSettings(); },
+    settings.fullscreen_helper_enabled
+      ? "Enabled — launched apps have their window chrome stripped and stretched to fill the screen, even if they only appear fullscreen."
+      : "Disabled — apps launch with a normal maximize request only.",
+  ));
+
   // auto shuffle: when a song ends, load a random one instead of the next
   // in list order. Next/previous still just move relative to whatever's
   // currently loaded — including a shuffled pick — so they naturally keep
@@ -2151,6 +2720,9 @@ async function renderSettings(group) {
     "Launch External System features with onscreenmenu?",
     settings.launch_system_with_osm,
     async () => { await api().set_system_osm(!settings.launch_system_with_osm); renderSettings(); },
+    settings.launch_system_with_osm
+      ? "Enabled — opening Task Manager, Control Panel, Recycle Bin, Uninstall Apps, or Bluetooth settings also runs osm.bat, so those native dialogs are controller-navigable."
+      : "Disabled — those System features open on their own, without the on-screen menu overlay.",
   ));
 
   // background image
@@ -2452,10 +3024,12 @@ async function buildMacroSectionBlock() {
 async function refreshAfterSettingsChange() {
   const settings = await api().get_settings();
   state.settings = settings;
+  await loadChatOptions();
   const currentId = state.categories[state.catIndex] && state.categories[state.catIndex].id;
   state.categories = buildCategories(settings);
   let idx = state.categories.findIndex((c) => c.id === currentId);
   if (idx === -1) idx = Math.min(state.catIndex, state.categories.length - 1);
+  unloadEmbeddedBoxIfLeaving(idx);
   state.catIndex = idx;
   renderCategories();
   await renderSettings();
@@ -2895,6 +3469,9 @@ document.addEventListener("keydown", (e) => {
   // bar. Delete closes the highlighted task while the bar has focus (the
   // keyboard stand-in for holding X for 3 seconds).
   if (e.key === "o" || e.key === "O") { if (!e.repeat) toggleOverlayVisibility(); return; }
+  // ContextMenu is the dedicated "Menu" key most keyboards have (next to
+  // Right Ctrl) — keyboard equivalent of pressing Start on a controller.
+  if (e.key === "ContextMenu") { if (!e.repeat) window.handleControllerInput("menu_start"); return; }
   if (e.key === "Shift") {
     if (!e.repeat && !isConfirmOpen()) toggleTaskbarFocus();
     return;
@@ -2933,6 +3510,29 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowRight" || (kc && e.key === kc.right)) { handleConfirmOverlayInput("right"); return; }
     if (kc && e.key === kc.confirm && !e.repeat) { handleConfirmOverlayInput("confirm"); return; }
     if (kc && e.key === kc.back && !e.repeat) { handleConfirmOverlayInput("back"); return; }
+    return;
+  }
+
+  if (isPhotoMenuOpen()) {
+    if (e.key === "ArrowUp" || (kc && e.key === kc.up)) { handlePhotoMenuInput("up"); return; }
+    if (e.key === "ArrowDown" || (kc && e.key === kc.down)) { handlePhotoMenuInput("down"); return; }
+    if ((kc && e.key === kc.confirm && !e.repeat) || (e.key === "Enter" && !e.repeat)) { handlePhotoMenuInput("confirm"); return; }
+    if (kc && e.key === kc.back && !e.repeat) { handlePhotoMenuInput("back"); return; }
+    return;
+  }
+
+  if (isStartMenuOpen()) {
+    if (e.key === "ArrowUp" || (kc && e.key === kc.up)) { handleStartMenuInput("up"); return; }
+    if (e.key === "ArrowDown" || (kc && e.key === kc.down)) { handleStartMenuInput("down"); return; }
+    if ((kc && e.key === kc.confirm && !e.repeat) || (e.key === "Enter" && !e.repeat)) { handleStartMenuInput("confirm"); return; }
+    if (kc && e.key === kc.back && !e.repeat) { handleStartMenuInput("back"); return; }
+    return;
+  }
+
+  if (isTutorialOpen()) {
+    if (e.key === "ArrowLeft" || (kc && e.key === kc.left)) { handleTutorialInput("left"); return; }
+    if (e.key === "ArrowRight" || (kc && e.key === kc.right)) { handleTutorialInput("right"); return; }
+    if (kc && e.key === kc.back && !e.repeat) { handleTutorialInput("back"); return; }
     return;
   }
 
@@ -2976,6 +3576,9 @@ window.handleControllerInput = function (action) {
   if (isOskCapturing()) { handleOskControllerInput(action); return; }
   if (!el("video-overlay").classList.contains("hidden")) { handleVideoControllerInput(action); return; }
   if (isConfirmOpen()) { handleConfirmOverlayInput(action); return; }
+  if (isPhotoMenuOpen()) { handlePhotoMenuInput(action); return; }
+  if (isStartMenuOpen()) { handleStartMenuInput(action); return; }
+  if (isTutorialOpen()) { handleTutorialInput(action); return; }
   if (isOverlayOpen()) {
     if (action === "left" && !el("photo-overlay").classList.contains("hidden")) el("photo-prev").click();
     else if (action === "right" && !el("photo-overlay").classList.contains("hidden")) el("photo-next").click();
@@ -2986,6 +3589,7 @@ window.handleControllerInput = function (action) {
   if (taskbarState.focused) { handleTaskbarInput(action); return; }
   if (action === "x_taskbar_hold") return; // hold-to-close only applies inside the bar
   if (action === "confirm") activateCurrentSelection();
+  else if (action === "menu_start") handleMenuStart();
   else if (action === "back") handleBack();
   else if (action === "y_subfolder") handleJumpToSubfolder();
   else if (action === "prev_track") playPrevTrack();
@@ -3073,6 +3677,7 @@ function _applyTaskbarPlacement() {
   bar.classList.add(placement.orientation === "vertical" ? "taskbar-vertical" : "taskbar-horizontal");
   if (placement.position) bar.classList.add(`taskbar-pos-${placement.position}`);
   bar.classList.remove("hidden");
+  syncTaskbarSizeToLayout();
   refreshTaskbarTasks();
   if (!taskbarState.pollTimer) {
     taskbarState.pollTimer = setInterval(refreshTaskbarTasks, 2500);
@@ -3175,7 +3780,17 @@ function exitTaskbar() {
   renderTaskbar();
 }
 
+function isEmbeddedPluginSectionActive() {
+  const cat = state.categories[state.catIndex];
+  return !!(state.chatPluginActive || (cat && (cat.kind === "explorer_section" || cat.kind === "browser_section" || cat.kind === "plugin_webapp")));
+}
+
 function toggleTaskbarFocus() {
+  // Meridian FileBrowse/NetBrowse/webapp plugins own all input while
+  // loaded — switching to the taskbar mid-section would fight over
+  // controls with whatever's boxed in there, so it's blocked entirely
+  // until that section is exited.
+  if (isEmbeddedPluginSectionActive()) return;
   if (taskbarState.focused) exitTaskbar();
   else enterTaskbar();
 }
@@ -3248,7 +3863,7 @@ async function updateControllerDebug() {
   const diag = d.diag || {};
   const st = diag.last_state;
   const lines = [];
-  lines.push(`backend        : ${d.backend || "none"}${d.prefer_xinput ? "  (Prefer XInput is ON)" : ""}`);
+  lines.push(`backend        : ${d.backend || "none"}  (input_backend setting: ${d.input_backend || "xinput"})`);
   if (d.env_override) lines.push(`env override   : MERIDIAN_INPUT_BACKEND=${d.env_override}`);
   lines.push(`controller     : ${d.connected ? "connected" : "NOT connected"}`);
   lines.push(`app focused    : ${d.foreground === null ? "?" : (d.foreground ? "yes" : "no  (input is received but won't navigate)")}`);
@@ -3377,6 +3992,7 @@ async function refreshCategoriesAndLand() {
   state.categories = buildCategories(settings);
   let idx = state.categories.findIndex((c) => c.id === currentId);
   if (idx === -1) idx = 0;
+  unloadEmbeddedBoxIfLeaving(idx);
   state.catIndex = idx;
   state.selected = 0;
   applyAccent();
@@ -3416,7 +4032,7 @@ window.__meridianOpenPathInExplorer = async function (path) {
   const idx = state.categories.findIndex((c) => c.kind === "explorer_section");
   if (idx === -1) return;
   state.explorerPendingPath = path;
-  selectCategory(idx);
+  selectCategory(idx, true);
 };
 
 // Called (via evaluate_js) by main.py's /internal/open-browser endpoint —
@@ -3430,12 +4046,22 @@ window.__meridianOpenUrlInBrowser = async function (url) {
   const idx = state.categories.findIndex((c) => c.kind === "browser_section");
   if (idx === -1) return;
   state.browserPendingUrl = url;
-  selectCategory(idx);
+  selectCategory(idx, true);
 };
 
 window.onEmbeddedPluginExited = function (which) {
+  if (state.chatPluginActive && state.chatPluginActive === which) {
+    // Launched from inside the Chat list (Discord/Telegram/etc as an
+    // option, not its own section) — go back to that list, not all the
+    // way out to the Sections bar.
+    state.chatPluginActive = null;
+    document.body.classList.remove("embedded-plugin-active");
+    refreshItemPanel();
+    return;
+  }
   state.radialFocus = "sections";
   document.body.dataset.radialFocus = "sections";
+  document.body.classList.remove("embedded-plugin-active");
   state.explorerPendingPath = null;
   renderCategories();
   // Don't call refreshItemPanel() here — for an explorer_section it would
@@ -3685,10 +4311,18 @@ function initSilkThreads() {
 async function boot() {
   tickClock();
   buildOsk();
+  // Every theme's CSS gates things like the options/item panel behind
+  // [data-radial-focus="..."] attribute selectors, but this was never set
+  // before the first render — meaning on launch it was simply absent
+  // until the first navigation happened to call setRadialFocusRaw(), and
+  // themes whose *default* (unqualified) styling was "visible" showed the
+  // item panel immediately instead of waiting for a section to be picked.
+  document.body.dataset.radialFocus = "sections";
   const [settings, kc] = await Promise.all([api().get_settings(), api().get_keyboard_controls()]);
   state.settings = settings;
   state.keyboardControls = kc;
   await loadUserThemes(); // discover themes/ at startup so drop-ins just appear
+  await loadChatOptions();
   state.categories = buildCategories(settings);
 
   // The controls hint text was removed per design; these spans may be
@@ -3702,6 +4336,14 @@ async function boot() {
   await applyOverlay(settings);
   await updateBatteryIndicator();
   await refreshItemPanel(); // show the first category's content immediately, live
+  // syncTaskbarSizeToLayout (called earlier via applyAccent -> applyLayoutClass)
+  // ran before item-panel/clock-wrap had any real content, so on a cold
+  // load it measured a 0-size or not-yet-laid-out rect and fell back to
+  // the taskbar's plain oversized CSS instead of the synced size — it
+  // only self-corrected the next time something re-rendered the item
+  // list (e.g. picking an option). Re-run it now that there's an actual
+  // layout to measure, after the browser has had a frame to paint it.
+  requestAnimationFrame(() => { syncTaskbarSizeToLayout(); syncSubfolderNavWidth(); });
   initBlobBackground();
   initSilkThreads();
 

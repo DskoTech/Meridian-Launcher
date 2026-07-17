@@ -155,16 +155,24 @@ class ControllerThread(QThread):
     # ------------------------------------------------------------------ #
 
     def initialize_controller(self):
-        # 1) GameInput (fixes Xbox fullscreen experience; covers most pads)
+        # gameinput_api.open_gamepad() already tries XInput (the default -
+        # plain, stable, fully-public API, correctly reports every button/
+        # trigger/stick) then GameInput, DirectInput, and SDL3 in one
+        # unified call with proper plausibility checks - no need to
+        # hand-roll a separate fallback chain here (the old version of
+        # this method tried GameInput first, which had known reliability
+        # issues with sticks/triggers, then a raw pygame.joystick fallback
+        # that predates the DirectInput/SDL3 backends now available).
         if GAMEINPUT_AVAILABLE and self.pad is None:
             try:
-                self.pad = open_gamepad(prefer=("gameinput",))
+                self.pad = open_gamepad()
             except Exception:
                 self.pad = None
         if self.pad is not None:
             return
 
-        # 2) pygame / SDL joystick (previous behavior)
+        # Last resort: raw pygame/SDL2 joystick, if gameinput_api itself
+        # couldn't find anything usable.
         if GAMEPAD_AVAILABLE and self.controller is None:
             try:
                 pygame.init()
@@ -174,15 +182,6 @@ class ControllerThread(QThread):
                     self.controller.init()
             except Exception:
                 self.controller = None
-        if self.controller is not None:
-            return
-
-        # 3) legacy XInput
-        if GAMEINPUT_AVAILABLE:
-            try:
-                self.pad = open_gamepad(prefer=("xinput",))
-            except Exception:
-                self.pad = None
 
     # ------------------------------------------------------------------ #
     # Per-backend sampling -> one normalized dict

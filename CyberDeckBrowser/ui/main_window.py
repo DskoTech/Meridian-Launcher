@@ -84,7 +84,10 @@ class MainWindow(QMainWindow):
     def __init__(
         self,
         config,
-        startup_url=None
+        startup_url=None,
+        box=None,
+        minimal_menu=False,
+        notify_which=None
     ):
 
         super().__init__()
@@ -93,6 +96,20 @@ class MainWindow(QMainWindow):
         self.config = config
 
         self.startup_url = startup_url
+
+        self.box = box
+
+        # An identifier ("explorer"/"browser"/a plugin id) Meridian
+        # Launcher wants echoed back to its /internal/plugin-exited
+        # endpoint the instant this window closes - see closeEvent.
+        self.notify_which = notify_which
+
+        # True for Telegram/Discord/Messenger/Snapchat/etc. webapp plugins
+        # — Meridian Launcher boxes this app pinned to one site for those,
+        # so the Y/X menus are stripped down to just "Exit Program"
+        # instead of the full browser chrome (tabs, bookmarks, history,
+        # etc. don't make sense pinned to one app).
+        self.minimal_menu = minimal_menu
 
         #
         # Window setup
@@ -154,6 +171,13 @@ class MainWindow(QMainWindow):
             startup_url
 
         )
+
+        # The tab bar itself (not just "New Tab" in the menu) is hidden
+        # for a webapp plugin (minimal_menu=True) - meant to stay on the
+        # one site it was loaded for, so a tab strip has nothing useful to
+        # show and just clutters a single-site view.
+        if self.minimal_menu:
+            self.browser.tabBar().hide()
 
         self.browser.close_requested.connect(
             self.close
@@ -328,13 +352,30 @@ class MainWindow(QMainWindow):
         # Menus (Y / X)
         #
 
-        self.browser_menu = BrowserMenu(
-            self.handle_browser_menu_select
-        )
+        if self.minimal_menu:
+            # Stripped down: no tabs/bookmarks/history/etc — the only
+            # thing either menu button offers is exiting back to Meridian
+            # Launcher's Sections bar.
+            self.browser_menu = CyberMenu(
+                "Menu",
+                ["Exit Program"],
+                self.handle_minimal_menu_select
+            )
 
-        self.tools_menu = ToolsMenu(
-            self.handle_tools_menu_select
-        )
+            self.tools_menu = CyberMenu(
+                "Menu",
+                ["Exit Program"],
+                self.handle_minimal_menu_select
+            )
+        else:
+            self.browser_menu = BrowserMenu(
+                self.handle_browser_menu_select
+            )
+
+            self.tools_menu = ToolsMenu(
+                self.handle_tools_menu_select,
+                boxed=bool(self.box)
+            )
 
         self.browser_menu.hide()
 
@@ -456,10 +497,41 @@ class MainWindow(QMainWindow):
         # Borderless fullscreen (a frameless window sized/positioned to
         # exactly cover the primary screen) instead of Qt's showFullScreen()
         # state, which behaves like a real display-mode fullscreen switch
-        # on some platforms.
+        # on some platforms. "box" (Meridian Launcher's Browser section
+        # list-frame rectangle, or a webapp plugin's) always wins over
+        # fullscreen when present — never OS fullscreen when boxed.
         #
 
-        if config.get(
+        box = self.box
+
+        if box:
+
+            x, y, w, h = box
+
+            self.setWindowFlags(
+                self.windowFlags() | Qt.FramelessWindowHint
+            )
+
+            # Show BEFORE resizing: QWebEngineView (the central widget
+            # here) can get stuck rendering at whatever size it was at
+            # when the native window was first created, if move()/
+            # resize() happen first and show() only afterward — the
+            # window itself ends up the right box size/position, but the
+            # browser content inside doesn't repaint to fill it. Showing
+            # first, then moving/resizing, avoids that; the explicit
+            # browser.resize() below is an extra safety net so the
+            # central widget is never left at a stale size even if Qt's
+            # own central-widget layout pass lags a frame behind the
+            # window resize.
+            self.show()
+
+            self.move(x, y)
+
+            self.resize(max(200, w), max(150, h))
+
+            self.browser.resize(self.centralWidget().size())
+
+        elif config.get(
 
             "fullscreen",
 
@@ -784,6 +856,22 @@ class MainWindow(QMainWindow):
     #
     # ---- Tools (X) menu actions ----
     #
+
+    def handle_minimal_menu_select(
+        self,
+        item
+    ):
+        """The only thing either menu (Y/X) offers in minimal-menu mode
+        (see __init__) — closes the window; Meridian Launcher's watcher
+        thread notices and moves the section selector back to the
+        Sections bar, restoring its own controls."""
+
+        self.close_popup()
+
+        if item == "Exit Program":
+
+            self.close()
+
 
     def handle_tools_menu_select(
         self,
@@ -1254,7 +1342,15 @@ class MainWindow(QMainWindow):
     ):
 
         """
-        Shutdown cleanly.
+        Shutdown cleanly. When boxed by Meridian Launcher, explicitly
+        quits the whole QApplication here (not just accepting the event)
+        so this always actually ends the process, whether triggered by
+        the Tools/Browser menu's "Exit Program"/"Close Browser" or the
+        [x] button in the tab bar's corner (both just call self.close(),
+        which arrives here either way). Meridian Launcher's watcher
+        thread is polling for this process to exit, so if anything ever
+        kept the app alive after the window closed, the "Exit Program"
+        signal to Meridian Launcher would silently never fire.
         """
 
         if hasattr(
@@ -1269,3 +1365,28 @@ class MainWindow(QMainWindow):
 
 
         event.accept()
+
+        if self.box:
+            if self.notify_which:
+                self._notify_meridian_launcher_exit()
+            QApplication.instance().quit()
+
+
+    def _notify_meridian_launcher_exit(self):
+        """Best-effort, short-timeout call to Meridian Launcher's local
+        /internal/plugin-exited endpoint - see closeEvent. Failure here
+        just means Meridian Launcher falls back to its slower proc.wait()
+        watcher instead; never blocks shutdown on this."""
+        import os
+        import urllib.request
+
+        local_appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+        port_file = os.path.join(local_appdata, "Meridian Launcher", "internal_port.txt")
+
+        try:
+            with open(port_file, "r", encoding="utf-8") as f:
+                port = int(f.read().strip())
+            url = f"http://127.0.0.1:{port}/internal/plugin-exited?which={self.notify_which}"
+            urllib.request.urlopen(url, timeout=0.75)
+        except Exception:
+            pass
