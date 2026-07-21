@@ -1,6 +1,0 @@
-{
-  "id": "blank_section",
-  "label": "Blank Section",
-  "version": "1.0",
-  "description": "Template/starting point for a new custom section plugin. Copy this whole folder into the Plugins/ directory, rename the folder and this 'id', then fill in list_items()/activate_item() in backend.py."
-}
