@@ -1,8 +1,17 @@
 {
   "id": "facebook_messenger",
   "label": "Messenger",
-  "version": "1.0",
-  "type": "webapp",
+  "version": "2.0",
+  "type": "addon",
+  "section": "chat",
+  "option": "Messenger",
   "url": "https://www.messenger.com/",
-  "description": "Facebook Messenger's web client, boxed into a Meridian NetBrowse instance pinned to this section. Log in same as any browser. Uses Meridian NetBrowse's virtual mouse (A: left click, B: right click), Start: on-screen keyboard, and a stripped-down menu with only Exit Program."
+  "description": "Facebook Messenger's web client, boxed into a Meridian NetBrowse instance and centered over the Chat section's options window. Log in same as any browser. Uses Meridian NetBrowse's virtual mouse (A: left click, B: right click), Start: on-screen keyboard, and a stripped-down menu with only Exit Program.",
+  "window_position": "centered",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": false,
+  "show_battery": true,
+  "show_taskbar": false,
+  "show_music_player": false
 }

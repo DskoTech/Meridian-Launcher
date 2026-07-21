@@ -1,0 +1,15 @@
+{
+  "id": "type_from_phone",
+  "label": "Type from Phone",
+  "type": "addon",
+  "section": "apps",
+  "option": "Type from Phone",
+  "url": "http://127.0.0.1:58734/display",
+  "window_position": "centered",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": true,
+  "show_battery": true,
+  "show_taskbar": true,
+  "show_music_player": false
+}

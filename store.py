@@ -123,7 +123,16 @@ def default_settings():
         # (try all four, XInput first). Settings > Controls cycles this;
         # prefer_xinput above is the older on/off toggle, kept for anyone
         # who already has it set, but input_backend is authoritative now.
-        "input_backend": "xinput",
+        # Default is "auto" rather than a hard "xinput" lock: XInput is
+        # still tried first (so Xbox-compatible pads behave exactly as
+        # before), but a PlayStation controller — which never speaks
+        # XInput at all — now falls through to DirectInput/SDL3
+        # automatically instead of silently looking like "no controller"
+        # until someone finds this setting and changes it by hand. Every
+        # other app in the suite already called open_gamepad() with no
+        # forced backend (equivalent to "auto"); this just brings the
+        # Launcher's default in line with them.
+        "input_backend": "auto",
         # Open folder paths in Meridian Explorer instead of Windows
         # Explorer (suite-internal routing; system-wide handling is the
         # separate MeridianExplorerShellIntegration.bat)
@@ -144,7 +153,23 @@ def default_settings():
         # request or only appear maximized with chrome still showing. See
         # fullscreen_helper.py.
         "fullscreen_helper_enabled": False,
-        "auto_shuffle_songs": True,  # when a song ends, load a random one instead of the next in list order
+        # when a song ends, load a random one instead of the next in list order
+        "auto_shuffle_songs": True,
+        "music_sort_mode": "title_asc",  # title_asc/title_desc/artist_asc/artist_desc/date_desc/random
+        "play_random_song_on_startup": False,
+        # CyberRadial theme: shown in the subfolder bar for sections that
+        # don't have real subfolder content of their own (see
+        # setSubfolderNavHidden() in app.js). None = the bundled default
+        # (frontend/assets/subfolder_filler.gif).
+        "subfolder_filler_gif": None,
+        # Generic scannable settings for plugins/plug-ons/drop-in themes -
+        # see addon_settings.py. {"<folder-name>": {"<key>": <value>}}
+        "addon_settings": {},
+        # Controller Bridge (see xinput_to_keyboard.py): per-item, keyed
+        # by exe path - never a global toggle, see
+        # _start_controller_bridge_for_path's docstring in main.py for why.
+        "controller_bridge_items": [],
+        "controller_bridge_mapping_path": None,
         # Global toggle: also run osm.bat when System section items that
         # shell out to Windows (Task Manager, Control Panel, Recycle Bin,
         # Uninstall Apps, "open Windows Bluetooth settings") are used.
@@ -218,9 +243,17 @@ def load_controller_controls():
         data = json.loads(CONTROLLER_CONTROLS_FILE.read_text(encoding="utf-8"))
         merged = dict(DEFAULT_CONTROLS)
         merged.update(data)
-        return merged
     except Exception:
-        return dict(DEFAULT_CONTROLS)
+        merged = dict(DEFAULT_CONTROLS)
+    # quit_combo (L3+R3) is fully removed, not just re-defaulted to empty -
+    # there's no Settings UI to customize it, so anything already on disk
+    # here is leftover factory-default cruft from before removal, never a
+    # deliberate user choice. Forcing it off unconditionally (rather than
+    # relying on the merge above) means it actually goes away for anyone
+    # who already has an old controller_controls.json written to
+    # %LOCALAPPDATA%, not just fresh installs.
+    merged["quit_combo"] = []
+    return merged
 
 
 def display_name(path: str) -> str:

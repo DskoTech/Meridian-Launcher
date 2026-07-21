@@ -1,0 +1,15 @@
+{
+  "id": "roku-channel",
+  "label": "Roku Channel",
+  "type": "addon",
+  "section": "streaming",
+  "option": "Roku Channel",
+  "url": "https://therokuchannel.roku.com/?utm_source=homescreen",
+  "window_position": "default",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": false,
+  "show_battery": false,
+  "show_taskbar": false,
+  "show_music_player": false
+}

@@ -1,0 +1,15 @@
+{
+  "id": "meridian_task_manager",
+  "label": "Task Manager",
+  "type": "addon",
+  "section": "system",
+  "option": "Task Manager",
+  "url": "http://127.0.0.1:58735/",
+  "window_position": "default",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": true,
+  "show_battery": true,
+  "show_taskbar": true,
+  "show_music_player": false
+}

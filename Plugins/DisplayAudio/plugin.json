@@ -1,0 +1,15 @@
+{
+  "id": "display_audio_settings",
+  "label": "Display & Audio",
+  "type": "addon",
+  "section": "system",
+  "option": "Display & Audio",
+  "url": "http://127.0.0.1:58736/",
+  "window_position": "default",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": true,
+  "show_battery": true,
+  "show_taskbar": true,
+  "show_music_player": false
+}

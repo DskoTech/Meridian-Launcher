@@ -14,7 +14,84 @@ See also: **CHANGELOG.md** (dated, itemized history of every revision),
 **CUSTOMIZATION.md** (themes, Plugins, settings, everything you can
 change without touching code).
 
-## Latest revision — Plugins, Explorer/Browser sections, and a batch of
+**`obsolete/`** holds files identified as superseded by later work but
+not deleted — see `obsolete/README.md` for what's there and why, if you
+want to review and decide whether to actually remove them.
+
+## Latest revision — four new controller-first plug-ons, real Bluetooth
+## pairing, streaming/login fixes, and a round of crash fixes
+
+**New plug-ons** (System/Apps/Streaming sections, all off by default —
+enable from Settings > Plugins): **Task Manager** (CPU/RAM per running
+app, controller-navigable Focus/Close grid), **Display & Audio**
+(resolution/refresh rate/HDR toggle/audio output device, one panel),
+**Wi-Fi & Bluetooth** (real scan-and-pair for new Bluetooth devices —
+not just toggling already-known ones — plus an on-screen keyboard for
+Wi-Fi passwords), **Type from Phone** (QR code + a phone's own keyboard,
+for typing long passwords/search terms without clicking them out one
+character at a time on the on-screen keyboard), and **HyperBeam** (a
+Streaming entry for hyperbeam.com's shared-browser watch-together tool).
+Each runs its own tiny local web server and talks to the rest of the
+suite through it — see each `*_server.py`'s module docstring.
+
+**Universal on-screen keyboard auto-invoke** (`onscreenmenu`): the fake
+cursor already worked against any window with no button press needed;
+the keyboard didn't. Now `osk.exe` opens automatically the instant a
+non-Meridian window (a third-party installer, anything Meridian doesn't
+know about) takes focus — no more remembering to press X first. Also
+makes a best effort for UAC/Secure Desktop prompts specifically, though
+that one has a real OS-level ceiling on what's possible from outside a
+signed accessibility app — see `foreign_focus_watcher.py`'s docstring
+for exactly what is and isn't achievable there.
+
+**CyberDeckBrowser**: real persistent logins (was never given a stable
+storage path or cookie policy — sites' own "forget me on close" session
+cookies were winning every time), proprietary-codec/DRM streaming fixes
+(`--ppapi-widevine-path`, `--autoplay-policy`, a real desktop Chrome
+User-Agent, `PluginsEnabled`), and each simultaneously-open boxed window
+(Browser section, each webapp plugin) now gets its own isolated profile
+storage instead of one shared path — sharing one caused a real bug where
+a second simultaneously-open window's Chromium renderer would silently
+fail to come up at all (Qt chrome still rendered fine, browser content
+area stayed blank) due to Chromium's own same-profile-two-processes
+lock. Web section's own "CyberDeckBrowser" entry now always opens the
+program directly instead of occasionally getting routed through the
+URL-opening/Browser-section logic meant for actual links.
+
+**Settings > Backup & Restore**: export/import settings, selected theme,
+activated plugins, and custom sections/plugins as one `.zip`.
+
+**Settings > About**: a full third-party attributions/licenses list —
+every bundled dependency and redistributed Microsoft runtime component,
+with its license type.
+
+**gameinput_native** (the real Microsoft GameInput SDK backend, see
+`gameinput_native/README.md`) got a real diagnosis-and-fix pass:
+`Settings > Controls` now always reports exactly why the native backend
+isn't active when it isn't (not built / built but shadowed / wrong
+Python ABI / runtime DLL missing), a `build_and_deploy.py` script builds
+it and stages it to every app folder in one step, and — the actual root
+cause of it silently never working even when "successfully" built — the
+PyInstaller `.spec` files now exclude the `gameinput_native/` source
+folder from analysis (it was getting baked into frozen builds as a
+hollow placeholder that permanently shadowed the real, externally-placed
+`.pyd`), paired with an explicit `sys.path` fix so the real file can
+actually be found once that hollow placeholder is gone.
+`InstallMeridianSuite_WithGameInputBuild.bat` is a new variant of the
+main installer that also installs the MSVC Build Tools needed to build
+it (real `vswhere`-based detection, skips entirely if already present)
+— kept as a separate file since that's a much bigger download most
+people don't need.
+
+**Crash fixes found via real compiled-build reports**: `audio_devices.py`
+no longer crashes the whole app at startup when `pycaw`/`comtypes`
+aren't bundled (degrades to "unavailable" in the UI instead, the way an
+optional feature should); the `QWebEngineProfile` import in
+CyberDeckBrowser's own persistent-login fix above was pointed at the
+wrong PySide6 module and crashed the browser on every single launch
+until caught against a real crash log.
+
+## Plugins, Explorer/Browser sections, and a batch of
 ## real bugfixes
 
 This pass added a full plugin system and two new embedded-app sections,

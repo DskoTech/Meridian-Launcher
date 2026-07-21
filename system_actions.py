@@ -1,5 +1,6 @@
 """System-level actions. Windows-only by design (this app targets Windows)."""
 
+import ctypes
 import os
 import subprocess
 import webbrowser
@@ -8,6 +9,17 @@ try:
     import psutil
 except ImportError:
     psutil = None
+
+try:
+    import win32gui
+    import win32con
+    import win32api
+    import win32process
+except ImportError:
+    win32gui = None
+    win32con = None
+    win32api = None
+    win32process = None
 
 # Processes that must never be killed by the "close all other programs" macro,
 # regardless of what the user's whitelist contains. Killing these can crash
@@ -166,6 +178,90 @@ def kill_process(exe_name: str):
         return False, str(e)
 
 
+def focus_process_window(exe_name: str) -> bool:
+    """Brings an already-running process's top-level window to the
+    foreground, by executable name (case-insensitive). Used for
+    single-instance enforcement: rather than launching a second copy of
+    something that only ever makes sense as one instance (Meridian
+    Explorer/FileBrowse - see main.py's launch_meridian_explorer /
+    open_desktop_entry / load_explorer_box), find and focus the existing
+    one instead. Returns False if no matching process/window was found,
+    so the caller can fall back to actually launching it.
+
+    Uses the same AttachThreadInput technique as Meridian Launcher's own
+    Start+Select foreground combo (see main.py's _bring_to_foreground):
+    plain SetForegroundWindow can silently no-op when called from a
+    process that doesn't already "own" focus in some way, which is
+    exactly the situation here (an unrelated app's window is likely
+    what's actually focused when this gets called)."""
+    if win32gui is None or win32process is None:
+        return False
+    exe_name = exe_name.lower()
+    target_pids = set()
+    if psutil is not None:
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                if (proc.info.get("name") or "").lower() == exe_name:
+                    target_pids.add(proc.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+                continue
+    if not target_pids:
+        return False
+
+    found = {"hwnd": None}
+
+    def _enum_cb(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        if win32gui.GetParent(hwnd) != 0:
+            return True
+        if not win32gui.GetWindowText(hwnd):
+            return True
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        if pid in target_pids:
+            found["hwnd"] = hwnd
+            return False
+        return True
+
+    try:
+        win32gui.EnumWindows(_enum_cb, None)
+    except Exception:
+        pass
+    hwnd = found["hwnd"]
+    if not hwnd:
+        return False
+
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        cur_thread = win32api.GetCurrentThreadId()
+        fg_hwnd = win32gui.GetForegroundWindow()
+        fg_thread = 0
+        if fg_hwnd:
+            try:
+                fg_thread, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
+            except Exception:
+                fg_thread = 0
+        attached = False
+        if fg_thread and fg_thread != cur_thread:
+            try:
+                attached = bool(ctypes.windll.user32.AttachThreadInput(fg_thread, cur_thread, True))
+            except Exception:
+                attached = False
+        try:
+            win32gui.BringWindowToTop(hwnd)
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                try:
+                    ctypes.windll.user32.AttachThreadInput(fg_thread, cur_thread, False)
+                except Exception:
+                    pass
+        return True
+    except Exception:
+        return False
+
+
 def open_folder(path):
     """Open a folder in Windows Explorer, creating it first if it doesn't
     exist yet."""
@@ -191,6 +287,58 @@ def open_this_pc():
 
 def open_recycle_bin():
     return _run(["explorer.exe", "shell:RecycleBinFolder"])
+
+
+def delete_to_recycle_bin(path):
+    """Sends a file or folder to the Recycle Bin - NOT a permanent
+    delete - via the Windows Shell API (SHFileOperationW with FO_DELETE +
+    FOF_ALLOWUNDO, the same mechanism Explorer's own Delete key uses).
+    Used by the Desktop and System sections' Start-menu Delete option.
+    Returns (ok, error)."""
+    if win32gui is None:
+        return False, "pywin32 not available"
+    try:
+        import ctypes.wintypes as wintypes
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wintypes.HWND),
+                ("wFunc", wintypes.UINT),
+                ("pFrom", wintypes.LPCWSTR),
+                ("pTo", wintypes.LPCWSTR),
+                ("fFlags", ctypes.c_uint16),
+                ("fAnyOperationsAborted", wintypes.BOOL),
+                ("hNameMappings", ctypes.c_void_p),
+                ("lpszProgressTitle", wintypes.LPCWSTR),
+            ]
+
+        FO_DELETE = 3
+        FOF_ALLOWUNDO = 0x0040   # send to Recycle Bin instead of permanently deleting
+        FOF_NOCONFIRMATION = 0x0010  # Meridian's own confirm prompt already asked
+        FOF_SILENT = 0x0004
+
+        # pFrom must be a double-null-terminated string (Shell API quirk),
+        # even for a single path.
+        pFrom = path + "\0\0"
+
+        op = SHFILEOPSTRUCTW()
+        op.hwnd = None
+        op.wFunc = FO_DELETE
+        op.pFrom = pFrom
+        op.pTo = None
+        op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
+        op.fAnyOperationsAborted = False
+        op.hNameMappings = None
+        op.lpszProgressTitle = None
+
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        if result != 0:
+            return False, "SHFileOperationW failed (code %d)" % result
+        if op.fAnyOperationsAborted:
+            return False, "Delete was cancelled"
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def open_uninstall_apps():
@@ -249,6 +397,10 @@ def open_windows_update():
 
 def shutdown():
     return _run(["shutdown", "/s", "/t", "0"])
+
+
+def restart():
+    return _run(["shutdown", "/r", "/t", "0"])
 
 
 def sleep():

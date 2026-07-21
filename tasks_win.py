@@ -16,6 +16,11 @@ import io
 import os
 import sys
 
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 IS_WINDOWS = sys.platform == "win32"
 
 if IS_WINDOWS:
@@ -208,6 +213,41 @@ def _exe_icon_data_url(exe_path, size=32):
 # falling back to hwnd for windows whose exe couldn't be resolved
 _icon_cache = {}
 
+# psutil.Process cache keyed by pid, for cpu_percent(). psutil's own
+# cpu_percent(interval=None) is non-blocking but returns 0.0 on the FIRST
+# call for a given Process object (it's measuring the delta since the
+# last call, and there isn't one yet) - caching the Process object across
+# polls (the taskbar polls every 2.5s) is what makes the number real
+# after the first read instead of permanently reading 0%.
+_proc_cache = {}
+
+
+def _resource_usage(pid):
+    """{"cpu_percent": float, "mem_mb": float} for a pid, best-effort.
+    Returns None if psutil isn't available or the process can't be read
+    (e.g. it exited between EnumWindows and here, or it's a protected
+    system process this one can't query)."""
+    if psutil is None:
+        return None
+    try:
+        proc = _proc_cache.get(pid)
+        if proc is None or proc.pid != pid:
+            proc = psutil.Process(pid)
+            proc.cpu_percent(None)  # prime the delta - see comment above
+            _proc_cache[pid] = proc
+            return {"cpu_percent": 0.0, "mem_mb": round(proc.memory_info().rss / (1024 * 1024), 1)}
+        cpu = proc.cpu_percent(None)
+        # Normalize to "percent of one core out of all cores", matching
+        # how Windows' own Task Manager reports total CPU% (not per-core
+        # totals that can exceed 100%), which is what most people expect
+        # when comparing this against the real Task Manager.
+        cpu = round(cpu / max(psutil.cpu_count() or 1, 1), 1)
+        mem_mb = round(proc.memory_info().rss / (1024 * 1024), 1)
+        return {"cpu_percent": cpu, "mem_mb": mem_mb}
+    except Exception:
+        _proc_cache.pop(pid, None)
+        return None
+
 
 def list_open_tasks():
     """[{id, title, exe}] plus 'icon' as a PNG data URL when one could be
@@ -241,6 +281,8 @@ def list_open_tasks():
                 "title": title,
                 "exe": os.path.basename(exe) if exe else None,
                 "icon": icon or None,
+                "pid": pid,
+                "resources": _resource_usage(pid),
             })
         except Exception:
             pass  # one bad window must never break the whole list
@@ -250,6 +292,12 @@ def list_open_tasks():
         user32.EnumWindows(_cb, 0)
     except Exception:
         pass
+    # Drop cached Process objects for pids no longer in the open-window
+    # list, so a long session doesn't slowly accumulate handles to
+    # processes that closed a while ago.
+    live_pids = {t["pid"] for t in tasks}
+    for stale_pid in [p for p in _proc_cache if p not in live_pids]:
+        _proc_cache.pop(stale_pid, None)
     return tasks
 
 

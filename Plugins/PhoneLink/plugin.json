@@ -2,7 +2,16 @@
   "id": "phone_link",
   "label": "Phone Link",
   "version": "2.0",
-  "type": "webapp",
+  "type": "addon",
+  "section": "chat",
+  "option": "Phone Link",
   "url": "https://messages.google.com/web/conversations",
-  "description": "Google Messages for web, boxed into a Meridian NetBrowse instance pinned to this section - connect your phone (via the QR pairing flow Google Messages shows on first load) to see and reply to your texts from Meridian Launcher. Uses Meridian NetBrowse's virtual mouse (A: left click, B: right click), Start: on-screen keyboard, and a stripped-down menu with only Exit Program."
+  "description": "Google Messages for web, boxed into a Meridian NetBrowse instance and centered over the Chat section's options window - connect your phone (via the QR pairing flow Google Messages shows on first load) to see and reply to your texts from Meridian Launcher. Uses Meridian NetBrowse's virtual mouse (A: left click, B: right click), Start: on-screen keyboard, and a stripped-down menu with only Exit Program.",
+  "window_position": "centered",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": false,
+  "show_battery": true,
+  "show_taskbar": false,
+  "show_music_player": false
 }

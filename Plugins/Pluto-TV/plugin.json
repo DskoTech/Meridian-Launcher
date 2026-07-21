@@ -1,0 +1,15 @@
+{
+  "id": "pluto-tv",
+  "label": "Pluto TV",
+  "type": "addon",
+  "section": "streaming",
+  "option": "Pluto TV",
+  "url": "https://app-windows.pluto.tv/us/live-tv/6913e381b6bf26bb6e798c13",
+  "window_position": "default",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": false,
+  "show_battery": false,
+  "show_taskbar": false,
+  "show_music_player": false
+}

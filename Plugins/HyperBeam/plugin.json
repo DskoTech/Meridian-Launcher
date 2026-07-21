@@ -1,0 +1,15 @@
+{
+  "id": "hyperbeam",
+  "label": "HyperBeam (Web Stream With Friends)",
+  "type": "addon",
+  "section": "streaming",
+  "option": "HyperBeam (Web Stream With Friends)",
+  "url": "https://hyperbeam.com/app/",
+  "window_position": "default",
+  "show_subfolder": true,
+  "show_thumbnail": true,
+  "show_clock": true,
+  "show_battery": true,
+  "show_taskbar": true,
+  "show_music_player": true
+}
