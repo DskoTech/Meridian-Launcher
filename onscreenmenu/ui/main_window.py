@@ -8,9 +8,10 @@ A transparent, click-through, fullscreen overlay that hosts:
 - Onscreen keyboard (used only inside onscreenmenu's own popup
   fields - e.g. naming a shortcut or key combo)
 - Y menu  -> shortcuts (Meridian Launcher + up to 11 custom)
-- X menu  -> key combos (Close Onscreenmenu + up to 20 custom)
+- X menu  -> Virtual Keyboard, Close Onscreenmenu, + any pre-configured
+  key combos (no in-menu add/remove anymore - see KeyComboManager)
 - Select  -> recent apps switcher
-- Start+Select (or Ctrl+H) -> hibernate / resume
+- R3 (or Ctrl+H) -> hibernate / resume
 - L3+R3   -> confirm-and-quit
 - Ctrl+T  -> quit
 
@@ -65,6 +66,7 @@ from features.keycombo_manager import (
 from features.recent_apps_tracker import RecentAppsTracker
 from features.global_hotkeys import GlobalHotkeys
 from features import startup
+from features.foreign_focus_watcher import ForeignFocusWatcher
 
 
 class MainWindow(QMainWindow):
@@ -133,7 +135,13 @@ class MainWindow(QMainWindow):
         )
 
         #
-        # ---- fake cursor overlay ----
+        # ---- "OSM is on" indicator overlay ----
+        # Used to be a fake cursor that followed the real one via this
+        # position_changed signal (InputTracker -> PointerManager); it
+        # never quite stayed in sync and duplicated what the real cursor
+        # already did (clicks always went to the real cursor's position,
+        # not the overlay's). Detached now - it's a fixed corner badge,
+        # so there's nothing to feed it position updates for anymore.
         #
 
         self.cursor_widget = CursorWidget()
@@ -145,10 +153,6 @@ class MainWindow(QMainWindow):
         )
 
         self.cursor_widget.show()
-
-        self.pointer.position_changed.connect(
-            self.update_fake_cursor
-        )
 
         self.cursor_timer = QTimer()
 
@@ -249,7 +253,6 @@ class MainWindow(QMainWindow):
 
         self.last_hibernate_combo = False
 
-        self.last_quit_combo = False
 
         self.hibernating = False
 
@@ -274,6 +277,30 @@ class MainWindow(QMainWindow):
         )
 
         self.hibernate_watch_timer.start(50)
+
+        #
+        # ---- universal on-screen keyboard auto-invoke ----
+        #
+        # See features/foreign_focus_watcher.py's module docstring: the
+        # fake cursor above already works against any window with no
+        # button press needed; this closes the equivalent gap for the
+        # keyboard - a third-party installer or UAC prompt grabbing
+        # focus now brings up osk.exe on its own, without anyone having
+        # to remember to press X first. 400ms is fast enough that the
+        # keyboard shows up within a beat of focus actually changing,
+        # without polling GetForegroundWindow/OpenInputDesktop hard
+        # enough to matter.
+        #
+
+        self.foreign_focus_watcher = ForeignFocusWatcher()
+
+        self.foreign_focus_timer = QTimer()
+
+        self.foreign_focus_timer.timeout.connect(
+            self._foreign_focus_tick
+        )
+
+        self.foreign_focus_timer.start(400)
 
         #
         # ---- global hotkeys (Ctrl+H / Ctrl+T) ----
@@ -459,6 +486,15 @@ class MainWindow(QMainWindow):
         self.cursor.update_scroll()
 
 
+    def _foreign_focus_tick(self):
+
+        if self.hibernating:
+
+            return
+
+        self.foreign_focus_watcher.tick()
+
+
     def update_fake_cursor(
         self,
         x,
@@ -472,47 +508,29 @@ class MainWindow(QMainWindow):
 
 
     #
-    # ---- hibernate (Start+Select or Ctrl+H) / quit (L3+R3) ----
+    # ---- hibernate (R3) ----
     #
 
     def _watch_combos(self):
 
         state = self.controller.state
 
-        hibernate_now = state.start and state.select
+        # Start+Select used to toggle hibernate; that's now unbound (does
+        # nothing) and R3 alone does it instead. L3+R3 used to quit (with
+        # a confirmation prompt) - removed, for consistency with Meridian
+        # Launcher's own L3+R3 removal: a controller-only user with no
+        # other way out was one accidental double-click of the sticks
+        # away from losing the app, and the confirm prompt itself was
+        # awkward to dismiss without a mouse/keyboard. Ctrl+T and the X
+        # menu's "Close Onscreenmenu" are still there, and never had a
+        # confirmation prompt of their own.
+        hibernate_now = state.r3
 
         if hibernate_now and not self.last_hibernate_combo:
 
             self.toggle_hibernate()
 
         self.last_hibernate_combo = hibernate_now
-
-        quit_now = state.l3 and state.r3
-
-        if quit_now and not self.last_quit_combo:
-
-            self.confirm_quit()
-
-        self.last_quit_combo = quit_now
-
-
-    def confirm_quit(self):
-
-        box = QMessageBox()
-
-        box.setWindowTitle("onscreenmenu")
-
-        box.setText("Close onscreenmenu?")
-
-        box.setStandardButtons(
-            QMessageBox.Yes | QMessageBox.No
-        )
-
-        choice = box.exec()
-
-        if choice == QMessageBox.Yes:
-
-            self.close()
 
 
     def toggle_hibernate(self):
@@ -556,9 +574,8 @@ class MainWindow(QMainWindow):
 
             self.open_recent_apps_menu()
 
-        if state.start and not self.last_start:
-
-            self._run_osk_bat()
+        # Start does nothing here - Controls (previously here) moved to
+        # the Y menu instead, alongside "Meridian Launcher".
 
         self.last_y = state.y
 
@@ -567,6 +584,26 @@ class MainWindow(QMainWindow):
         self.last_select = state.select
 
         self.last_start = state.start
+
+
+    def show_controls_reference(self):
+
+        # Reuses the exact same text shown on first run (features.startup.
+        # FIRST_RUN_TEXT) rather than keeping a second, separately-
+        # maintained copy of the control list - Start just gives a way to
+        # bring it back up on demand instead of only ever seeing it once.
+
+        box = QMessageBox()
+
+        box.setWindowTitle("onscreenmenu - Controls")
+
+        box.setText(startup.FIRST_RUN_TEXT)
+
+        box.setStandardButtons(
+            QMessageBox.Ok
+        )
+
+        box.exec()
 
 
     def _run_osk_bat(self):
@@ -625,6 +662,10 @@ class MainWindow(QMainWindow):
         elif item == "Remove Shortcut":
 
             self.start_remove_shortcut()
+
+        elif item == "Controls":
+
+            self.show_controls_reference()
 
         else:
 
@@ -701,13 +742,9 @@ class MainWindow(QMainWindow):
 
         self.close_popup()
 
-        if item == "Add Key Combo":
+        if item == "Virtual Keyboard":
 
-            self.start_add_combo()
-
-        elif item == "Remove Key Combo":
-
-            self.start_remove_combo()
+            self._run_osk_bat()
 
         elif item == CLOSE_APP_LABEL:
 
@@ -718,6 +755,12 @@ class MainWindow(QMainWindow):
             self.keycombos.run(item)
 
 
+    # start_add_combo/start_remove_combo (below) are no longer reachable
+    # from the X menu — "Add Key Combo"/"Remove Key Combo" were removed
+    # from KeyComboManager.menu_items(). Left in place since they're
+    # harmless dead code and combos can still be run if pre-configured in
+    # config.json's "key_combos" list; only the in-app add/remove UI flow
+    # is gone.
     def start_add_combo(self):
 
         if not self.keycombos.can_add():

@@ -487,3 +487,208 @@ panel.
 
 *Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026; This is open source
 software. Donations Appreciated, but Money Not Required.*
+
+## v50 — Input backend overhaul, Carousel Deck theme, Addon Settings, plug-ons
+
+**Input backends**
+- **gameinput_native/**: a compiled pybind11 C++ extension against Microsoft's
+  real, vendored GameInput SDK, replacing the old ctypes vtable-slot-guessing
+  approach in `gameinput_api.py`. The real headers settled what guessing
+  never could: the real `IID_IGameInput` differs from what the guessing code
+  had, and the real vtable slot for `GetGamepadState` is 18, not the 22/23
+  that were tried. Optional — falls back to the ctypes implementation
+  automatically if the compiled `.pyd` isn't present *or* if it's present but
+  fails to construct at runtime (e.g. the separate `gameinput.dll` runtime
+  isn't installed) — the latter fallback path didn't exist at first and was
+  a real regression versus the old code (GameInput would silently give up
+  entirely instead of falling back), since fixed.
+- **Browser Gamepad API** (`browser_gamepad` backend): reads the controller
+  via the frontend's own `navigator.getGamepads()` instead of any native
+  code at all, which has been found to keep working inside Windows' Xbox
+  Full Screen Experience when the native backends don't.
+- **Joy-Con Pair** (`joycon_pair` backend, experimental): combines a
+  connected left + right Nintendo Joy-Con into one logical controller via
+  DirectInput. Explicit opt-in only, never part of the automatic fallback
+  chain — Nintendo has never published an official Joy-Con report spec, so
+  the button mapping is best-effort and unverified on real hardware.
+- **FSE Mode removed** — the ViGEmBus/vgamepad virtual-controller-mirroring
+  approach it depended on didn't pan out in practice; superseded by Browser
+  Gamepad API for the same underlying problem (Xbox FSE input reliability).
+- **Controller Bridge** (`xinput_to_keyboard.py`, per-app/per-game only —
+  never a global toggle): every previously-unmapped button now gets a
+  default number-key (1-9) assignment instead of being left blank. Also
+  picks up a `meridian_controller_bridge.json` dropped in a game/app's own
+  install folder automatically (`--game-dir`), so a custom mapping no
+  longer has to be hand-picked in Settings for every game that needs one -
+  an explicit Settings-picked mapping still takes priority if set.
+
+**Carousel Deck theme**
+A new built-in layout (`carousel_deck`) built from a supplied diagram: a
+horizontal Sections bar + battery/clock strip above a new full-width
+"Screen Bar" (hosting a spinning icon for the current selection, plug-on
+content, and the non-fullscreen video player — plug-ons always render here
+at full size for this theme regardless of their own layout settings), then
+the familiar subfolder/options/thumbnail 3-column row with the taskbar and
+music player nested directly under their respective boxes instead of
+floating separately. Section icons are a windowed 8-visible carousel
+(others aren't hidden — they're simply not in the DOM) with directional
+sliding and edge-conflict hiding against the clock/battery block.
+
+**Addon Settings**
+A new generic, scannable settings page (`addon_settings.py`): any
+`Plugins/<name>/settings.json` or `themes/<name>/settings.json` describing
+its own settings (toggle/choice/file/text fields) is discovered and
+rendered automatically in Settings > Addon Settings — no `app.js` changes
+needed for a new plugin or theme's settings to show up. Replaces an earlier
+approach where a theme-specific setting (Carousel Deck's gallery grid
+column count) was spliced into the Start menu, which showed it in every
+theme regardless of relevance, since the Start menu has no per-theme
+filtering concept.
+
+**Plug-ons** ("addon"-type plugins — `plugin_manager.py`): add one option to
+an existing built-in section's list instead of their own section, with
+layout preferences (window position preset, which of subfolder/thumbnail/
+clock/battery/taskbar/music-player stay visible while boxed) and
+auto-disable when their target section is itself hidden. Ships with an
+interactive generator (`examples/plugon_generator.py`) and five real
+examples (Discord/Messenger/PhoneLink/Snapchat/Telegram, all targeting the
+Chat section).
+
+**Radial theme fixes**: the subfolder bar's grid column used to collapse
+away entirely for sections with no subfolder content, which was also
+shrinking the options list's own column width inconsistently between
+sections — the two are unlinked now (the subfolder column always stays
+reserved, filled with a customizable placeholder image when not
+applicable), and gallery tiles are properly sized instead of the default
+minimum packing as many small tiles as fit into an already-fixed-width
+column.
+
+**Reliability/safety fixes across the suite**: Meridian Explorer and
+CyberDeckBrowser both now stop acting on controller/keyboard input while
+not the OS foreground window, close onscreenmenu on regaining focus, and
+signal Meridian Launcher to suspend its own controls while either has a
+menu open (a shared flag file, since there's no OS-level way to make an
+unrelated third-party program stop reading the same physical controller —
+this only reaches the one other app actually positioned to cooperate).
+Meridian Explorer also gained single-instance enforcement, an on-demand
+"Controls" reference, an in-window `[X]` close box, and an
+`--close-on-background` mode for ephemeral opens (e.g. a browser download's
+"show in folder").
+
+## v51 — Four new plug-ons, real Bluetooth pairing, CyberDeckBrowser fixes,
+## gameinput_native diagnosis
+
+**New plug-ons** (System/Apps/Streaming — off by default, enable from
+Settings > Plugins): **Task Manager** (CPU/RAM per running app,
+controller-navigable Focus/Close grid over a flat task list),
+**Display & Audio** (resolution/refresh rate/HDR toggle/audio output
+device, one panel), **Wi-Fi & Bluetooth** (real scan-and-pair for new
+Bluetooth devices via WinRT through PowerShell, not just toggling
+already-known ones; paired-device names now read from the actual
+pairing database instead of PnP's often-generic FriendlyName; an
+on-screen keyboard for Wi-Fi passwords), **Type from Phone** (a local
+web page + QR code so a phone's own keyboard can type long
+passwords/search terms instead of clicking them out on the on-screen
+keyboard), and **HyperBeam** (Streaming section entry for
+hyperbeam.com). Each is its own small local HTTP server
+(`task_manager_server.py`, `display_audio_server.py`,
+`network_pairing_server.py` + `bluetooth_pairing.py`,
+`phone_type_server.py`) boxed into NetBrowse like any other addon
+plug-on.
+
+**Audio device switching** (System section, `audio_devices.py`): enumerate
+and switch the default Windows playback device via pycaw's
+`IPolicyConfig` wrapper (the same mechanism NirCmd/AudioDeviceCmdlets/
+SoundSwitch use — there's no public supported API for this).
+
+**Universal on-screen keyboard auto-invoke** (`onscreenmenu`,
+`foreign_focus_watcher.py`): the fake cursor already worked against any
+window automatically; `osk.exe` now does too, launching the instant a
+non-Meridian window takes foreground focus rather than requiring the X
+menu. Also detects the Secure Desktop (UAC) specifically and keeps
+`osk.exe` pre-launched so Windows' own accessibility-tool carryover has
+something to carry over — real OS-level limits apply here (no ordinary
+app can draw its own overlay on the Secure Desktop by design), documented
+plainly in the module docstring rather than oversold.
+
+**Settings > Backup & Restore** (`backup_restore.py`): export/import
+settings, selected theme, activated plugins, and custom Plugins/themes
+folders as one `.zip`, with a confirmation step showing what's inside a
+backup before it's applied.
+
+**Settings > About**: full third-party attributions/licenses list for
+every bundled dependency and Microsoft-redistributed runtime component.
+
+**CyberDeckBrowser**:
+- Real persistent logins: `QWebEngineProfile.defaultProfile()` was never
+  given a stable org/app name, explicit storage path, or cookie policy —
+  either gap alone causes "forgets I'm logged in" (unstable auto-derived
+  storage location; `ForcePersistentCookies` missing means a site's own
+  "forget me on window close" session-cookie flag wins, which desktop
+  Chrome normally masks by treating "close the window" differently from
+  "end the session").
+- Streaming fixes beyond Widevine: `--ppapi-widevine-path` alongside
+  `--widevine-path` (some QtWebEngine/Chromium versions still want the
+  older PPAPI-based path), `--autoplay-policy=no-user-gesture-required`
+  (a distinct failure mode from DRM — "loads, never plays, no error" —
+  several streaming players' JS just stalls waiting for a `playing`
+  event that Chromium won't fire without a real user gesture), a real
+  desktop Chrome User-Agent (some sites allow-list known UA strings
+  instead of testing capability), `PluginsEnabled` (Chromium's EME/
+  Widevine is architecturally still a "plugin" internally).
+- Per-context profile isolation: CyberDeckBrowser is deliberately
+  multi-instance when boxed (Browser section + each webapp plugin get
+  their own simultaneous process) — the persistent-login fix above
+  initially pointed every one of them at the same shared profile path,
+  which triggered Chromium's own same-profile-two-processes lock: the
+  second window's Qt chrome (background, exit button) rendered fine but
+  its Chromium content area stayed permanently blank. Each window now
+  gets its own storage subfolder keyed by its `--notify-exit=` purpose
+  (`browser`, a plugin id, or `standalone`) — stable across repeat opens
+  of the same context, isolated from whatever else is open at the same
+  time.
+- Web section's own "CyberDeckBrowser" entry now always launches the
+  program directly (`launch_cyberdeckbrowser_standalone()`) instead of
+  sometimes getting routed through the URL-opening/Browser-section
+  logic meant for actual links.
+
+**gameinput_native diagnosis and fix** (the real Microsoft GameInput SDK
+backend for controller input, see `gameinput_native/README.md`):
+- `DIAG["native_status"]` (Settings > Controls) now always reports
+  exactly why the native backend isn't active: not built, built but
+  shadowed by the source folder, built against the wrong Python ABI, or
+  the runtime `gameinput.dll` missing on this machine.
+- `gameinput_native/build_and_deploy.py`: builds the extension and
+  deploys it to every app folder that needs it in one step.
+- Root cause of it silently never working even after a "successful"
+  build: the PyInstaller `.spec` files never excluded `gameinput_native/`
+  (the C++ source folder) from analysis, so a hollow, empty reference to
+  it got baked into every frozen build — and since PyInstaller's own
+  frozen importer checks that embedded reference before ever touching
+  the real filesystem, the externally-placed `.pyd` was unreachable
+  regardless of how correctly it was staged. Fixed with
+  `excludes=['gameinput_native']` in every `.spec` file, paired with an
+  explicit `sys.path` addition in `gameinput_api.py` (frozen-aware: the
+  running `.exe`'s own folder) so the real file can actually be found
+  once the phantom reference is gone.
+- `InstallMeridianSuite_WithGameInputBuild.bat`: a separate variant of
+  the main installer that additionally installs the MSVC Build Tools
+  (via `vswhere`-based detection first — skips entirely, not just a
+  fast no-op, if already present) and builds/stages `gameinput_native`.
+  Kept as its own file rather than a flag on the main installer since
+  it's a multi-GB download most people don't need.
+
+**Crash fix**: `audio_devices.py`'s pycaw/comtypes import was an
+unconditional `if IS_WINDOWS: import pycaw...` that crashed the whole
+app at startup (`ModuleNotFoundError`) on any build where those weren't
+actually bundled — now wrapped in try/except like every other optional
+dependency in the suite, degrading to "unavailable" in the UI instead.
+
+**Housekeeping**: `obsolete/` — files identified as superseded by later
+work, quarantined rather than deleted so they can be reviewed. The
+original full "Meridian NetBrowse" browser engine (superseded by
+CyberDeckBrowser's `--box=` merge — only its still-used default-browser
+shell-handler trampoline stays in `Meridian_NetBrowse/`), and the old
+GameInput vtable-slot-guessing diagnostic tools (superseded by
+`gameinput_native`, though still has some relevance to the ctypes
+fallback path). See `obsolete/README.md`.

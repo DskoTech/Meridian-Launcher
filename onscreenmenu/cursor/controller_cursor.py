@@ -3,9 +3,10 @@ onscreenmenu Controller Cursor
 
 Handles controller-based mouse movement.
 
-The controller moves the real Windows cursor.
-The fake cursor overlay follows the real cursor
-through InputTracker.
+The controller moves the real Windows cursor. The overlay in
+cursor_widget.py is a fixed "OSM is on" indicator, not a second
+cursor following this one - the real Windows cursor moved here is the
+only pointer, for both movement and clicks.
 
 Button clicks (A / B) are NOT handled here anymore.
 That is owned by InputManager, which decides

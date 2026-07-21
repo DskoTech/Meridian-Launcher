@@ -19,8 +19,8 @@ list per section, navigable by controller, keyboard, or mouse.
 | Desktop | Whatever's actually on your Windows Desktop right now — files, folders, shortcuts | **off** |
 | Explorer | Boxes Meridian FileBrowse; Desktop folders open here when it's on | **off** |
 | Browser | Boxes Meridian NetBrowse; internally-launched URLs open here when it's on | **off** |
-| Plugins (Start, Telegram, Discord, Messenger, Snapchat, Phone Link, anything you drop into `Plugins/`) | See below | **off** (each individually) |
-| Settings / System | The app's own controls | on (hidden in kiosk mode) |
+| Plugins (Start, Telegram, Discord, Messenger, Snapchat, Phone Link, Task Manager, Display & Audio, Wi-Fi & Bluetooth, Type from Phone, HyperBeam, anything you drop into `Plugins/`) | See below | **off** (each individually) |
+| Settings / System (incl. Audio Output device switching) | The app's own controls | on (hidden in kiosk mode) |
 
 Every section's presence, and most of their behavior, is a Settings
 toggle — nothing here is permanent.
@@ -50,7 +50,7 @@ you don't do anything extra.
 
 A `Plugins/` folder next to the exe. Anything in it with a valid
 `plugin.json` shows up in Settings > Plugins (hidden by default; toggle
-it on, no restart needed). Three kinds:
+it on, no restart needed). Four kinds:
 
 - **`"list"`** — a plain data-driven list, gets its own section. The
   bundled example is **Start**: your Windows Start Menu, with "Run..."
@@ -62,6 +62,15 @@ it on, no restart needed). Three kinds:
   inside whichever section its manifest points at instead (e.g. several
   chat apps all living inside one "Chat" section as options rather than
   five separate sections).
+- **`"addon"`** — like `"option"`, splices one entry into an existing
+  built-in section instead of getting its own, with layout preferences
+  (window position, which of subfolder/thumbnail/clock/battery/taskbar/
+  music-player stay visible while boxed) and auto-disable when its
+  target section is itself hidden. Bundled examples: **Task Manager**
+  and **Display & Audio** and **Wi-Fi & Bluetooth** (System section),
+  **Type from Phone** (Apps section), **HyperBeam** (Streaming section)
+  — each runs its own small local web server (see each `*_server.py`'s
+  module docstring) rather than pointing at an external site.
 
 See **CUSTOMIZATION.md** for how to write your own.
 
@@ -107,25 +116,41 @@ images. FileBrowse is the same app, forked into its own source files and
 always launched boxed by Meridian Launcher's Explorer section rather than
 full-screen.
 
-## CyberDeckBrowser / Meridian NetBrowse
+## CyberDeckBrowser (a.k.a. "Meridian NetBrowse" when boxed)
 
 A full gamepad-first web browser (PySide6/QtWebEngine): tabs, history,
 downloads, bookmarks, find-in-page, translate, a virtual mouse (left
 stick moves it, triggers boost its speed) and an on-screen keyboard that
-appears automatically in text fields. NetBrowse is the same engine,
-forked into its own source files, dropping the cyberpunk first-boot
-prompt/aesthetic options, always launched boxed by Meridian Launcher
-(Browser section or a webapp plugin) rather than full-screen, with a
-`--minimal-menu` mode that reduces its menus to "Exit Program" only when
-it's pinned to one site.
+appears automatically in text fields. One engine, not two: what used to
+be a separate forked app ("Meridian NetBrowse") is now the same
+`CyberDeckBrowser.exe`, launched with a `--box=X,Y,W,H` argument that
+sizes/positions it into a section's list-frame box instead of covering
+the screen, and skips the cyberpunk first-boot prompt/effects for that
+run — Meridian Launcher's Browser section and each webapp plugin
+(Telegram, Discord, etc.) each get their own simultaneous boxed
+instance this way, each with its own isolated login/cookie storage so
+they don't share sessions with each other or with standalone use.
+Standalone CyberDeckBrowser (no `--box=`) behaves exactly as a normal
+browser: full cyberpunk prompt/effects, full menus, tabs visible;
+`--minimal-menu` (used for pinned-to-one-site webapp plugins) reduces
+its menus to "Exit Program" only. Persistent logins, Widevine DRM
+detection, and streaming-autoplay/User-Agent fixes are all configured
+before any page can load — see `main.py`'s
+`_configure_persistent_web_profile`/`_configure_streaming_playback` for
+the specifics.
 
 ## onscreenmenu
 
 A transparent, always-on-top controller overlay: a shortcuts menu, a key-
-combo menu, a recent-apps switcher, hibernate/resume. Meant to run
-alongside whichever app needs it — Meridian Launcher and friends launch
-it (via `osm.bat`) automatically when a native Windows dialog is about to
-appear, so that dialog stays controller-navigable.
+combo menu, a recent-apps switcher, hibernate/resume. The fake cursor
+works against any window automatically, no button press needed; the
+on-screen keyboard (`osk.exe`) now does too — it opens the instant a
+non-Meridian window (a third-party installer, anything Meridian doesn't
+know about) takes foreground focus, not just from the X menu or when
+`osm.bat` launches it ahead of a native Windows dialog. Real OS-level
+limits still apply to actual UAC/Secure Desktop prompts specifically —
+see `onscreenmenu/features/foreign_focus_watcher.py`'s docstring for
+exactly what is and isn't achievable there and why.
 
 ## Meridian_Exporter
 

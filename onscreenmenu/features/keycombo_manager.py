@@ -2,10 +2,12 @@
 onscreenmenu Key Combo Manager (X button)
 
 The X menu starts with two fixed, non-removable entries -
-"Virtual Keyboard" (toggles Windows' on-screen keyboard) and
-"Close Onscreenmenu" (quits the app) - followed by up to
-MAX_COMBOS user-defined key combos (1-3 physical keys each), then
-"Add Key Combo" / "Remove Key Combo".
+"Virtual Keyboard" (toggles Windows' on-screen keyboard - moved here
+from its own dedicated Start button binding, which now does nothing)
+and "Close Onscreenmenu" (quits the app) - followed by any
+already-configured key combos (1-3 physical keys each, edited via
+config.json; there's no longer an in-menu "Add"/"Remove" flow for
+these - see the module history below).
 
 Running a saved combo sends it once, then a global cooldown
 briefly blocks re-triggering (any combo) to avoid accidental
@@ -18,11 +20,11 @@ import keyboard
 
 
 CLOSE_APP_LABEL = "Close Onscreenmenu"
+VIRTUAL_KEYBOARD_LABEL = "Virtual Keyboard"
 
 RESERVED_LABELS = {
     CLOSE_APP_LABEL,
-    "Add Key Combo",
-    "Remove Key Combo"
+    VIRTUAL_KEYBOARD_LABEL,
 }
 
 MAX_COMBOS = 20
@@ -62,15 +64,11 @@ class KeyComboManager:
 
         return (
 
-            [CLOSE_APP_LABEL]
+            [VIRTUAL_KEYBOARD_LABEL, CLOSE_APP_LABEL]
 
             +
 
             [entry["name"] for entry in self.combos]
-
-            +
-
-            ["Add Key Combo", "Remove Key Combo"]
 
         )
 

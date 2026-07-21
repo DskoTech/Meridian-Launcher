@@ -38,11 +38,19 @@ import webview
 try:
     _DLG_OPEN = webview.FileDialog.OPEN
     _DLG_FOLDER = webview.FileDialog.FOLDER
+    _DLG_SAVE = webview.FileDialog.SAVE
 except AttributeError:  # pywebview < 5.x
     _DLG_OPEN = getattr(webview, "OPEN_DIALOG")
     _DLG_FOLDER = getattr(webview, "FOLDER_DIALOG")
+    _DLG_SAVE = getattr(webview, "SAVE_DIALOG")
 
 import store
+import backup_restore
+import audio_devices
+import phone_type_server
+import task_manager_server
+import display_audio_server
+import network_pairing_server
 import system_actions
 import tasks_win
 import explorer_shell
@@ -50,6 +58,7 @@ import user_themes
 import theme_assets
 import updater
 import plugin_manager
+import addon_settings
 from controller_input import ControllerListener
 
 # Recently-played games are sourced from Game Library's own Playnite
@@ -71,11 +80,13 @@ try:
     import win32con
     import win32ui
     import win32api
+    import win32process
 except ImportError:
     win32gui = None
     win32con = None
     win32ui = None
     win32api = None
+    win32process = None
 
 # 1. Check if the app is bundled/compiled into an EXE (PyInstaller)
 if getattr(sys, 'frozen', False):
@@ -124,8 +135,34 @@ SETTINGS = store.load_settings()
 store.ensure_controls_files()
 
 _explorer_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian FileBrowse instance, if any
+_explorer_box_lock = threading.RLock()  # serializes load_explorer_box/unload_explorer_box against each other -
+# without this, two near-simultaneous calls (e.g. a rapid re-render landing back
+# on the Explorer section before the previous load finished) could both pass the
+# "is anything running" check before either one's spawn/kill actually completed,
+# letting two Meridian FileBrowse.exe instances end up alive at once.
 _browser_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian NetBrowse instance, if any
 _plugin_webapp_procs = {}  # plugin_id -> Popen handle, for "webapp"-type plugins (Telegram/Discord/etc)
+
+
+def _is_builtin_section_visible(section_id):
+    """Whether a built-in section is currently shown in the Sections bar -
+    used to auto-disable any "addon" plug-on targeting it (see
+    list_section_options). Two separate mechanisms exist for this across
+    different built-in sections and both need checking:
+
+      - Desktop/Explorer/Browser: dedicated "*_section_enabled" settings,
+        off by default (opt-in sections).
+      - Everything else (Music/Photos/.../Chat): on by default, hideable
+        via the general "hidden_builtin_sections" list instead.
+    """
+    special_flags = {
+        "desktop": "desktop_section_enabled",
+        "explorer": "explorer_section_enabled",
+        "browser": "browser_section_enabled",
+    }
+    if section_id in special_flags:
+        return bool(SETTINGS.get(special_flags[section_id], False))
+    return section_id not in set(SETTINGS.get("hidden_builtin_sections", []))
 
 
 def _rescan_plugins():
@@ -143,15 +180,113 @@ def _rescan_plugins():
             "type": info.get("type", "list"),
             "visible": bool(existing.get(pid, {}).get("visible", False)),
         }
-        if info.get("type") in ("webapp", "option"):
+        if info.get("type") in ("webapp", "option", "addon"):
             entry["url"] = info.get("url", "")
-        if info.get("type") == "option":
+        if info.get("type") in ("option", "addon"):
             entry["section"] = info.get("section", "chat")
         merged[pid] = entry
     SETTINGS["plugins"] = merged
     store.save_settings(SETTINGS)
     return discovered
 
+
+def _sync_phone_type_plugin_manifest(port):
+    """Type from Phone's plugin.json hardcodes DEFAULT_PORT (58734) since
+    a static manifest can't know a dynamically-chosen port ahead of time.
+    That's normally exactly right - but on the rare machine where that
+    port's already taken, phone_type_server.start_server() falls back to
+    an OS-assigned one, and this keeps the addon's boxed URL pointing at
+    wherever the server actually ended up instead of a dead port."""
+    manifest_path = BASE_DIR / "Plugins" / "TypeFromPhone" / "plugin.json"
+    if not manifest_path.exists() or not port:
+        return
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        wanted_url = f"http://127.0.0.1:{port}/display"
+        if data.get("url") != wanted_url:
+            data["url"] = wanted_url
+            manifest_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _sync_task_manager_plugin_manifest(port):
+    """Same self-heal as the other plug-on manifests here, for the Task
+    Manager plug-on's own fixed-port manifest."""
+    manifest_path = BASE_DIR / "Plugins" / "MeridianTaskManager" / "plugin.json"
+    if not manifest_path.exists() or not port:
+        return
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        wanted_url = f"http://127.0.0.1:{port}/"
+        if data.get("url") != wanted_url:
+            data["url"] = wanted_url
+            manifest_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _sync_display_audio_plugin_manifest(port):
+    """Same self-heal as the other plug-on manifests above."""
+    manifest_path = BASE_DIR / "Plugins" / "DisplayAudio" / "plugin.json"
+    if not manifest_path.exists() or not port:
+        return
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        wanted_url = f"http://127.0.0.1:{port}/"
+        if data.get("url") != wanted_url:
+            data["url"] = wanted_url
+            manifest_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _sync_network_pairing_plugin_manifest(port):
+    """Same self-heal as the other plug-on manifests above."""
+    manifest_path = BASE_DIR / "Plugins" / "NetworkPairing" / "plugin.json"
+    if not manifest_path.exists() or not port:
+        return
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        wanted_url = f"http://127.0.0.1:{port}/"
+        if data.get("url") != wanted_url:
+            data["url"] = wanted_url
+            manifest_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _start_plugon_server(module, sync_fn, name):
+    """Each plug-on server's start_server() is a module-level call that
+    runs unconditionally at Launcher startup - an uncaught exception here
+    (a genuinely missing dependency in a compiled build is exactly the
+    class of bug that's bitten this before - see audio_devices.py's own
+    pycaw import fix) would crash Launcher itself before it ever gets to
+    show a window. Wrapping each one independently also means one
+    plug-on's server failing to start doesn't stop the other three from
+    starting - a boxed webapp pointed at a dead server still fails
+    (nothing can serve its page), but that failure is contained to that
+    one plug-on instead of taking down Launcher or its siblings."""
+    try:
+        status = module.start_server()
+        sync_fn(status.get("port"))
+        return status
+    except Exception as e:
+        try:
+            crash_dir = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "Meridian Launcher"
+            crash_dir.mkdir(parents=True, exist_ok=True)
+            (crash_dir / "plugon_server_startup_errors.txt").open("a", encoding="utf-8").write(
+                f"{name}: {type(e).__name__}: {e}\n"
+            )
+        except Exception:
+            pass
+        return {"port": None}
+
+
+_phone_type_status = _start_plugon_server(phone_type_server, _sync_phone_type_plugin_manifest, "phone_type_server")
+_task_manager_status = _start_plugon_server(task_manager_server, _sync_task_manager_plugin_manifest, "task_manager_server")
+_display_audio_status = _start_plugon_server(display_audio_server, _sync_display_audio_plugin_manifest, "display_audio_server")
+_network_pairing_status = _start_plugon_server(network_pairing_server, _sync_network_pairing_plugin_manifest, "network_pairing_server")
 
 _rescan_plugins()
 
@@ -590,10 +725,11 @@ def _build_entry(kind, path):
     return entry
 
 
-def _entries_to_response(kind, path_to_entry):
+def _entries_to_response(kind, path_to_entry, mtimes=None):
     """Turn cached/raw entries (with a stashed thumb path) into the shape
     the frontend expects, generating fresh media-server tokens every call
     since TOKEN_MAP doesn't persist across runs."""
+    mtimes = mtimes or {}
     items = []
     for path, entry in path_to_entry.items():
         e = dict(entry)
@@ -603,6 +739,11 @@ def _entries_to_response(kind, path_to_entry):
             e["fullUrl"] = media_url(path)
         else:
             e["url"] = media_url(path)
+        # Used by the Music section's "Recently Added" sort option (client
+        # side, see sortMusicItems() in app.js) - harmless extra field for
+        # photos/videos, which don't currently expose a sort menu.
+        if path in mtimes:
+            e["mtime"] = mtimes[path]
         items.append(e)
     items.sort(key=lambda e: e.get("title", e["name"]).lower())
     return items
@@ -739,6 +880,25 @@ def _maybe_launch_onscreenmenu():
     _maybe_launch_osm()
 
 
+# Tracks the previous is_foreground() result so onscreenmenu.exe only gets
+# closed once, on the rising edge of Meridian Launcher becoming the OS
+# foreground window, rather than on every ~400ms poll from the frontend.
+_WAS_FOREGROUND = False
+
+
+def _close_onscreenmenu_if_running():
+    """Best-effort close of the on-screen menu companion overlay. Used
+    whenever something makes it redundant: Meridian Launcher itself
+    regaining foreground, or CyberDeckBrowser/Meridian NetBrowse being
+    opened (see launch_cyberdeck / launch web-browse section handling) -
+    onscreenmenu is only meant to cover external, non-Meridian apps."""
+    try:
+        if system_actions.is_process_running("onscreenmenu.exe"):
+            system_actions.kill_process("onscreenmenu.exe")
+    except Exception:
+        pass
+
+
 def _apply_kiosk_disable():
     """Shared by every kiosk-exit path (secret code, 45s Y hold, factory
     reset): flips window_mode back to fullscreen, persists it. The app uses
@@ -794,7 +954,7 @@ def _scan_library_impl(kind):
             fresh_items[path] = _build_entry(kind, path)
 
     _save_index_cache(kind, {"files": current_mtimes, "items": fresh_items})
-    return _entries_to_response(kind, fresh_items)
+    return _entries_to_response(kind, fresh_items, current_mtimes)
 
 
 def _browse_folder_impl(kind, path, precache_subfolders=True):
@@ -852,6 +1012,119 @@ def _precache_all_libraries():
 
 def start_background_precache():
     threading.Thread(target=_precache_all_libraries, daemon=True).start()
+
+
+def _controller_bridge_script_path():
+    return BASE_DIR / "xinput_to_keyboard.py"
+
+
+def _controller_bridge_exe_path():
+    return BASE_DIR / "XInputToKeyboard.exe"
+
+
+def _controller_bridge_command():
+    """The actual command to launch the Controller Bridge with - NOT
+    just [sys.executable, script] unconditionally, because that
+    silently does the wrong thing in a compiled build: sys.executable
+    there is Meridian Launcher's OWN compiled exe, not a real Python
+    interpreter, since a typical PyInstaller build doesn't bundle a
+    standalone python.exe at all. Running "MeridianLauncher.exe
+    xinput_to_keyboard.py" doesn't execute that script as Python - it
+    just relaunches the compiled app with a file path as an ignored
+    argument, which would make this feature silently do nothing in any
+    real compiled install (the normal way this whole suite is actually
+    distributed).
+
+    Prefers a separately-compiled XInputToKeyboard.exe (see
+    xinput_to_keyboard.spec - same idea as onscreenmenu.exe/
+    CyberDeckBrowser.exe already being their own standalone compiled
+    exes) if one exists next to this app. Only falls back to
+    [sys.executable, xinput_to_keyboard.py] when NOT frozen (i.e.
+    running from source with a real python.exe)."""
+    exe = _controller_bridge_exe_path()
+    if exe.exists():
+        return [str(exe)]
+    if not getattr(sys, "frozen", False):
+        script = _controller_bridge_script_path()
+        if script.exists():
+            return [sys.executable, str(script)]
+    return None
+
+
+def _start_controller_bridge_for_path(path):
+    """Starts the Controller Bridge in the background, then waits for
+    the launched exe to actually appear (can take a few seconds -
+    launchers/anti-cheat/etc) and then disappear (it closing) before
+    killing the bridge. Runs entirely on a background thread so this
+    never blocks the launch itself.
+
+    Deliberately per-item (see toggle_controller_bridge_for_item), not a
+    global toggle: this translates real controller input into keyboard
+    presses system-wide while running, which would make the controller
+    useless for navigating Meridian Launcher itself (different keyboard
+    shortcuts) - or worse, get stuck fighting onscreenmenu/
+    CyberDeckBrowser/Meridian Explorer's own, different keyboard
+    shortcuts if any of those end up focused while it's running - if
+    left on outside of the one app that actually needs it. Starting it
+    right before that specific app launches and killing it the instant
+    that specific app's process exits is what keeps it safe to use at
+    all.
+
+    Whether this can actually deliver keystrokes to an externally
+    launched app: yes - the `keyboard` library's press()/release() on
+    Windows go through SendInput/keybd_event, the same low-level global
+    input injection every real keyboard-remapping tool (AutoHotkey,
+    JoyToKey, AntiMicroX) uses. That's delivered to whatever window
+    currently has OS keyboard focus, not a specific targeted process -
+    which is exactly the launched app, as long as it's actually the
+    focused window while it's being played/used, same expectation any
+    of those other tools carry too."""
+    cmd = _controller_bridge_command()
+    if cmd is None:
+        return
+    exe_name = os.path.basename(path)
+
+    def _watch():
+        args = list(cmd)
+        # Priority: an explicit global mapping file (chosen in Settings)
+        # always wins if set; otherwise check the app/game's own install
+        # folder for meridian_controller_bridge.json automatically (see
+        # xinput_to_keyboard.py's --game-dir) - no per-item file browsing
+        # needed for that common case.
+        mapping_path = SETTINGS.get("controller_bridge_mapping_path")
+        if mapping_path and os.path.isfile(mapping_path):
+            args += ["--config", mapping_path]
+        else:
+            args += ["--game-dir", os.path.dirname(path)]
+        try:
+            proc = subprocess.Popen(
+                args, cwd=str(BASE_DIR),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            return
+        try:
+            # Wait for the app to actually start (up to 60s), then wait
+            # for it to close, then clean up. If it never starts at all
+            # within that window, don't leave the bridge running forever
+            # for nothing.
+            deadline = time.time() + 60
+            appeared = False
+            while time.time() < deadline:
+                if system_actions.is_process_running(exe_name):
+                    appeared = True
+                    break
+                time.sleep(1)
+            if appeared:
+                while system_actions.is_process_running(exe_name):
+                    time.sleep(2)
+        finally:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 # --------------------------------------------------------------------------
@@ -966,7 +1239,67 @@ class Api:
                 _maybe_launch_osm()
             if section_id == "games":
                 _record_recent_game(path)
+            if (section_id in ("apps", "games")
+                    and path in set(SETTINGS.get("controller_bridge_items", []))):
+                _start_controller_bridge_for_path(path)
         return {"ok": ok, "error": err}
+
+    def get_controller_bridge_enabled(self, path):
+        return path in set(SETTINGS.get("controller_bridge_items", []))
+
+    def toggle_controller_bridge_for_item(self, path):
+        enabled = set(SETTINGS.get("controller_bridge_items", []))
+        if path in enabled:
+            enabled.discard(path)
+        else:
+            enabled.add(path)
+        SETTINGS["controller_bridge_items"] = sorted(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def get_controller_bridge_mapping_path(self):
+        return SETTINGS.get("controller_bridge_mapping_path")
+
+    def set_controller_bridge_mapping_path(self):
+        """Opens a file picker for a custom xinput_to_keyboard.py JSON
+        mapping file, applied to every item the Controller Bridge is
+        enabled for."""
+        try:
+            paths = webview.windows[0].create_file_dialog(
+                _DLG_OPEN, file_types=("JSON files (*.json)", "All files (*.*)")
+            )
+        except Exception:
+            paths = None
+        if paths:
+            SETTINGS["controller_bridge_mapping_path"] = paths[0]
+            store.save_settings(SETTINGS)
+        return SETTINGS.get("controller_bridge_mapping_path")
+
+    def clear_controller_bridge_mapping_path(self):
+        SETTINGS["controller_bridge_mapping_path"] = None
+        store.save_settings(SETTINGS)
+        return None
+
+    def set_subfolder_filler_gif(self):
+        """CyberRadial theme: opens a file picker for a custom gif/image
+        shown in the subfolder bar for sections that don't have real
+        subfolder content of their own (see setSubfolderNavHidden() in
+        app.js). Returns the new SETTINGS dict."""
+        try:
+            paths = webview.windows[0].create_file_dialog(
+                _DLG_OPEN, file_types=("Images (*.gif;*.png;*.jpg;*.jpeg;*.webp)", "All files (*.*)")
+            )
+        except Exception:
+            paths = None
+        if paths:
+            SETTINGS["subfolder_filler_gif"] = "file:///" + paths[0].replace("\\", "/")
+            store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def clear_subfolder_filler_gif(self):
+        SETTINGS["subfolder_filler_gif"] = None
+        store.save_settings(SETTINGS)
+        return SETTINGS
 
     def get_recent_games(self):
         if playnite_import is not None:
@@ -993,6 +1326,20 @@ class Api:
     # ---------------- Desktop section (auto-populated, off by default) ----------------
     def list_desktop_items(self):
         return _with_icons(_scan_desktop_folder())
+
+    def delete_desktop_item(self, path):
+        """Sends a real Desktop file/folder to the Recycle Bin (not a
+        permanent delete) - the Start menu's Delete option, only ever
+        offered for actual Desktop-section items. Confirmation already
+        happened on the frontend before this is called."""
+        desktop_dir = os.path.normcase(os.path.abspath(
+            str(Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop")
+        ))
+        target = os.path.normcase(os.path.abspath(path))
+        if not target.startswith(desktop_dir):
+            return {"ok": False, "error": "Refusing to delete something outside the Desktop folder."}
+        ok, err = system_actions.delete_to_recycle_bin(path)
+        return {"ok": ok, "error": err}
 
     def set_builtin_section_visible(self, section_id, visible):
         hidden = set(SETTINGS.get("hidden_builtin_sections", []))
@@ -1073,6 +1420,7 @@ class Api:
         if not exe.exists():
             return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
         self.unload_plugin_webapp_box(plugin_id)
+        _close_onscreenmenu_if_running()
         try:
             args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}", "--minimal-menu",
                     f"--notify-exit={plugin_id}", url]
@@ -1111,8 +1459,8 @@ class Api:
 
     def list_plugins(self):
         """Ordered list of discovered plugins with their visibility. "list"/
-        "webapp" plugins appear after the last custom section; "option"
-        plugins don't get their own section at all — see
+        "webapp" plugins appear after the last custom section; "option"/
+        "addon" plugins don't get their own section at all — see
         list_section_options() for how those surface instead."""
         discovered = plugin_manager.scan_plugins()
         out = []
@@ -1123,26 +1471,43 @@ class Api:
                 "id": pid, "label": info["label"], "type": info.get("type", "list"),
                 "visible": bool(entry.get("visible", False)),
             }
-            if info.get("type") == "option":
+            if info.get("type") in ("option", "addon"):
                 item["section"] = info.get("section", "chat")
             out.append(item)
         return out
 
     def list_section_options(self, section_id):
-        """[{"id","label","pluginId"}] — the enabled "option"-type plugins
-        targeting this section id (e.g. "chat"), in discovery order. Used
-        to build a section (like Chat) whose entries are individually
-        toggleable plugins rather than a fixed list."""
+        """[{"id","label","pluginId","addon"?,"layout"?}] — the enabled
+        "option"- and "addon"-type plugins targeting this section id
+        (e.g. "chat", or any built-in section for an addon), in discovery
+        order. Used to build a section (like Chat) whose entries are
+        individually toggleable plugins rather than a fixed list, and to
+        splice plug-on ("addon") entries into a built-in section's own
+        list (see frontend/app.js's use of this for every built-in
+        section, not just Chat).
+
+        An addon is silently excluded here (regardless of its own
+        "visible" setting) whenever its target section is itself hidden -
+        there'd be nowhere for it to appear, and leaving it toggled on in
+        that state would just make it pop back in, confusingly, the
+        moment the section was unhidden again with no other change."""
         discovered = plugin_manager.scan_plugins()
         out = []
         for info in discovered:
-            if info.get("type") != "option" or info.get("section", "chat") != section_id:
+            ptype = info.get("type")
+            if ptype not in ("option", "addon") or info.get("section", "chat") != section_id:
                 continue
             pid = info["id"]
             entry = SETTINGS.get("plugins", {}).get(pid, {"visible": False})
             if not entry.get("visible", False):
                 continue
-            out.append({"id": pid, "label": info["label"]})
+            if ptype == "addon" and not _is_builtin_section_visible(section_id):
+                continue
+            item = {"id": pid, "label": info["label"]}
+            if ptype == "addon":
+                item["addon"] = True
+                item["layout"] = info.get("layout", dict(plugin_manager.ADDON_LAYOUT_DEFAULTS))
+            out.append(item)
         return out
 
     def set_plugin_visible(self, plugin_id, visible):
@@ -1159,6 +1524,38 @@ class Api:
         if isinstance(result, dict) and result.get("ok") and SETTINGS.get("launch_system_with_osm", True):
             _maybe_launch_osm()
         return result
+
+    def delete_plugin_item(self, plugin_id, item_id):
+        return plugin_manager.delete_item(plugin_id, item_id)
+
+    # ---------------- addon settings (plugins/plug-ons/drop-in themes) ----------------
+    def list_addon_setting_groups(self):
+        """Each group's fields come back with the CURRENT value merged in
+        (as field["value"]) alongside its schema, so the frontend doesn't
+        need a second round-trip per field to render correctly."""
+        groups = addon_settings.scan_groups(BASE_DIR)
+        for group in groups:
+            values = addon_settings.get_all_values(SETTINGS, group["id"])
+            for field in group["fields"]:
+                field["value"] = values.get(field["key"], field.get("default"))
+        return groups
+
+    def set_addon_setting_value(self, namespace_id, key, value):
+        addon_settings.set_value(SETTINGS, namespace_id, key, value)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def pick_addon_setting_file(self, namespace_id, key, accept):
+        """Native file picker for a "file"-type addon setting field."""
+        try:
+            file_types = (accept, "All files (*.*)") if accept else ("All files (*.*)",)
+            paths = webview.windows[0].create_file_dialog(_DLG_OPEN, file_types=file_types)
+        except Exception:
+            paths = None
+        if paths:
+            addon_settings.set_value(SETTINGS, namespace_id, key, paths[0])
+            store.save_settings(SETTINGS)
+        return SETTINGS
 
     # ---------------- macros ----------------
     def list_macro_items(self):
@@ -1237,6 +1634,7 @@ class Api:
         if macro_id == "close_others":
             whitelist = set(SETTINGS.get("macros_whitelist", []))
             whitelist.add("onscreenmenu.exe")
+            whitelist.add("meridianlauncher.exe")
             whitelist.add(Path(sys.executable).name)
             return system_actions.close_all_except(whitelist)
         if macro_id == "toggle_default_shell":
@@ -1359,6 +1757,10 @@ class Api:
         ok, err = system_actions.shutdown()
         return {"ok": ok, "error": err}
 
+    def system_restart(self):
+        ok, err = system_actions.restart()
+        return {"ok": ok, "error": err}
+
     def system_sleep(self):
         ok, err = system_actions.sleep()
         return {"ok": ok, "error": err}
@@ -1452,6 +1854,16 @@ class Api:
 
     # ---------------- Files section ----------------
     def launch_meridian_explorer(self):
+        """Only ever one Explorer-family window at a time, across BOTH the
+        standalone Meridian Explorer.exe and the boxed Meridian
+        FileBrowse.exe (two separate compiled exes, but the same app from
+        the person's perspective - see load_explorer_box's docstring) -
+        if either is already running, focus it instead of launching a
+        second one."""
+        if system_actions.focus_process_window("Meridian Explorer.exe"):
+            return {"ok": True, "error": None}
+        if system_actions.focus_process_window("Meridian FileBrowse.exe"):
+            return {"ok": True, "error": None}
         exe = BASE_DIR / "Meridian Explorer.exe"
         if not exe.exists():
             return {"ok": False, "error": "Meridian_Explorer.exe not found in the app folder."}
@@ -1475,6 +1887,15 @@ class Api:
 
         exe = BASE_DIR / "Meridian Explorer.exe"
         if exe.exists():
+            # Same single-instance rule as launch_meridian_explorer(): focus
+            # whichever Explorer-family window (standalone or boxed)
+            # already exists instead of opening a second one - though a
+            # focused existing window can't be handed this specific new
+            # path, so it's still opened fresh only when nothing's running.
+            if system_actions.focus_process_window("Meridian Explorer.exe"):
+                return {"ok": True, "error": None, "route": "meridian_explorer"}
+            if system_actions.focus_process_window("Meridian FileBrowse.exe"):
+                return {"ok": True, "error": None, "route": "meridian_explorer"}
             ok, err = system_actions.launch_path(str(exe), args=[path])
             return {"ok": ok, "error": err, "route": "meridian_explorer"}
         ok, err = system_actions.open_folder(path)
@@ -1494,35 +1915,81 @@ class Api:
         exe = BASE_DIR / "Meridian FileBrowse.exe"
         if not exe.exists():
             return {"ok": False, "error": "Meridian FileBrowse.exe not found in the app folder."}
-        self.unload_explorer_box()
-        try:
-            args = [str(exe), path, f"--box={int(x)},{int(y)},{int(w)},{int(h)}"]
-            _explorer_box_proc = subprocess.Popen(
-                args, cwd=str(BASE_DIR),
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            suspend_main_controls(True)
-            threading.Thread(target=_watch_explorer_box_exit, args=(_explorer_box_proc,), daemon=True).start()
-            return {"ok": True, "error": None}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        with _explorer_box_lock:
+            self.unload_explorer_box()
+            # Single-instance rule (see launch_meridian_explorer's docstring):
+            # a standalone Meridian Explorer.exe left running from some other
+            # entry point shouldn't coexist with this boxed one.
+            try:
+                if system_actions.is_process_running("Meridian Explorer.exe"):
+                    system_actions.kill_process("Meridian Explorer.exe")
+            except Exception:
+                pass
+            try:
+                args = [str(exe), path, f"--box={int(x)},{int(y)},{int(w)},{int(h)}"]
+                _explorer_box_proc = subprocess.Popen(
+                    args, cwd=str(BASE_DIR),
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                suspend_main_controls(True)
+                threading.Thread(target=_watch_explorer_box_exit, args=(_explorer_box_proc,), daemon=True).start()
+                return {"ok": True, "error": None}
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
 
     def unload_explorer_box(self):
         """Terminate the boxed Meridian Explorer process, if any, so it
         doesn't keep running in the background once the user leaves the
-        Explorer section, and hand Meridian Launcher's own controls back."""
+        Explorer section, and hand Meridian Launcher's own controls back.
+
+        Actually WAITS (briefly) for the process to really exit before
+        returning, rather than firing terminate() and moving on - .Popen.
+        terminate() is not synchronous, and load_explorer_box() calls this
+        right before spawning a replacement; without waiting here, a
+        rapid re-entrant call (a re-render that lands on the Explorer
+        section again before the previous load finished, for instance)
+        could spawn a second Meridian FileBrowse.exe before the first one
+        had actually finished dying, leaving two instances alive at once
+        instead of one cleanly replacing the other."""
         global _explorer_box_proc
-        if _explorer_box_proc is not None:
-            try:
-                if _explorer_box_proc.poll() is None:
-                    _explorer_box_proc.terminate()
-            except Exception:
-                pass
-            _explorer_box_proc = None
-        suspend_main_controls(False)
-        return {"ok": True, "error": None}
+        with _explorer_box_lock:
+            if _explorer_box_proc is not None:
+                proc = _explorer_box_proc
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            try:
+                                proc.wait(timeout=2)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                _explorer_box_proc = None
+            suspend_main_controls(False)
+            return {"ok": True, "error": None}
 
     # ---------------- Web section ----------------
+    def launch_cyberdeckbrowser_standalone(self):
+        """The Web section's own "CyberDeckBrowser" entry - this
+        represents the PROGRAM itself, not a URL, so it always opens the
+        real standalone app directly (the same way an Apps/Games item
+        would) rather than going through open_web_link()'s Browser-
+        section-routing / default-browser-fallback chain, which exists
+        for actual URLs (Web-section shortcuts) and previously also
+        (incorrectly) handled this entry, sometimes routing it into the
+        boxed Browser section or the system default browser instead of
+        opening CyberDeckBrowser itself."""
+        cdb = BASE_DIR / "CyberDeckBrowser.exe"
+        if not cdb.exists():
+            return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
+        _close_onscreenmenu_if_running()
+        ok, err = system_actions.launch_path(str(cdb), args=[WINDOW_MODE_REQUEST_FLAG])
+        return {"ok": ok, "error": err}
+
     def open_web_link(self, url):
         """Called when the user activates an internally-launched URL (a
         Web-section shortcut, etc). Routes it: Browser section visible ->
@@ -1535,6 +2002,7 @@ class Api:
 
         cdb = BASE_DIR / "CyberDeckBrowser.exe"
         if cdb.exists():
+            _close_onscreenmenu_if_running()
             args = [WINDOW_MODE_REQUEST_FLAG] + ([url] if url else [])
             ok, err = system_actions.launch_path(str(cdb), args=args)
             return {"ok": ok, "error": err, "route": "cyberdeck"}
@@ -1556,6 +2024,7 @@ class Api:
         if not exe.exists():
             return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
         self.unload_browser_box()
+        _close_onscreenmenu_if_running()
         try:
             args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}", "--notify-exit=browser"] + ([url] if url else [])
             _browser_box_proc = subprocess.Popen(
@@ -1592,6 +2061,7 @@ class Api:
         exe = BASE_DIR / "CyberDeckBrowser.exe"
         if not exe.exists():
             return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
+        _close_onscreenmenu_if_running()
         args = [WINDOW_MODE_REQUEST_FLAG] + ([url] if url else [])
         ok, err = system_actions.launch_path(str(exe), args=args)
         return {"ok": ok, "error": err}
@@ -1785,6 +2255,18 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    def set_music_sort_mode(self, mode):
+        if mode not in ("title_asc", "title_desc", "artist_asc", "artist_desc", "date_desc", "random"):
+            mode = "title_asc"
+        SETTINGS["music_sort_mode"] = mode
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_play_random_song_on_startup(self, enabled):
+        SETTINGS["play_random_song_on_startup"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
     def set_window_mode(self, mode):
         SETTINGS["window_mode"] = mode
         store.save_settings(SETTINGS)
@@ -1886,7 +2368,7 @@ class Api:
         decoded buttons, not sticks/triggers, across multiple independent
         reports - that's a real bug in that approach, not a one-off local
         issue, so it's opt-in now rather than the default."""
-        if backend not in ("xinput", "gameinput", "directinput", "sdl3", "auto"):
+        if backend not in ("xinput", "gameinput", "directinput", "sdl3", "joycon_pair", "browser_gamepad", "auto"):
             return SETTINGS
         SETTINGS["input_backend"] = backend
         # Keep the older boolean in sync for anything still reading it.
@@ -1901,7 +2383,7 @@ class Api:
         state the pad is reporting right now."""
         import gameinput_api
         out = {
-            "input_backend": SETTINGS.get("input_backend", "xinput"),
+            "input_backend": SETTINGS.get("input_backend", "auto"),
             "prefer_xinput": bool(SETTINGS.get("prefer_xinput", False)),
             "env_override": os.environ.get("MERIDIAN_INPUT_BACKEND", "") or None,
             "backend": None,
@@ -1931,6 +2413,24 @@ class Api:
         import gameinput_api
         gameinput_api.reset_diag()
         return True
+
+    def dump_controller_diag_now(self):
+        """Settings > Controls' "Dump Diagnostics Now" button - writes
+        gameinput_api's diagnostic dump immediately instead of waiting
+        for the automatic one a few minutes after startup (see
+        gameinput_api._schedule_diag_dump). Useful when you don't want
+        to wait, or want a fresh dump after just having moved sticks/
+        pressed buttons. Returns {"ok", "path", "error"}."""
+        import gameinput_api
+        listener = _CONTROLLER_LISTENER
+        backend_name = None
+        if listener is not None:
+            backend_name = listener.status().get("backend")
+        try:
+            gameinput_api._write_diag_dump(backend_name or "unknown")
+            return {"ok": True, "path": gameinput_api._diag_dump_path(), "error": None}
+        except Exception as e:
+            return {"ok": False, "path": None, "error": str(e)}
 
     def controller_status(self):
         """Diagnostic for the settings screen: which controller backend is
@@ -1996,14 +2496,26 @@ class Api:
         """Whether this app's window is the OS foreground window right now.
         The frontend uses this to gate controller navigation: input is still
         received in the background (so the foreground combo works), but it
-        shouldn't move the cursor or open menus until the app is focused."""
+        shouldn't move the cursor or open menus until the app is focused.
+
+        Also closes onscreenmenu.exe on the rising edge of becoming
+        foreground: it's a controller overlay meant for use over other,
+        external apps, and has nothing to do once you're back in Meridian
+        Launcher itself — left running it would otherwise sit on top of
+        the Launcher UI, still capturing controller input alongside it."""
         try:
             import ctypes
             hwnd = ctypes.windll.user32.GetForegroundWindow()
             our = ctypes.windll.user32.FindWindowW(None, APP_TITLE)
-            return bool(hwnd and our and hwnd == our)
+            now_foreground = bool(hwnd and our and hwnd == our)
         except Exception:
             return True  # non-Windows or failure: don't gate
+
+        global _WAS_FOREGROUND
+        if now_foreground and not _WAS_FOREGROUND:
+            _close_onscreenmenu_if_running()
+        _WAS_FOREGROUND = now_foreground
+        return now_foreground
 
     def set_close_tasks_without_prompt(self, enabled):
         SETTINGS["close_tasks_without_prompt"] = bool(enabled)
@@ -2055,6 +2567,79 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    # ---------------- backup & restore ----------------
+    def export_backup(self):
+        """Settings > Program > Backup & Restore > Export. Opens a save
+        dialog, then bundles settings.json, the control maps, and the
+        real Plugins/ + themes/ folders into one .zip. Returns
+        {"ok": bool, "error": str|None, "path": str|None} (path is None
+        if the dialog was cancelled - not an error)."""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                _DLG_SAVE,
+                save_filename=f"MeridianLauncher-backup-{time.strftime('%Y-%m-%d')}.zip",
+                file_types=("Zip files (*.zip)", "All files (*.*)"),
+            )
+        except Exception as e:
+            return {"ok": False, "error": str(e), "path": None}
+        dest = result[0] if isinstance(result, (list, tuple)) else result
+        if not dest:
+            return {"ok": True, "error": None, "path": None}
+        outcome = backup_restore.export_backup(BASE_DIR, dest, CURRENT_VERSION)
+        outcome["path"] = dest if outcome.get("ok") else None
+        return outcome
+
+    def pick_backup_to_import(self):
+        """Opens a picker for a backup .zip and returns what's inside it
+        (via inspect_backup) without applying anything yet, so the
+        frontend can show a confirmation before import_backup() actually
+        overwrites anything. Returns {"ok", "error", "path", "manifest",
+        "has_plugins", "has_themes"} - path is None if cancelled."""
+        try:
+            paths = webview.windows[0].create_file_dialog(
+                _DLG_OPEN, file_types=("Zip files (*.zip)", "All files (*.*)")
+            )
+        except Exception as e:
+            return {"ok": False, "error": str(e), "path": None}
+        if not paths:
+            return {"ok": True, "error": None, "path": None}
+        path = paths[0]
+        info = backup_restore.inspect_backup(path)
+        info["path"] = path
+        return info
+
+    def import_backup(self, zip_path):
+        """Applies a backup previously chosen via pick_backup_to_import().
+        Reloads SETTINGS in-place from the restored settings.json and
+        re-scans Plugins/ so newly-restored plugin folders show up
+        immediately, without requiring an app restart. Returns
+        {"ok": bool, "error": str|None, "settings": dict|None}."""
+        outcome = backup_restore.import_backup(BASE_DIR, zip_path)
+        if not outcome.get("ok"):
+            outcome["settings"] = None
+            return outcome
+        for pid in list(SETTINGS.get("plugins", {}).keys()):
+            plugin_manager.unload_backend(pid)
+        SETTINGS.clear()
+        SETTINGS.update(store.load_settings())
+        _rescan_plugins()
+        outcome["settings"] = SETTINGS
+        return outcome
+
+    # ---------------- Audio Output ----------------
+    def list_audio_devices(self):
+        try:
+            err = audio_devices.import_error()
+            if err is not None:
+                return {"ok": False, "devices": [], "error": "Audio Output unavailable: " + err}
+            devices = audio_devices.list_output_devices()
+            return {"ok": True, "devices": devices, "error": None}
+        except Exception as e:
+            return {"ok": False, "devices": [], "error": str(e)}
+
+    def set_audio_output_device(self, device_id):
+        return audio_devices.set_default_output_device(device_id)
+
     # ---------------- factory reset ----------------
     def factory_reset(self):
         fresh = store.default_settings()
@@ -2069,6 +2654,15 @@ class Api:
         if not exe.exists():
             return {"ok": False, "error": "Meridian Game Library.exe not found in the app folder."}
         ok, err = system_actions.launch_path(str(exe), args=[WINDOW_MODE_REQUEST_FLAG])
+        if ok:
+            # launch_path only requests a maximized window, not foreground
+            # focus - Windows' own foreground-lock behavior for a freshly
+            # spawned process is unreliable enough in practice that Game
+            # Library often stayed behind Meridian Launcher instead of
+            # actually taking over. Poll for its window (it takes a moment
+            # to actually appear) and explicitly focus it, then send
+            # Meridian Launcher itself to the background once that's done.
+            threading.Thread(target=_focus_game_library_and_background_self, daemon=True).start()
         return {"ok": ok, "error": err}
 
     # ---------------- settings: app data folder ----------------
@@ -2107,15 +2701,78 @@ class Api:
 # Controller wiring
 # --------------------------------------------------------------------------
 
-def _bring_to_foreground():
+def _focus_game_library_and_background_self(timeout=10.0):
+    """Polls for Meridian Game Library's window to actually exist (it
+    takes a moment after the process starts), focuses it once found using
+    the same AttachThreadInput technique as everything else here that
+    fights Windows' foreground-lock behavior, then minimizes Meridian
+    Launcher's own window so it's genuinely out of the way rather than
+    just sitting behind Game Library still fully rendered."""
+    deadline = time.time() + timeout
+    focused = False
+    while time.time() < deadline:
+        if system_actions.focus_process_window("Meridian Game Library.exe"):
+            focused = True
+            break
+        time.sleep(0.2)
+    if not focused:
+        return
     if win32gui is None:
         return
     try:
         hwnd = win32gui.FindWindow(None, APP_TITLE)
         if hwnd:
-            if win32gui.IsIconic(hwnd):
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+    except Exception:
+        pass
+
+
+def _bring_to_foreground():
+    """Brings Meridian Launcher's window to the foreground - the Start+
+    Select combo's whole job. Plain SetForegroundWindow often silently
+    does nothing here: Windows' foreground-lock protection blocks a
+    background process from stealing focus unless it currently "owns"
+    it in some way (recently sent real input, is already foreground,
+    etc) - and this call comes from the controller-polling background
+    thread of a background/minimized app, precisely the case that
+    protection exists to block. AttachThreadInput is the standard,
+    long-documented workaround: briefly attach this thread's input
+    state to the current foreground window's thread, which satisfies
+    that check, make the call, then detach again immediately after."""
+    if win32gui is None:
+        return
+    try:
+        hwnd = win32gui.FindWindow(None, APP_TITLE)
+        if not hwnd:
+            return
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+        cur_thread = win32api.GetCurrentThreadId()
+        fg_hwnd = win32gui.GetForegroundWindow()
+        fg_thread = 0
+        if fg_hwnd and win32process is not None:
+            try:
+                fg_thread, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
+            except Exception:
+                fg_thread = 0
+
+        attached = False
+        if fg_thread and fg_thread != cur_thread:
+            try:
+                attached = bool(ctypes.windll.user32.AttachThreadInput(fg_thread, cur_thread, True))
+            except Exception:
+                attached = False
+
+        try:
+            win32gui.BringWindowToTop(hwnd)
             win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                try:
+                    ctypes.windll.user32.AttachThreadInput(fg_thread, cur_thread, False)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -2136,10 +2793,54 @@ _LAST_CONTROLLER_ACTION = [None, 0.0]
 # the frontend, so the two don't fight over the same physical controller.
 _controller_suspended_for_plugin = False
 
+# Set (via a background poll of a small shared flag file, not checked
+# per-frame directly - see _watch_external_menu_flag below) whenever a
+# standalone Meridian Explorer instance has a menu/popup open. XInput/
+# DirectInput have no OS-level concept of "exclusive" access - nothing
+# can literally stop an unrelated third-party program from also reading
+# the same physical controller - but Meridian Launcher itself CAN (and
+# should) get out of the way while Explorer's own menu wants sole
+# control of it, the same way boxed Explorer/Browser sections already do.
+_external_menu_open = False
+
+_EXTERNAL_MENU_FLAG_FILE = None
+
+
+def _external_menu_flag_path():
+    global _EXTERNAL_MENU_FLAG_FILE
+    if _EXTERNAL_MENU_FLAG_FILE is None:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        shared_dir = os.path.join(base, "Meridian Launcher", "shared")
+        try:
+            os.makedirs(shared_dir, exist_ok=True)
+        except Exception:
+            pass
+        _EXTERNAL_MENU_FLAG_FILE = os.path.join(shared_dir, "external_menu_open.flag")
+    return _EXTERNAL_MENU_FLAG_FILE
+
+
+def _watch_external_menu_flag():
+    """Background thread: checks every 200ms (fast enough to feel
+    immediate, cheap enough not to matter) whether the shared flag file a
+    standalone Meridian Explorer writes while a menu is open still
+    exists, and updates _external_menu_open accordingly."""
+    global _external_menu_open
+    path = _external_menu_flag_path()
+    while True:
+        try:
+            _external_menu_open = os.path.exists(path)
+        except Exception:
+            pass
+        time.sleep(0.2)
+
 
 def suspend_main_controls(suspended=True):
     global _controller_suspended_for_plugin
     _controller_suspended_for_plugin = bool(suspended)
+
+
+def _controls_suspended():
+    return _controller_suspended_for_plugin or _external_menu_open
 
 
 def _watch_explorer_box_exit(proc):
@@ -2216,7 +2917,7 @@ def restart_controller():
 
 
 def _controller_action(action_name):
-    if _controller_suspended_for_plugin:
+    if _controls_suspended():
         return
     # record it for the settings debugger before dispatching
     _LAST_CONTROLLER_ACTION[0] = action_name
@@ -2228,7 +2929,7 @@ def _controller_action(action_name):
 
 
 def _controller_any():
-    if _controller_suspended_for_plugin:
+    if _controls_suspended():
         return
     try:
         webview.windows[0].evaluate_js("window.handleControllerAny && window.handleControllerAny()")
@@ -2240,7 +2941,7 @@ def _controller_raw_button(name):
     """Forwards raw DPAD/A/B rising edges to the frontend, independent of
     whatever the user has confirm/back remapped to — used only to watch for
     the kiosk-mode secret unlock sequence."""
-    if _controller_suspended_for_plugin:
+    if _controls_suspended():
         return
     try:
         webview.windows[0].evaluate_js(f"window.handleRawControllerButton && window.handleRawControllerButton('{name}')")
@@ -2279,6 +2980,14 @@ def _open_folder_routed(path):
     if SETTINGS.get("route_folders_to_meridian_explorer"):
         exe = BASE_DIR / "Meridian Explorer.exe"
         if exe.exists():
+            # Single-instance rule (see Api.launch_meridian_explorer's
+            # docstring): focus an already-running Explorer-family window
+            # rather than opening a second one. It can't be handed this
+            # specific new path once already running/focused, same
+            # trade-off as the Desktop-entry fallback makes.
+            if (system_actions.focus_process_window("Meridian Explorer.exe")
+                    or system_actions.focus_process_window("Meridian FileBrowse.exe")):
+                return True, None
             try:
                 subprocess.Popen([str(exe), str(path)], cwd=str(BASE_DIR))
                 return True, None
@@ -2300,7 +3009,7 @@ def start_controller():
         on_quit_combo=_quit_via_combo,
         on_foreground_combo=_bring_to_foreground,
         foreground_trigger_getter=lambda: SETTINGS.get("foreground_trigger", "start_select"),
-        input_backend=SETTINGS.get("input_backend", "xinput"),
+        input_backend=SETTINGS.get("input_backend", "auto"),
         cooldown_scale_getter=lambda: _NAV_COOLDOWN_SCALE[0],
         on_raw_button=_controller_raw_button,
         on_y_hold_complete=_on_y_hold_complete,
@@ -2379,6 +3088,7 @@ def main():
 
     start_controller()
     start_background_precache()
+    threading.Thread(target=_watch_external_menu_flag, daemon=True).start()
     webview.start(
         _check_for_update_at_boot, window,
         debug=False, gui="edgechromium",

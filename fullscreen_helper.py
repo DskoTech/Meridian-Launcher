@@ -19,6 +19,13 @@ This is a blunt instrument and not what every app wants, which is why it's
 a per-install, off-by-default Settings toggle ("Fullscreen Helper") rather
 than the default launch behavior. It only affects .exe launches; folders,
 .bat/.cmd scripts, and URLs are untouched.
+
+Besides the initial force (plus a couple of quick reapply passes for apps
+that re-assert their own window style right after opening), this also
+rechecks at 5s/10s/15s after launch: if the forced window has disappeared
+by then (a splash screen closing into a real window later than the quick
+passes cover, an update/relaunch cycle, etc), it looks for a replacement
+window belonging to the same process and forces that fullscreen too.
 """
 
 import os
@@ -120,7 +127,17 @@ def _force_borderless_fullscreen(hwnd):
         pass  # foreground can be denied depending on focus-stealing rules; non-fatal
 
 
-def _watch_and_enforce(pid):
+# After the initial force + quick reapply passes above, keep checking at
+# these points (seconds since launch) for a window that's since
+# disappeared - a splash screen closing into a real window later than
+# _REAPPLY_DELAYS covers, an update/relaunch cycle, a crash-and-respawn,
+# etc - and force fullscreen again if a replacement window shows up.
+_RECHECK_DELAYS = (5.0, 10.0, 15.0)
+
+
+def _watch_and_enforce(path, args, proc):
+    launch_time = time.time()
+    pid = proc.pid
     hwnd = _find_window_for_pid(pid)
     if not hwnd:
         return
@@ -129,10 +146,39 @@ def _watch_and_enforce(pid):
         time.sleep(delay)
         try:
             if not win32gui.IsWindow(hwnd):
-                return
+                hwnd = None
+                break
             _force_borderless_fullscreen(hwnd)
         except Exception:
+            hwnd = None
+            break
+
+    for checkpoint in _RECHECK_DELAYS:
+        remaining = checkpoint - (time.time() - launch_time)
+        if remaining > 0:
+            time.sleep(remaining)
+
+        # The process itself exited - nothing left to enforce, and no
+        # point checking later checkpoints either.
+        if proc.poll() is not None:
             return
+
+        window_lost = hwnd is None or not win32gui.IsWindow(hwnd)
+        if not window_lost:
+            continue  # still there and still forced from earlier - nothing to do
+
+        # Window's gone (or was never found) - look for a new one
+        # belonging to the same process and, if found, force it
+        # fullscreen the same way the initial launch did. A short-ish
+        # timeout here since this is a periodic recheck, not the initial
+        # launch wait, which already gets the full _FIND_WINDOW_TIMEOUT.
+        new_hwnd = _find_window_for_pid(pid, timeout=3.0)
+        if new_hwnd:
+            hwnd = new_hwnd
+            try:
+                _force_borderless_fullscreen(hwnd)
+            except Exception:
+                hwnd = None
 
 
 def launch_and_enforce_fullscreen(path, args=None):
@@ -154,5 +200,5 @@ def launch_and_enforce_fullscreen(path, args=None):
     except Exception as e:
         return False, str(e)
 
-    threading.Thread(target=_watch_and_enforce, args=(proc.pid,), daemon=True).start()
+    threading.Thread(target=_watch_and_enforce, args=(path, args, proc), daemon=True).start()
     return True, None

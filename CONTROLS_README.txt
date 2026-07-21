@@ -73,9 +73,16 @@ Sections (Settings toggles, off by default unless noted):
                           plugin and a Rescan button. See CUSTOMIZATION.md.
 
 Controller input backend (Settings > Controls): a cycle button steps
-through XInput (default) / GameInput / DirectInput / SDL3 / Auto. XInput
-is the default because it's the plain, stable, fully-public API and
-correctly reports every button/trigger/stick.
+through XInput (default) / GameInput / DirectInput / SDL3 / Joy-Con Pair /
+Browser Gamepad API / Auto. XInput is the default because it's the plain,
+stable, fully-public API and correctly reports every button/trigger/stick.
+GameInput uses a compiled native extension (gameinput_native/) when it's
+been built, falling back to a less reliable method otherwise. Joy-Con Pair
+(experimental, unverified mapping) combines a connected left+right
+Nintendo Joy-Con into one controller. Browser Gamepad API reads the
+controller via the web browser's own Gamepad API instead of native code -
+has been found to keep working inside Windows' Xbox Full Screen Experience
+when the others don't.
 
 Remapping: confirm / back / up / down / left / right are remappable in
 controller_controls.json and keyboard_controls.json in the app data folder

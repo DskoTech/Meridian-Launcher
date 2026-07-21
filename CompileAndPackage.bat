@@ -111,6 +111,18 @@ if defined FAILED (
     exit /b 1
 )
 
+echo   - XInputToKeyboard (optional - only needed for Controller Bridge)...
+pyinstaller "%ROOT%xinput_to_keyboard.spec" --distpath "%ROOT%dist" --workpath "%ROOT%build\xinput_to_keyboard" --noconfirm < NUL
+if not exist "%ROOT%dist\XInputToKeyboard.exe" (
+    echo     [WARN] Not built - Controller Bridge won't be available in this
+    echo     build ^(everything else still works^). Usually means the
+    echo     'keyboard' package isn't installed: pip install keyboard
+    echo     --break-system-packages and try again.
+) else (
+    echo     OK - dist\XInputToKeyboard.exe
+)
+echo.
+
 echo ============================================================
 echo  All 6 apps compiled. Each app's output is sitting in its
 echo  own "dist" folder inside its project folder:
@@ -120,6 +132,7 @@ echo    Meridian_Explorer\dist\
 echo    Meridian_FileBrowse\dist\
 echo    onscreenmenu\dist\
 echo    "Meridian Game Library\dist\Meridian Game Library\"
+echo  Plus, if the 'keyboard' package was available: dist\XInputToKeyboard.exe
 echo ============================================================
 echo.
 
@@ -136,6 +149,14 @@ copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"            "%ROOT%DskoTech\" 
 REM default-shell-browser trampolines - best-effort only
 if exist "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse Shell Handler.exe" (
     copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse Shell Handler.exe" "%ROOT%DskoTech\" >nul
+)
+
+REM XInputToKeyboard.exe (Controller Bridge) - best-effort only, since the
+REM 'keyboard' package might not be installed and that's fine, everything
+REM else still works without it. main.py looks for it right next to
+REM MeridianLauncher.exe.
+if exist "%ROOT%dist\XInputToKeyboard.exe" (
+    copy /y "%ROOT%dist\XInputToKeyboard.exe" "%ROOT%DskoTech\" >nul
 )
 
 REM onedir apps - full dist contents flattened in

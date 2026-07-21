@@ -93,7 +93,7 @@ Plugins/
 }
 ```
 
-- `"type"`: `"list"` (default), `"webapp"`, or `"option"`.
+- `"type"`: `"list"` (default), `"webapp"`, `"option"`, or `"addon"`.
 - `"list"` plugins also need a `backend.py` (see below).
 - `"webapp"` plugins need a `"url"` field instead — no `backend.py`
   needed; Meridian Launcher boxes a Meridian NetBrowse instance pinned to
@@ -102,6 +102,20 @@ Plugins/
   existing section id it should surface inside, e.g. `"chat"`) — it
   behaves like a webapp plugin once activated, just without getting its
   own entry in the sections bar.
+- `"addon"` plugins are like `"option"` (need `"url"` + `"section"`,
+  target must be a built-in section id), with two differences: they
+  auto-disable themselves when their target section is itself hidden in
+  Settings, and they accept extra layout-preference fields —
+  `"window_position"` (a preset, or `"default"`) and booleans
+  `"show_subfolder"`/`"show_thumbnail"`/`"show_clock"`/`"show_battery"`/
+  `"show_taskbar"`/`"show_music_player"` controlling which of those stay
+  visible while this plugin is boxed. `"url"` doesn't have to be an
+  external site — several bundled examples (Task Manager, Display &
+  Audio, Wi-Fi & Bluetooth, Type from Phone) point at
+  `http://127.0.0.1:<port>/`, a tiny local HTTP server the plugin starts
+  itself (see e.g. `task_manager_server.py`) rather than anything on the
+  open internet. That pattern is worth copying for any plugin that needs
+  real logic behind it instead of just embedding an existing website.
 
 ### `backend.py` (list-type plugins only)
 

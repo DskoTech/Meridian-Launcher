@@ -35,7 +35,11 @@ a = Analysis(
     ],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=['gameinput_native'],  # see gameinput_api.py's sys.path fix - this stops
+    # PyInstaller's build-time analyzer from baking in a hollow reference to the
+    # SOURCE folder (repo root's gameinput_native/, sitting right next to main.py),
+    # which otherwise permanently shadows the real, externally-placed .pyd at
+    # runtime - see gameinput_native/README.md's "Distributing it" section.
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

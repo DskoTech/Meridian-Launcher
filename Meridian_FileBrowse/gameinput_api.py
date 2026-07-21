@@ -816,11 +816,6 @@ class _NativeGameInputGamepad:
             DIAG["stage"] = "native poll() returned None (no reading available)"
             return None
         DIAG["readings"] += 1
-        # 7-tuple from an older-built .pyd (before raw_buttons/timestamp
-        # were added to help diagnose "reads successfully but everything
-        # is always zero"), or the current 9-tuple - handle both so an
-        # unrebuilt .pyd doesn't crash on unpack, it just won't have the
-        # two extra diagnostic fields.
         if len(result) >= 9:
             buttons, lt, rt, lx, ly, rx, ry, raw_buttons, timestamp_us = result[:9]
             DIAG["native_raw_buttons"] = "0x%08X" % raw_buttons

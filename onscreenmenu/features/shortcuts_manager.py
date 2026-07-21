@@ -1,9 +1,9 @@
 """
 onscreenmenu Shortcuts Manager (Y button)
 
-The Y menu always starts with "Meridian Launcher" (fixed, cannot
-be removed), followed by up to MAX_CUSTOM_SHORTCUTS user-added
-shortcuts, followed by "Add Shortcut" / "Remove Shortcut".
+The Y menu always starts with "Meridian Launcher" and "Controls"
+(both fixed, cannot be removed), followed by up to MAX_CUSTOM_SHORTCUTS
+user-added shortcuts, followed by "Add Shortcut" / "Remove Shortcut".
 """
 
 import os
@@ -28,6 +28,8 @@ def _onscreenmenu_dir():
 
 
 MERIDIAN_LABEL = "Meridian Launcher"
+
+CONTROLS_LABEL = "Controls"
 
 MERIDIAN_EXE_NAME = "MeridianLauncher.exe"
 
@@ -83,7 +85,7 @@ class ShortcutsManager:
 
         return (
 
-            [MERIDIAN_LABEL]
+            [MERIDIAN_LABEL, CONTROLS_LABEL]
 
             +
 

@@ -2,18 +2,28 @@
 setlocal enabledelayedexpansion
 
 REM ============================================================
-REM  Meridian Suite - One-Shot Installer
+REM  Meridian Suite - One-Shot Installer (WITH gameinput_native build)
+REM
+REM  This is a variant of InstallMeridianSuite.bat that ADDITIONALLY
+REM  installs the Microsoft C++ Build Tools (a multi-GB download) and
+REM  then builds and stages gameinput_native.pyd (the real Microsoft
+REM  GameInput SDK backend for controller input - see
+REM  gameinput_native/README.md) using them. Kept as its own separate
+REM  file rather than a flag on the main installer since that download
+REM  is much larger than everything else the main installer needs, and
+REM  most people don't need it - controller input works fine without
+REM  it, on the older ctypes fallback. Use this one instead of
+REM  InstallMeridianSuite.bat if you specifically want the more
+REM  reliable GameInput backend and don't mind the extra download time.
 REM
 REM  NOTE: gameinput_native/ (an optional compiled C++ extension for
 REM  more reliable GameInput controller support - see
-REM  gameinput_native/README.md) is NOT built by this installer. It
-REM  needs the MSVC toolchain and is built separately; everything
-REM  else works fine without it (falls back automatically to a less
-REM  reliable method). See InstallMeridianSuite_WithGameInputBuild.bat
-REM  for a variant of this same installer that DOES build and stage it
-REM  (kept as a separate file rather than a flag on this one, since it
-REM  needs the much larger MSVC Build Tools download this installer
-REM  otherwise deliberately avoids requiring).
+REM  gameinput_native/README.md) IS built by this installer, including
+REM  the MSVC Build Tools it needs to do so (see the step below) - it
+REM  just [WARN]s and everything else still installs and works fine,
+REM  falling back to the older ctypes implementation for controller
+REM  input - see Settings > Controls' diag readout in any installed app
+REM  for DIAG["native_status"] to confirm which one ended up active.
 REM
 REM  Does everything, in order:
 REM    1. Elevates itself to Administrator if it isn't already.
@@ -132,6 +142,7 @@ echo [2/6] Installing Python build dependencies...
     pywebview mutagen Pillow psutil pywin32 ^
     PySide6 shiboken6 ^
     pygame keyboard ^
+    pybind11 ^
     pycaw comtypes qrcode
 if errorlevel 1 (
     echo   [ERROR] pip failed to install one or more packages - scroll up
@@ -231,10 +242,72 @@ if not exist "%ROOT%dist\XInputToKeyboard.exe" (
 echo.
 
 REM gameinput_native.pyd (optional - real GameInput SDK backend for
-REM controller input) is deliberately NOT built by this installer - see
-REM InstallMeridianSuite_WithGameInputBuild.bat for the variant that
-REM does. Controller input works fine without it, on the older ctypes
+REM controller input, see gameinput_native/README.md) is deliberately
+REM NOT part of the FAILED check above: this whole step is best-effort,
+REM same as XInputToKeyboard above - if any part of it fails, the rest
+REM of the suite still installs and works fine on the older ctypes
 REM fallback.
+REM
+REM Building it needs the MSVC Build Tools specifically (pybind11
+REM alone, installed above, isn't enough - that's the Python-side
+REM binding generator, not a C++ compiler). THIS is the one thing that
+REM makes InstallMeridianSuite_WithGameInputBuild.bat a different file
+REM from the plain installer rather than a flag on it: the Build Tools
+REM are a multi-GB download, so the plain installer deliberately never
+REM fetches them. This variant does, right here, the same way it
+REM already fetches WebView2/VC++ Redist below - but unlike those two
+REM (small, fast Microsoft installers that genuinely no-op in a second
+REM or two), vs_buildtools.exe is a heavy bootstrapper that still
+REM spends real time re-downloading its own component catalog and
+REM doing a "modify" pass even when nothing ends up changing - worth
+REM actually detecting "already installed" up front and skipping the
+REM whole thing, rather than relying on the bootstrapper's own
+REM no-op-if-present behavior the way the smaller installers below do.
+echo   - Microsoft C++ Build Tools ^(needed to build gameinput_native^)...
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VCTOOLS_FOUND="
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
+        if not "%%i"=="" set "VCTOOLS_FOUND=1"
+    )
+)
+if defined VCTOOLS_FOUND (
+    echo     OK - already installed, skipping ^(found via vswhere^).
+) else (
+    echo     Not found - installing ^(this step alone can take a while on a
+    echo     fresh machine, several GB^)...
+    if exist "%ROOT%Dependencies\vs_buildtools.exe" (
+        copy /y "%ROOT%Dependencies\vs_buildtools.exe" "%TEMPDL%\vs_buildtools.exe" >nul
+    ) else (
+        powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile '%TEMPDL%\vs_buildtools.exe'"
+    )
+    if exist "%TEMPDL%\vs_buildtools.exe" (
+        "%TEMPDL%\vs_buildtools.exe" --quiet --wait --norestart --nocache ^
+            --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended
+        echo     OK - installed.
+    ) else (
+        echo     [WARN] Couldn't download the C++ Build Tools - gameinput_native
+        echo            will fail to build below and fall back to the older ctypes
+        echo            implementation ^(everything else still works^). Install the
+        echo            "Desktop development with C++" workload manually from
+        echo            https://visualstudio.microsoft.com/visual-cpp-build-tools/
+        echo            and re-run this installer to try again.
+    )
+)
+echo.
+
+echo   - gameinput_native ^(optional - real GameInput SDK backend^)...
+%PY% "%ROOT%gameinput_native\build_and_deploy.py" < NUL
+if not exist "%ROOT%gameinput_native\gameinput_native*.pyd" (
+    echo     [WARN] Not built - controller input will use the older ctypes
+    echo            fallback in this install ^(everything else still works^).
+    echo            Usually means the C++ Build Tools step above didn't
+    echo            complete successfully - see gameinput_native\README.md
+    echo            to build it manually, or just re-run this installer.
+) else (
+    echo     OK - built ^(staged into %%INSTALL_DIR%% below^).
+)
+echo.
 
 REM ---------------------------------------------------------
 REM  4. Stage everything into one flat folder, then install it
@@ -267,6 +340,15 @@ REM optional. Landing here means it's automatically "next to" Meridian
 REM Launcher, which is where main.py looks for it.
 if exist "%ROOT%dist\XInputToKeyboard.exe" (
     copy /y "%ROOT%dist\XInputToKeyboard.exe" "%STAGE%\" >nul
+)
+
+REM gameinput_native.pyd - best-effort, see the build step above. Only
+REM ONE copy is needed here (unlike CompileAndPackage.bat's per-app
+REM subfolder layout) since this installer flattens every app into one
+REM shared %STAGE%\ folder - every exe that looks for it right next to
+REM itself finds this same copy.
+for %%F in ("%ROOT%gameinput_native.cp*-win_amd64.pyd") do (
+    copy /y "%%F" "%STAGE%\" >nul
 )
 
 REM onedir apps - full dist contents flattened in

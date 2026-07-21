@@ -24,7 +24,8 @@ RAW_CODE_BUTTONS = {"DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "A", "B"}
 
 # How long Y must be held continuously to disable kiosk mode.
 Y_HOLD_SECONDS = 45.0
-X_HOLD_SECONDS = 3  # hold X this long on an open-programs bar item to close it
+X_HOLD_SECONDS = 2  # hold X this long on an open-programs bar item to close it
+B_HOLD_SECONDS = 2  # hold B this long to jump straight to Settings > System
 
 DEFAULT_CONTROLS = {
     "confirm": "A",
@@ -33,7 +34,13 @@ DEFAULT_CONTROLS = {
     "down": "DPAD_DOWN",
     "left": "DPAD_LEFT",
     "right": "DPAD_RIGHT",
-    "quit_combo": ["LEFT_THUMB", "RIGHT_THUMB"],
+    # L3+R3 used to instantly quit the app; removed per user request — a
+    # controller-only user with no other way out of Meridian Launcher was
+    # one accidental double-click of the sticks away from losing the app
+    # with no confirmation. Empty means the combo is disabled outright,
+    # not "use the old default" — see the .get() calls below, which no
+    # longer supply that default either.
+    "quit_combo": [],
     "foreground_combo": ["START", "BACK"],
     "deadzone": 0.25,
     "cooldown_ms": 200,
@@ -87,6 +94,8 @@ class ControllerListener:
         self._y_fired = False
         self._x_hold_start = None
         self._x_fired = False
+        self._b_hold_start = None
+        self._b_fired = False
         # returns "start_select" | "xbox" | "off" — how to bring the app to
         # the foreground. Read fresh each poll so Settings changes apply live.
         self._fg_getter = foreground_trigger_getter
@@ -151,7 +160,7 @@ class ControllerListener:
                 rising = pressed - self._button_names(self._prev_buttons)
 
                 # combos
-                quit_combo = set(self.controls.get("quit_combo", ["LEFT_THUMB", "RIGHT_THUMB"]))
+                quit_combo = set(self.controls.get("quit_combo", []))
                 # Foreground trigger is a user setting: Start+Select
                 # together, the Guide/Xbox button, or off. (BACK is the
                 # physical "Select"/"View" button in XInput terms.)
@@ -212,6 +221,24 @@ class ControllerListener:
                     if btn and btn in rising:
                         self.on_action(action_name)
 
+                # B held for B_HOLD_SECONDS -> on top of the normal tap-
+                # triggered "back" action above (which already ran on the
+                # rising edge - not suppressed here), also fires
+                # "back_hold_system": jump straight into Settings > System
+                # instead of just landing on the Sections bar the plain
+                # back action leaves you on.
+                back_btn = self.controls.get("back")
+                if back_btn and back_btn in pressed:
+                    if self._b_hold_start is None:
+                        self._b_hold_start = time.time()
+                        self._b_fired = False
+                    elif not self._b_fired and (time.time() - self._b_hold_start) >= B_HOLD_SECONDS:
+                        self._b_fired = True
+                        self.on_action("back_hold_system")
+                else:
+                    self._b_hold_start = None
+                    self._b_fired = False
+
                 # Y quick-press (distinct from the 45s hold above) -> jump to
                 # the subfolder/filter panel, same idea as the \ key
                 if "Y" in rising:
@@ -259,6 +286,29 @@ class ControllerListener:
                         self.on_action("prev_track")
                     if "RIGHT_SHOULDER" in rising:
                         self.on_action("next_track")
+
+                # R3 (right stick click): stop music. Edge-triggered same
+                # as every other single-button action.
+                if "RIGHT_THUMB" in rising:
+                    self.on_action("stop_music")
+
+                # Right stick left/right: rewind/fast-forward the current
+                # track by 10s. Edge-triggered on crossing the deadzone
+                # (not cooldown-repeated like navigation) so a single
+                # flick means a single 10s seek - holding the stick over
+                # doesn't rapid-fire more seeks, it has to return to
+                # center and be pushed again.
+                rx = self._deadzone(snap.rx)
+                if rx < 0:
+                    if not self._combo_latch.get("rstick_seek"):
+                        self._combo_latch["rstick_seek"] = True
+                        self.on_action("seek_back_10")
+                elif rx > 0:
+                    if not self._combo_latch.get("rstick_seek"):
+                        self._combo_latch["rstick_seek"] = True
+                        self.on_action("seek_fwd_10")
+                else:
+                    self._combo_latch["rstick_seek"] = False
 
                 # directional: dpad OR left stick, cooldown-repeated while held
                 lx = self._deadzone(snap.lx)
