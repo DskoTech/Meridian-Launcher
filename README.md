@@ -1,8 +1,8 @@
 # Meridian Launcher
-
+on click Compile and install with InstallMeridianSuite_WithGameInputBuild.bat
 A cross-bar style desktop front-end / app launcher for Windows: one
 horizontal row of sections, a vertical list per section, navigable by
-keyboard, mouse, or game controller.
+keyboard, mouse, or game controller. w/ alt thems for different layouts.
 
 **This build targets Windows only.** Most of its features — launching
 .exe/.bat files, opening Explorer/Control Panel/Task Manager, shutdown/sleep/
@@ -14,10 +14,9 @@ See also: **CHANGELOG.md** (dated, itemized history of every revision),
 **CUSTOMIZATION.md** (themes, Plugins, settings, everything you can
 change without touching code).
 
-**`obsolete/`** holds files identified as superseded by later work but
-not deleted — see `obsolete/README.md` for what's there and why, if you
-want to review and decide whether to actually remove them.
-
+This is the latest stable build, There are non functional and sub optimized future coming soon features included.
+the browser currently does not have persistent memory despite my efforts to make it so and it also cant run streaming
+video yet despite having plugins included for it. that will come soon enough.
 ## Latest revision — four new controller-first plug-ons, real Bluetooth
 ## pairing, streaming/login fixes, and a round of crash fixes
 
@@ -191,13 +190,6 @@ Renamed the program (internally and externally) from **Meridian** to
 
 ## This revision — built on your uploaded files
 
-Started from the zip you uploaded (which turned out to be my build from two
-turns back, plus your style.css edits) and kept every one of your changes
-exactly: the horizon glow line at `top: 76px`, the category row `gap: 86px`,
-and the preview pane's `transform: translateX(-100px)`. Your real
-`settings.json`, `.cache`, `keyboard_controls.json`, and
-`controller_controls.json` were left untouched too — only the source files
-changed.
 
 **Category row no longer bleeds into the clock area.** The row was
 previously clipped by `overflow: hidden` on itself, but since it's also the
