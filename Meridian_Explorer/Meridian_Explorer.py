@@ -13,6 +13,7 @@ import time
 import shutil
 import string
 import ctypes
+from ctypes import wintypes
 import subprocess
 import collections
 
@@ -96,8 +97,177 @@ try:
 except ImportError:
     open_gamepad = None
     SDLJoystickShim = None
+
+
 # --------------------------------------------------------------------------- #
-# CONFIG
+# NATIVE DRAG-AND-DROP (pick-up-and-drop onto another window, e.g. real
+# Windows Explorer - see MeridianExplorer.handle_mouse's long-press logic)
+# --------------------------------------------------------------------------- #
+# When the drop target is OUTSIDE this app's own window, there's no way to
+# hand a file to whatever's under the cursor except to do what a real drag
+# would: a genuine OS-level left-button-down + move + up sequence, which
+# Explorer (or anything else that's a native OLE drop target) already knows
+# how to interpret as a file drag - no custom protocol needed. SendInput is
+# indistinguishable from real hardware input to the rest of Windows, which is
+# exactly why this works; a single teleport-and-release would NOT work, since
+# Explorer's own drag detection watches for incremental mouse-move deltas
+# past a small threshold before it starts tracking something as a drag at
+# all - _perform_native_drag below interpolates the path in real steps with
+# a small delay between them for exactly that reason.
+_MOUSEEVENTF_MOVE = 0x0001
+_MOUSEEVENTF_ABSOLUTE = 0x8000
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long), ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_ulong), ("mi", _MOUSEINPUT)]
+
+
+def _send_mouse_input(dx=0, dy=0, flags=0):
+    extra = ctypes.c_ulong(0)
+    inp = _INPUT(0, _MOUSEINPUT(dx, dy, 0, flags, 0, ctypes.pointer(extra)))  # type=0 -> INPUT_MOUSE
+    ctypes.windll.user32.SendInput(1, ctypes.pointer(inp), ctypes.sizeof(inp))
+
+
+def _screen_to_absolute(x, y):
+    """SendInput's MOUSEEVENTF_ABSOLUTE coordinate space is 0-65535
+    mapped across the primary screen, not raw pixels."""
+    sw = ctypes.windll.user32.GetSystemMetrics(0) or 1
+    sh = ctypes.windll.user32.GetSystemMetrics(1) or 1
+    return int(x * 65535 / max(sw - 1, 1)), int(y * 65535 / max(sh - 1, 1))
+
+
+def _move_mouse_to(x, y):
+    ax, ay = _screen_to_absolute(x, y)
+    _send_mouse_input(ax, ay, _MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE)
+
+
+def _get_cursor_pos():
+    pt = wintypes.POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    return (pt.x, pt.y)
+
+
+def _perform_native_drag(src_pos, dst_pos, steps=20, step_delay=0.012):
+    """Synthesizes a real OS-level left-button drag from src_pos to
+    dst_pos (both absolute screen coordinates), so whatever's under
+    dst_pos - typically a real Explorer window, since a drop within this
+    app's own window is handled separately by _complete_carry - receives
+    a completely ordinary-looking native drag-and-drop it already knows
+    how to handle. Blocking; only takes ~250-400ms total."""
+    _move_mouse_to(*src_pos)
+    time.sleep(0.05)  # let the OS/target register the cursor arriving here first
+    _send_mouse_input(flags=_MOUSEEVENTF_LEFTDOWN)
+    time.sleep(0.05)
+    for i in range(1, steps + 1):
+        t = i / steps
+        x = int(src_pos[0] + (dst_pos[0] - src_pos[0]) * t)
+        y = int(src_pos[1] + (dst_pos[1] - src_pos[1]) * t)
+        _move_mouse_to(x, y)
+        time.sleep(step_delay)
+    time.sleep(0.05)  # let the drop target's hover/highlight feedback catch up before releasing
+    _send_mouse_input(flags=_MOUSEEVENTF_LEFTUP)
+
+
+# --------------------------------------------------------------------------- #
+# WINDOW SNAPPING (Share Screen - see MeridianExplorer.begin_share_screen)
+# --------------------------------------------------------------------------- #
+_SW_RESTORE = 9
+_GWL_EXSTYLE = -20
+_WS_EX_TOOLWINDOW = 0x00000080
+# Titles that technically pass IsWindowVisible + have window text but are
+# shell/system chrome, not something anyone would ever want to "share
+# screen" with - filtered out of the picker list by exact title match
+# rather than anything cleverer, since these are stable, well-known names.
+_SHARE_SCREEN_DENYLIST_TITLES = {
+    "Program Manager", "Windows Input Experience", "Task Switching",
+    "Start", "Search", "Windows Shell Experience Host",
+}
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+def _own_hwnd():
+    """This app's own native window handle - pygame/SDL exposes it
+    directly on Windows, no need to search for it by title."""
+    try:
+        return pygame.display.get_wm_info().get("window")
+    except Exception:
+        return None
+
+
+def _get_window_rect(hwnd):
+    rect = _RECT()
+    if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+    return None
+
+
+def _move_and_resize_window(hwnd, x, y, w, h):
+    """Restores the window first if it's maximized/minimized - Windows
+    silently ignores (or does something unexpected with) an explicit
+    move/resize on a window that's currently in either of those states,
+    so this is needed before every snap, not just the visibly-obvious
+    cases."""
+    if not hwnd:
+        return False
+    try:
+        ctypes.windll.user32.ShowWindow(hwnd, _SW_RESTORE)
+        return bool(ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, True))
+    except Exception:
+        return False
+
+
+def _list_other_top_level_windows(exclude_hwnd):
+    """[(hwnd, title)] for other visible, titled, non-tool-window top-level
+    windows - the "other open windows" list Share Screen picks from.
+    Deliberately simple filtering (visible + has title + not a tool
+    window + not on the small denylist above) rather than trying to
+    guess intent any harder than that; a stray utility window showing up
+    in the list is a much smaller problem than a real window going
+    missing from it."""
+    results = []
+    user32 = ctypes.windll.user32
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def _callback(hwnd, _lparam):
+        if hwnd == exclude_hwnd:
+            return True
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        ex_style = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+        if ex_style & _WS_EX_TOOLWINDOW:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = buf.value.strip()
+        if not title or title in _SHARE_SCREEN_DENYLIST_TITLES:
+            return True
+        results.append((hwnd, title))
+        return True
+
+    try:
+        user32.EnumWindows(EnumWindowsProc(_callback), 0)
+    except Exception:
+        pass
+    return results
+
+
 # --------------------------------------------------------------------------- #
 COOLDOWN = 0.2 # seconds between accepted controller inputs
 FAST_SCROLL_COOLDOWN = 0.05 # trigger-held repeat rate for fast scrolling
@@ -106,6 +276,7 @@ TRIGGER_DEADZONE = 0.1 # analog trigger axis: -1 released -> 1 fully pressed
 SELECT_HOLD_TIME = 0.35 # how long Back/Select must be held to enter multi mode
 DOUBLE_CLICK_TIME = 0.4
 ROW_HEIGHT = 38
+LONG_PRESS_SECONDS = 0.5 # how long left-click must be held to "pick up"/"drop" a file
 HEADER_HEIGHT = 90
 FOOTER_HEIGHT = 60
 PANE_GAP = 14
@@ -417,9 +588,28 @@ class Cooldown:
             return True
         return False
 class MeridianExplorer:
-    def __init__(self, start_path=None, box=None):
+    def __init__(self, start_path=None, box=None, close_on_background=False):
         pygame.init()
         pygame.display.set_caption("Meridian Explorer")
+        # Auto-close-on-background: used for ephemeral opens (a browser
+        # download's "show in folder", or similar plugin/one-off file-
+        # location opens) that shouldn't linger as a persistent window
+        # once the person's attention has clearly moved elsewhere - see
+        # _maybe_close_on_background(), called from run()'s main loop.
+        # NOT used for a normal double-click/Desktop-entry/"make default
+        # folder handler" launch, which should behave like any other
+        # persistent app and stay open across alt-tabs.
+        self.close_on_background = close_on_background
+        self._bg_frames = 0
+        # Foreground tracking: Meridian Explorer shouldn't act on
+        # controller/keyboard input (or keep click-through mouse input
+        # active) while some other window is focused - see
+        # _is_foreground()/run()'s per-frame check below - and should
+        # close onscreenmenu (if running) the instant it regains
+        # foreground, the same rising-edge behavior Meridian Launcher's
+        # own is_foreground() already has, for the same reason: the
+        # overlay is meant for external apps, not needed once back here.
+        self._was_foreground = False
         if box:
             # "Boxed" mode: used when Meridian Launcher's Explorer section is
             # visible but hasn't loaded the full in-process Meridian
@@ -467,6 +657,16 @@ class MeridianExplorer:
         apply_palette(self._effective_theme())
         # Three-pane "quick access" mode (Windows-Explorer-like left rail).
         self.three_pane = bool(prefs.get("three_pane", False))
+        if self.three_pane:
+            # Quick Access mode always starts with the main file listing
+            # pane selected (index 1), not the rail (index 0) - matches
+            # what switching INTO this mode mid-session already does (see
+            # "Switch Pane Modes" below); this covers the mode being
+            # restored from a previous session at startup instead, which
+            # otherwise left active_pane at its hardcoded initial value
+            # of 0 (the rail) regardless of which mode actually got
+            # restored.
+            self.active_pane = 1
         self.quick_access = prefs.get("quick_access", [])  # user custom shortcuts
         self.quick_selected = 0
         # Undo/redo stacks for move operations.
@@ -494,6 +694,15 @@ class MeridianExplorer:
         self.flash_until = 0
         self._last_click_time = 0
         self._last_click_pos = None
+        # ---- long-press pick-up-and-drop (see handle_mouse) ---- #
+        self._press_down_time = None
+        self._press_down_pos = None
+        self.carry = None  # {"path", "is_dir", "name"} while something is "picked up"
+        # ---- Share Screen (see begin_share_screen) ---- #
+        self.share_windows = []   # [(hwnd, title), ...] populated when the picker opens
+        self.share_selected = 0
+        self.share_scroll = 0
+        self._pre_share_rect = None  # this window's rect before snapping, restored on cancel
         # Controller: gameinput_api.open_gamepad() already tries XInput
         # (the default - plain, stable, fully-public API, correctly
         # reports every button/trigger/stick) then GameInput, DirectInput,
@@ -612,6 +821,8 @@ class MeridianExplorer:
     def switch_pane(self, direction):
         if self.multi_active:
             return # pane switching is locked while multi-select is active
+        if self.single_pane:
+            return # only one pane is visible/selectable in single-pane mode
         self.active_pane = (self.active_pane + direction) % len(self.panes)
     # ------------------------------------------------------------------ #
     # FILE OPERATIONS
@@ -910,7 +1121,7 @@ class MeridianExplorer:
                     self.menu_options.append("Undo Move")
                 if self.redo_stack:
                     self.menu_options.append("Redo Move")
-                self.menu_options += ["Switch Pane Modes", "Exit Program", "Cancel"]
+                self.menu_options += ["Switch Pane Modes", "Share Screen", "Exit Program", "Cancel"]
                 self.menu_is_multi = False
                 self.menu_selected = 0
                 self.menu_pane_index = self.active_pane
@@ -940,7 +1151,7 @@ class MeridianExplorer:
                 self.menu_options.append("Undo Move")
             if self.redo_stack:
                 self.menu_options.append("Redo Move")
-            self.menu_options += ["Switch Pane Modes", "Exit Program", "Cancel"]
+            self.menu_options += ["Switch Pane Modes", "Share Screen", "Exit Program", "Cancel"]
             self.menu_is_multi = False
         self.menu_selected = 0
         self.menu_pane_index = self.active_pane
@@ -1008,6 +1219,10 @@ class MeridianExplorer:
             self.set_flash(msg)
             self.save_state()
             self.close_menu()
+            return
+        if choice == "Share Screen":
+            self.close_menu()
+            self.begin_share_screen()
             return
         if choice == "Open":
             for path in targets:
@@ -1224,6 +1439,10 @@ class MeridianExplorer:
     def handle_keyboard(self, event):
         if event.type != pygame.KEYDOWN:
             return
+        if event.key == pygame.K_ESCAPE and self.carry is not None:
+            self.set_flash(f"Cancelled \u2014 \u201c{self.carry['name']}\u201d put back down.")
+            self.carry = None
+            return
         # --- text entry popup swallows normal keys --- #
         if self.state == "text_input":
             if event.key == pygame.K_RETURN:
@@ -1260,6 +1479,25 @@ class MeridianExplorer:
                 self.confirm_menu_selection()
             elif event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
                 self.close_menu()
+            return
+        if self.state == "share_picker":
+            n = len(self.share_windows)
+            if event.key == pygame.K_UP and n:
+                self.share_selected = (self.share_selected - 1) % n
+                if self.share_selected < self.share_scroll:
+                    self.share_scroll = self.share_selected
+                elif self.share_selected >= self.share_scroll + 8:
+                    self.share_scroll = self.share_selected - 7
+            elif event.key == pygame.K_DOWN and n:
+                self.share_selected = (self.share_selected + 1) % n
+                if self.share_selected < self.share_scroll:
+                    self.share_scroll = self.share_selected
+                elif self.share_selected >= self.share_scroll + 8:
+                    self.share_scroll = self.share_selected - 7
+            elif event.key == pygame.K_RETURN:
+                self.confirm_share_selection()
+            elif event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+                self.close_share_picker(restore=True)
             return
         # --- normal browsing --- #
         pane = self.panes[self.active_pane]
@@ -1345,7 +1583,24 @@ class MeridianExplorer:
     def handle_mouse(self, event):
         if event.type != pygame.MOUSEBUTTONDOWN:
             return
+        if event.button == 1 and pygame.Rect(self.share_screen_box_rect()).collidepoint(event.pos):
+            self.begin_share_screen()
+            return
+        if event.button == 1 and pygame.Rect(self.exit_box_rect()).collidepoint(event.pos):
+            self.running = False
+            return
         # Any popup open: clicks just act like Back except we keep it simple
+        if self.state == "share_picker":
+            if event.button == 1:
+                _, rows = self._share_picker_row_rects()
+                for i, row_rect in rows:
+                    if pygame.Rect(row_rect).collidepoint(event.pos):
+                        self.share_selected = i
+                        self.confirm_share_selection()
+                        break
+            elif event.button == 3:
+                self.close_share_picker(restore=True)
+            return
         if self.state != "browse":
             if event.button == 3: # right click = back/cancel out of popups
                 if self.state == "menu":
@@ -1362,6 +1617,8 @@ class MeridianExplorer:
             if idx is None:
                 continue
             if event.button == 1: # left click
+                self._press_down_time = time.time()
+                self._press_down_pos = event.pos
                 if not self.multi_active:
                     self.active_pane = i
                 pane.selected = idx
@@ -1384,6 +1641,212 @@ class MeridianExplorer:
                 else:
                     pane.go_up()
             return
+    def handle_mouse_up(self, event):
+        if event.button == 1:
+            # A long-press already fires its action mid-hold (see
+            # _update_press_hold) and clears _press_down_time itself so it
+            # can't fire twice - this just cleans up a press that was
+            # released before crossing the long-press threshold (an
+            # ordinary click, already fully handled on the DOWN event
+            # above) so the NEXT press starts from a clean slate.
+            self._press_down_time = None
+            self._press_down_pos = None
+    def _resolve_pane_and_row_at(self, pos):
+        """(pane_index, pane, row_idx_or_None) for whichever pane pos
+        falls within, or None if pos isn't over either pane at all."""
+        for i, rect in enumerate(self.pane_rects()):
+            if pygame.Rect(rect).collidepoint(pos):
+                return i, self.panes[i], self.row_index_at(self.panes[i], rect, pos)
+        return None
+    def _try_start_carry(self):
+        """Long-press fired with nothing already picked up: pick up
+        whatever's under the press-down position (see handle_mouse - that's
+        where the press actually started, which is what should get picked
+        up even if the cursor drifted slightly by the time the hold
+        threshold crossed)."""
+        if self._press_down_pos is None:
+            return
+        hit = self._resolve_pane_and_row_at(self._press_down_pos)
+        if hit is None:
+            return
+        i, pane, idx = hit
+        if idx is None:
+            return
+        entry = pane.entries[idx]
+        if entry.is_drive:
+            return # can't pick up "This PC" drive entries
+        path = pane.full_path_of(entry)
+        self.carry = {
+            "path": path,
+            "is_dir": entry.is_dir,
+            "name": pane.display_name_of(entry),
+            "source_screen_pos": _get_cursor_pos(),
+        }
+        self.set_flash(f"Picked up \u201c{self.carry['name']}\u201d \u2014 long-press a destination to drop it (Esc to cancel)")
+    def _complete_carry(self):
+        """Long-press fired with something already picked up: drop it at
+        the CURRENT cursor position - inside this app's own window, that's
+        a plain file move/copy; outside it (e.g. over a real Explorer
+        window), a real synthesized OS-level drag is the only way to hand
+        it off, since nothing else understands "here's a file" across
+        process/window boundaries the way native OLE drag-and-drop does."""
+        carry = self.carry
+        self.carry = None
+        if carry is None:
+            return
+        if pygame.mouse.get_focused():
+            self._drop_carry_internally(carry, pygame.mouse.get_pos())
+        else:
+            dest_pos = _get_cursor_pos()
+            self.set_flash(f"Dropping \u201c{carry['name']}\u201d\u2026")
+            try:
+                _perform_native_drag(carry["source_screen_pos"], dest_pos)
+            except Exception:
+                self.set_flash("Couldn't complete the drag.")
+    def _drop_carry_internally(self, carry, mouse_pos):
+        hit = self._resolve_pane_and_row_at(mouse_pos)
+        if hit is None:
+            self.set_flash("Not over a pane - drag cancelled.")
+            return
+        i, pane, idx = hit
+        dest_dir = pane.path
+        if idx is not None:
+            entry = pane.entries[idx]
+            target_path = pane.full_path_of(entry)
+            if entry.is_dir or entry.is_drive:
+                dest_dir = target_path
+        if dest_dir == THISPC:
+            self.set_flash("Can't drop into This PC.")
+            return
+        src = carry["path"]
+        if os.path.normcase(os.path.dirname(src.rstrip(os.sep))) == os.path.normcase(dest_dir.rstrip(os.sep)):
+            self.set_flash(f"\u201c{carry['name']}\u201d is already there.")
+            return
+        dst = os.path.join(dest_dir, carry["name"])
+        # Same convention real Windows drag-and-drop uses: move within the
+        # same drive, copy across drives (no modifier-key tracking from a
+        # controller/held-click gesture to base a Ctrl/Shift override on).
+        same_drive = os.path.splitdrive(src)[0].lower() == os.path.splitdrive(dest_dir)[0].lower()
+        try:
+            if same_drive:
+                shutil.move(src, dst)
+                self.set_flash(f"Moved \u201c{carry['name']}\u201d.")
+            elif carry["is_dir"]:
+                shutil.copytree(src, dst)
+                self.set_flash(f"Copied \u201c{carry['name']}\u201d.")
+            else:
+                shutil.copy2(src, dst)
+                self.set_flash(f"Copied \u201c{carry['name']}\u201d.")
+        except (OSError, shutil.Error):
+            self.set_flash(f"Couldn't drop \u201c{carry['name']}\u201d here.")
+        for p in self.panes:
+            p.refresh()
+    def _update_press_hold(self):
+        """Polled once per frame from run() - see LONG_PRESS_SECONDS.
+        Fires at most once per physical press (clears _press_down_time
+        immediately after) so holding past the threshold never repeats the
+        action every subsequent frame."""
+        if self._press_down_time is None:
+            return
+        if not pygame.mouse.get_pressed()[0]:
+            # Button already released (handle_mouse_up should have caught
+            # this, but the per-frame poll can occasionally see it first) -
+            # treat as an ordinary short click, do nothing further here.
+            self._press_down_time = None
+            return
+        if time.time() - self._press_down_time < LONG_PRESS_SECONDS:
+            return
+        self._press_down_time = None
+        if self.carry is None:
+            self._try_start_carry()
+        else:
+            self._complete_carry()
+    # ------------------------------------------------------------------ #
+    # SHARE SCREEN ([O] button next to [X], or Y menu > Share Screen)
+    # ------------------------------------------------------------------ #
+    def _resize_own_window(self, x, y, w, h):
+        """Moving/resizing THIS window (unlike the other-window case in
+        confirm_share_selection, which is a foreign window pygame has no
+        stake in) needs an extra step beyond the plain WinAPI call: this
+        window was created NOFRAME without RESIZABLE (see __init__'s
+        set_mode call), so pygame has no way to notice its own window
+        changed size out from under it - self.width/self.height and the
+        render surface would silently desync from the real window,
+        cropping or misaligning everything drawn afterward. Calling
+        pygame's own set_mode() first keeps those in sync (pygame-ce's
+        set_mode reuses the existing native window rather than creating
+        a new one for a NOFRAME window); the WinAPI call after guarantees
+        the exact position, since set_mode alone doesn't reliably control
+        that."""
+        try:
+            self.screen = pygame.display.set_mode((w, h), pygame.NOFRAME)
+            self.width, self.height = w, h
+        except Exception:
+            pass
+        own = _own_hwnd()
+        _move_and_resize_window(own, x, y, w, h)
+    def begin_share_screen(self):
+        """Snaps this window to the left half of the screen, then opens a
+        scrollable picker of every other open window; confirming one
+        snaps THAT window to the right half - a manual, controller-
+        friendly split-screen since Windows' own Snap Assist expects a
+        mouse drag to a screen edge."""
+        own = _own_hwnd()
+        if not own:
+            self.set_flash("Couldn't identify this window - Share Screen unavailable.")
+            return
+        others = _list_other_top_level_windows(own)
+        if not others:
+            self.set_flash("No other open windows to share the screen with.")
+            return
+        self._pre_share_rect = _get_window_rect(own)
+        self._pre_share_size = (self.width, self.height)
+        sw = ctypes.windll.user32.GetSystemMetrics(0)
+        sh = ctypes.windll.user32.GetSystemMetrics(1)
+        self._resize_own_window(0, 0, sw // 2, sh)
+        self.share_windows = others
+        self.share_selected = 0
+        self.share_scroll = 0
+        self.state = "share_picker"
+    def confirm_share_selection(self):
+        if not (0 <= self.share_selected < len(self.share_windows)):
+            self.close_share_picker(restore=False)
+            return
+        hwnd, title = self.share_windows[self.share_selected]
+        sw = ctypes.windll.user32.GetSystemMetrics(0)
+        sh = ctypes.windll.user32.GetSystemMetrics(1)
+        ok = _move_and_resize_window(hwnd, sw // 2, 0, sw - sw // 2, sh)
+        self.state = "browse"
+        self.set_flash(f"Sharing screen with \u201c{title}\u201d." if ok else f"Couldn't move \u201c{title}\u201d.")
+    def close_share_picker(self, restore=True):
+        """restore=True (Escape/right-click/[Cancel]) puts this window's
+        size back to what it was before Share Screen snapped it left;
+        restore=False (a selection was actually confirmed) leaves it
+        snapped, since that's the point of having picked something."""
+        self.state = "browse"
+        if restore and self._pre_share_rect is not None:
+            x, y, w, h = self._pre_share_rect
+            self._resize_own_window(x, y, w, h)
+        self._pre_share_rect = None
+    def _share_picker_row_rects(self):
+        """Screen-space (well, window-space - this popup always renders
+        inside this window regardless of where the picker's target
+        windows themselves live) rects for each VISIBLE row, honoring
+        share_scroll - used by both drawing and click hit-testing so they
+        can never disagree with each other."""
+        item_h = 40
+        visible_rows = 8
+        width = 520
+        height = 90 + item_h * min(visible_rows, len(self.share_windows))
+        x = (self.width - width) // 2
+        y = (self.height - height) // 2
+        rects = []
+        lo = self.share_scroll
+        hi = min(lo + visible_rows, len(self.share_windows))
+        for row, i in enumerate(range(lo, hi)):
+            row_y = y + 60 + row * item_h
+            rects.append((i, (x + 16, row_y, width - 32, item_h - 6)))
+        return (x, y, width, height), rects
     # ------------------------------------------------------------------ #
     # INPUT: CONTROLLER
     # ------------------------------------------------------------------ #
@@ -1433,6 +1896,33 @@ class MeridianExplorer:
                     self.confirm_menu_selection()
                 elif pressed(1) and self.cooldown.ready("c_b"):
                     self.close_menu()
+                continue
+            if self.state == "share_picker":
+                n = len(self.share_windows)
+                def _step(delta):
+                    if not n:
+                        return
+                    self.share_selected = (self.share_selected + delta) % n
+                    if self.share_selected < self.share_scroll:
+                        self.share_scroll = self.share_selected
+                    elif self.share_selected >= self.share_scroll + 8:
+                        self.share_scroll = self.share_selected - 7
+                if j.get_numhats() > 0:
+                    _, hat_y = j.get_hat(0)
+                    if hat_y == 1 and self.cooldown.ready("c_menu_up"):
+                        _step(-1)
+                    elif hat_y == -1 and self.cooldown.ready("c_menu_down"):
+                        _step(1)
+                if j.get_numaxes() >= 2:
+                    ax_y = j.get_axis(1)
+                    if ax_y < -STICK_DEADZONE and self.cooldown.ready("c_menu_up"):
+                        _step(-1)
+                    elif ax_y > STICK_DEADZONE and self.cooldown.ready("c_menu_down"):
+                        _step(1)
+                if pressed(0) and self.cooldown.ready("c_a", 1.0):
+                    self.confirm_share_selection()
+                elif pressed(1) and self.cooldown.ready("c_b"):
+                    self.close_share_picker(restore=True)
                 continue
             # ---- normal browsing ---- #
             if j.get_numhats() > 0:
@@ -1537,7 +2027,30 @@ class MeridianExplorer:
                 self.panes[self.multi_pane_index].entries) and self.panes[self.multi_pane_index].entries else "MULTI-SELECT MODE"
             tag_surf = self.font_row.render(tag, True, COL_MULTI_MARK)
             self.screen.blit(tag_surf, (30, 48))
+        pygame.draw.rect(self.screen, COL_HEADER_BG, self.share_screen_box_rect())
+        pygame.draw.rect(self.screen, COL_PANE_BORDER, self.share_screen_box_rect(), 2)
+        sx, sy, sw, sh = self.share_screen_box_rect()
+        pygame.draw.circle(self.screen, COL_ACCENT, (sx + sw // 2, sy + sh // 2), sw // 2 - 10, 2)
+        pygame.draw.rect(self.screen, COL_HEADER_BG, self.exit_box_rect())
+        pygame.draw.rect(self.screen, COL_PANE_BORDER, self.exit_box_rect(), 2)
+        ex, ey, ew, eh = self.exit_box_rect()
+        pad = 12
+        pygame.draw.line(self.screen, COL_ACCENT, (ex + pad, ey + pad), (ex + ew - pad, ey + eh - pad), 2)
+        pygame.draw.line(self.screen, COL_ACCENT, (ex + ew - pad, ey + pad), (ex + pad, ey + eh - pad), 2)
         pygame.draw.line(self.screen, COL_PANE_BORDER, (0, HEADER_HEIGHT), (self.width, HEADER_HEIGHT), 2)
+
+    def exit_box_rect(self):
+        size = 32
+        margin = 14
+        return (self.width - size - margin, margin, size, size)
+    def share_screen_box_rect(self):
+        """[O] button, immediately to the left of [X] - see
+        begin_share_screen for what it does."""
+        size = 32
+        margin = 14
+        gap = 10
+        ex, ey, ew, eh = self.exit_box_rect()
+        return (ex - gap - size, margin, size, size)
     def draw_footer(self):
         y = self.height - FOOTER_HEIGHT
         pygame.draw.rect(self.screen, COL_FOOTER_BG, (0, y, self.width, FOOTER_HEIGHT))
@@ -1847,6 +2360,32 @@ class MeridianExplorer:
             color = COL_DANGER if opt == "Delete" else COL_TEXT
             text = self.font_row.render(opt, True, color)
             self.screen.blit(text, (row_rect[0] + 16, row_y + (item_h - 8 - text.get_height()) // 2))
+    def draw_share_picker(self):
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+        (x, y, w, h), rows = self._share_picker_row_rects()
+        self.draw_popup_box("SHARE SCREEN \u2014 PICK A WINDOW", w, h)
+        for i, row_rect in rows:
+            hwnd, title = self.share_windows[i]
+            if i == self.share_selected:
+                pygame.draw.rect(self.screen, COL_POPUP_ITEM_HL, row_rect, border_radius=8)
+            text = self.font_row.render(title, True, COL_TEXT)
+            # Long titles get clipped rather than overflowing the popup -
+            # window titles are arbitrary and can be much longer than
+            # anything else this picker-style UI normally shows.
+            max_w = row_rect[2] - 32
+            if text.get_width() > max_w:
+                clip = pygame.Surface((max_w, text.get_height()), pygame.SRCALPHA)
+                clip.blit(text, (0, 0))
+                text = clip
+            self.screen.blit(text, (row_rect[0] + 16, row_rect[1] + (row_rect[3] - text.get_height()) // 2))
+        if self.share_scroll > 0:
+            hint = self.font_footer.render("\u25B2 more above", True, COL_DIM_TEXT)
+            self.screen.blit(hint, (x + (w - hint.get_width()) // 2, y + 40))
+        if self.share_scroll + 8 < len(self.share_windows):
+            hint = self.font_footer.render("\u25BC more below", True, COL_DIM_TEXT)
+            self.screen.blit(hint, (x + (w - hint.get_width()) // 2, y + h - 26))
     def draw_confirm(self, title, yes_no_hint):
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
@@ -1917,6 +2456,14 @@ class MeridianExplorer:
             self.draw_text_input()
         elif self.state == "properties":
             self.draw_properties()
+        elif self.state == "share_picker":
+            self.draw_share_picker()
+        if self.carry is not None:
+            label = f"Carrying \u201c{self.carry['name']}\u201d \u2014 long-press a destination to drop (Esc to cancel)"
+            surf = self.font_footer.render(label, True, (140, 220, 255))
+            bar = pygame.Rect(0, self.height - 34, self.width, 34)
+            pygame.draw.rect(self.screen, (20, 30, 45), bar)
+            self.screen.blit(surf, (self.width // 2 - surf.get_width() // 2, self.height - 28))
         if self.flash_message and time.time() < self.flash_until:
             surf = self.font_footer.render(self.flash_message, True, (255, 220, 120))
             self.screen.blit(surf, (self.width // 2 - surf.get_width() // 2, self.height - 60))
@@ -1926,18 +2473,123 @@ class MeridianExplorer:
     # ------------------------------------------------------------------ #
     def run(self):
         while self.running:
+            is_foreground = self._update_foreground_state()
+            self._update_external_menu_flag()
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
                 elif event.type == pygame.KEYDOWN:
-                    self.handle_keyboard(event)
+                    if is_foreground:
+                        self.handle_keyboard(event)
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    self.handle_mouse(event)
-            self.handle_controller()
+                    if is_foreground:
+                        self.handle_mouse(event)
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    if is_foreground:
+                        self.handle_mouse_up(event)
+            if is_foreground:
+                self.handle_controller()
+                self._update_press_hold()
             self.draw()
+            self._maybe_close_on_background()
             self.clock.tick(60)
+        try:
+            path = self._external_menu_flag_path()
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
         self.save_state()
         pygame.quit()
+
+    def _is_foreground(self):
+        try:
+            hwnd = pygame.display.get_wm_info().get("window")
+            if not hwnd:
+                return True  # can't tell; don't wrongly gate input off
+            return ctypes.windll.user32.GetForegroundWindow() == hwnd
+        except Exception:
+            return True
+
+    def _external_menu_flag_path(self):
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        shared_dir = os.path.join(base, "Meridian Launcher", "shared")
+        try:
+            os.makedirs(shared_dir, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(shared_dir, "external_menu_open.flag")
+
+    def _update_external_menu_flag(self):
+        """Writes/removes a small shared flag file while a menu/popup is
+        open here, so Meridian Launcher (if running) can suspend its own
+        controller handling while this one wants sole control of the
+        shared physical controller - see main.py's _watch_external_menu_flag.
+        There's no OS-level way to actually stop an unrelated third-party
+        program from also reading the same controller; this only reaches
+        Meridian Launcher specifically, which is the one other program
+        actually positioned to cooperate with it."""
+        menu_open = self.state != "browse"
+        path = self._external_menu_flag_path()
+        try:
+            if menu_open and not os.path.exists(path):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(str(os.getpid()))
+            elif not menu_open and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+    def _update_foreground_state(self):
+        """Called once per frame from run(). Tracks the rising edge of
+        regaining foreground (not just "is foreground right now") so
+        onscreenmenu only gets closed once per actual focus change, not
+        every single frame this window happens to be focused."""
+        now_foreground = self._is_foreground()
+        if now_foreground and not self._was_foreground:
+            self._close_onscreenmenu_if_running()
+        self._was_foreground = now_foreground
+        return now_foreground
+
+    def _close_onscreenmenu_if_running(self):
+        try:
+            import psutil
+        except ImportError:
+            return
+        try:
+            for proc in psutil.process_iter(["pid", "name"]):
+                try:
+                    if (proc.info.get("name") or "").lower() == "onscreenmenu.exe":
+                        proc.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+                    continue
+        except Exception:
+            pass
+
+    def _maybe_close_on_background(self):
+        """Closes this window once it's spent a short debounce period
+        (not foreground for ~15 consecutive frames, roughly a quarter
+        second at 60fps - long enough to ignore a single-frame focus
+        flicker during window creation, short enough to feel immediate
+        otherwise) without OS foreground focus. Only active when this
+        instance was launched with --close-on-background (an ephemeral,
+        one-off file-location open - see __init__)."""
+        if not self.close_on_background:
+            return
+        try:
+            hwnd = pygame.display.get_wm_info().get("window")
+            if not hwnd:
+                return
+            foreground = ctypes.windll.user32.GetForegroundWindow()
+            if foreground == hwnd:
+                self._bg_frames = 0
+            else:
+                self._bg_frames += 1
+                if self._bg_frames >= 15:
+                    self.running = False
+        except Exception:
+            pass
+
 def _parse_box_arg():
     """Looks for a --box=X,Y,W,H argument (screen coordinates Meridian
     Launcher wants this window sized/positioned to). Returns a
@@ -1953,6 +2605,73 @@ def _parse_box_arg():
     return None
 
 
+def _another_standalone_instance_running_and_focused(box):
+    """Only guards the STANDALONE launch path (no --box=) - a boxed
+    instance (spawned by Meridian Launcher's Explorer section) is
+    intentionally not single-instance-guarded here, since Meridian
+    Launcher's own load_explorer_box already serializes that (terminates
+    any previous boxed instance before starting a new one).
+
+    If a standalone Meridian Explorer (or Meridian FileBrowse, its boxed
+    sibling exe - see main.py's launch_meridian_explorer docstring for
+    why these two count as "the same app") is already running, focus it
+    instead of letting a second window open. Returns True (and has
+    already focused the existing window) if this run should exit
+    immediately instead of continuing to start up."""
+    if box:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        return False
+    my_pid = os.getpid()
+    my_parent_pid = os.getppid()
+    other_names = {"meridian explorer.exe", "meridian filebrowse.exe"}
+    target_pid = None
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            if proc.pid in (my_pid, my_parent_pid):
+                continue
+            name = (proc.info.get("name") or "").lower()
+            if name in other_names:
+                target_pid = proc.pid
+                break
+        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            continue
+    if target_pid is None:
+        return False
+
+    # Best-effort focus of the existing instance's window - if this fails
+    # for any reason, still treat "another instance is running" as true
+    # and exit anyway, rather than opening a second window regardless.
+    try:
+        user32 = ctypes.windll.user32
+        found = {"hwnd": None}
+        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+
+        def _enum_cb(hwnd, _):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            pid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == target_pid:
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    found["hwnd"] = hwnd
+                    return False
+            return True
+
+        user32.EnumWindows(EnumWindowsProc(_enum_cb), 0)
+        hwnd = found["hwnd"]
+        if hwnd:
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+    return True
+
+
 def _start_path_from_argv():
     """Folder to open, from the command line — how Windows hands us the
     path when Meridian Explorer is registered as a folder handler
@@ -1960,7 +2679,7 @@ def _start_path_from_argv():
     a folder open here. A file path is accepted too and resolves to its
     containing folder. Returns None when there's nothing usable, so plain
     double-click launches behave exactly as before."""
-    path_args = [a for a in sys.argv[1:] if not a.startswith("--box=")]
+    path_args = [a for a in sys.argv[1:] if not a.startswith("--box=") and a != "--close-on-background"]
     if not path_args:
         return None
     raw = " ".join(path_args).strip().strip('"')
@@ -1977,4 +2696,12 @@ def _start_path_from_argv():
 
 
 if __name__ == "__main__":
-    MeridianExplorer(start_path=_start_path_from_argv(), box=_parse_box_arg()).run()
+    _box = _parse_box_arg()
+    if _another_standalone_instance_running_and_focused(_box):
+        sys.exit(0)
+    _close_on_background = "--close-on-background" in sys.argv
+    MeridianExplorer(
+        start_path=_start_path_from_argv(),
+        box=_box,
+        close_on_background=_close_on_background,
+    ).run()

@@ -44,6 +44,7 @@ const ICONS = {
   windowsupdate: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3"/><path d="M18 3v4h-4M6 21v-4h4"/></svg>`,
   wifi: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 8.5a16 16 0 0120 0M5.5 12a11 11 0 0113 0M9 15.5a6 6 0 016 0"/><circle cx="12" cy="19" r="1.2" fill="currentColor" stroke="none"/></svg>`,
   bluetooth: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>`,
+  audio: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 10v4h4l5 5V5L8 10H4z"/><path d="M17 8a5 5 0 010 8M19.5 5.5a9 9 0 010 13"/></svg>`,
 };
 
 const PALETTE = ["#60a5fa", "#f472b6", "#34d399", "#fb923c", "#e879f9", "#facc15", "#c084fc", "#38bdf8"];
@@ -58,6 +59,7 @@ const SETTINGS_OPTIONS = [
   ["sections", "Sections", "Media folders, custom sections, display styles"],
   ["plugins", "Plugins", "Discovered Plugins/ folders, visibility, rescan"],
   ["themes", "Themes", "Window mode, layouts, colors, backgrounds"],
+  ["addons", "Addon Settings", "Custom settings from plugins, plug-ons, and themes"],
   ["program", "Program", "App behavior, updates, factory reset"],
   ["about", "About", "Credits"],
 ];
@@ -94,6 +96,11 @@ const GAME_LIBRARY_ITEM = { __gameLibrary: true, name: "Game Library" };
 // Safe-first: a stray confirm press lands on something harmless (Task
 // Manager), not something destructive (Shut Down is last).
 const SYSTEM_ITEMS = [
+  { id: "close", label: "Close Program", icon: "close" },
+  { id: "sleep", label: "Sleep", icon: "sleep" },
+  { id: "hibernate", label: "Hibernate", icon: "hibernate" },
+  { id: "shutdown", label: "Shut Down", icon: "power" },
+  { id: "restart", label: "Restart", icon: "restart" },
   { id: "taskmanager", label: "Task Manager", icon: "taskmanager" },
   { id: "controlpanel", label: "Control Panel", icon: "controlpanel" },
   { id: "recyclebin", label: "Recycle Bin", icon: "recyclebin" },
@@ -104,10 +111,7 @@ const SYSTEM_ITEMS = [
   { id: "windowsupdate", label: "Windows Update", icon: "windowsupdate" },
   { id: "wifi", label: "Wi-Fi", icon: "wifi" },
   { id: "bluetooth", label: "Bluetooth", icon: "bluetooth" },
-  { id: "close", label: "Close Program", icon: "close" },
-  { id: "sleep", label: "Sleep", icon: "sleep" },
-  { id: "hibernate", label: "Hibernate", icon: "hibernate" },
-  { id: "shutdown", label: "Shut Down", icon: "power" },
+  { id: "audio", label: "Audio Output", icon: "audio" },
 ];
 
 // Carousel pivots at Apps (index 3): categories at/before it render in a
@@ -201,7 +205,7 @@ function buildCategories(settings) {
     color: PALETTE[(custom.length + i) % PALETTE.length],
   });
   const visiblePluginEntries = Object.entries(settings.plugins || {})
-    .filter(([, p]) => p.visible && p.type !== "option");
+    .filter(([, p]) => p.visible && p.type !== "option" && p.type !== "addon");
   const startEntry = visiblePluginEntries.find(([pid]) => pid === "start");
   const pinStartAfterDesktop = !!(startEntry && settings.desktop_section_enabled);
   const plugins = visiblePluginEntries
@@ -617,6 +621,7 @@ function applyLayoutClass() {
   applyTaskbarPlacement();
   syncSubfolderNavWidth();
   applyIconSize();
+  if (state.categories && state.categories.length) renderCategories();
   // theme changed -> its own background & overlay apply
   if (state.settings) { applyBackground(state.settings); applyOverlay(state.settings); }
 }
@@ -624,6 +629,7 @@ function applyLayoutClass() {
 // List icon size (small = classic, then medium/large/xl at 2x each): a
 // body class drives a CSS variable; row heights grow with the icon since
 // the rows size to their content.
+
 function applyIconSize() {
   const size = (state.settings && state.settings.icon_size) || "small";
   document.body.classList.remove("icon-size-medium", "icon-size-large", "icon-size-xl");
@@ -654,6 +660,7 @@ function unloadEmbeddedBoxIfLeaving(newIndex) {
   if (state.chatPluginActive && newIndex !== state.catIndex) {
     api().unload_plugin_webapp_box(state.chatPluginActive);
     state.chatPluginActive = null;
+    if (state.activeAddonLayout) restoreAddonLayout();
   }
 }
 
@@ -955,13 +962,31 @@ function scrollSelectedIntoView() {
 
 // ---------------- filling the panel for whatever category is highlighted ----------------
 
+// Plug-ons ("addon"-type plugins) and plain "option"-type plugins (e.g.
+// Chat's Telegram/Discord/etc) both surface the same way: extra list
+// entries in an existing section, boxed into a webapp window on
+// activation. list_section_options(section_id) returns both kinds
+// together; this just formats them into list items and tags addons
+// separately (they carry layout prefs / auto-disable-if-section-hidden
+// behavior "option" entries don't). Cached per section id per visit,
+// same as the old chat-only version this replaces.
+state.sectionOptionsCache = {};
+async function getSectionOptionItems(sectionId) {
+  const options = (await api().list_section_options(sectionId)) || [];
+  state.sectionOptionsCache[sectionId] = options;
+  return options.map((p) => ({
+    __chatPlugin: true, pluginId: p.id, name: p.label,
+    __addon: !!p.addon, addonLayout: p.layout || null,
+  }));
+}
+
 async function refreshItemPanel() {
   const cat = state.categories[state.catIndex];
   // Settings navigation runs a touch faster than section browsing.
   try { api().set_nav_speed_fast(cat.kind === "settings"); } catch (e) {}
   try {
     if (cat.kind === "settings") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       // Entering Settings always lands on its option list.
       state.settingsGroup = "menu";
@@ -972,23 +997,27 @@ async function refreshItemPanel() {
     el("item-panel").innerHTML = `<div class="empty-msg">Loading&hellip;</div>`;
 
     if (cat.kind === "system_list") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
-      state.items = SYSTEM_ITEMS;
+      const addonItems = await getSectionOptionItems(cat.id);
+      state.items = [...SYSTEM_ITEMS, ...addonItems];
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
     } else if (cat.kind === "file_list") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
-      state.items = FILE_ITEMS;
+      const addonItems = await getSectionOptionItems(cat.id);
+      state.items = [...FILE_ITEMS, ...addonItems];
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
     } else if (cat.kind === "web_list") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       const shortcuts = (state.settings && state.settings.web_shortcuts) || [];
+      const addonItems = await getSectionOptionItems(cat.id);
       state.items = [
         ...WEB_ITEMS,
+        ...addonItems,
         ...shortcuts.map((s) => ({ ...s, __customWeb: true })),
         { __addShortcut: true, label: "Add web shortcut" },
       ];
@@ -998,67 +1027,65 @@ async function refreshItemPanel() {
       if (state.settings && state.settings.load_subfolders === false) {
         await refreshMediaBrowseView(cat.id);
       } else {
-        el("subfolder-nav").classList.add("hidden");
-        const items = await api().scan_library(cat.id);
-        state.items = items.length ? items : [{ __empty: true }];
+        setSubfolderNavHidden(true);
+        let items = await api().scan_library(cat.id);
+        if (cat.id === "music") items = sortMusicItems(items);
+        const addonItems = await getSectionOptionItems(cat.id);
+        state.items = items.length || addonItems.length ? [...items, ...addonItems] : [{ __empty: true }];
         state.selected = Math.min(state.selected, state.items.length - 1);
         renderItemList(cat);
       }
     } else if (cat.kind === "desktop_list") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       const items = await api().list_desktop_items();
-      state.items = items.length ? items : [{ __empty: true }];
+      const addonItems = await getSectionOptionItems(cat.id);
+      state.items = items.length || addonItems.length ? [...items, ...addonItems] : [{ __empty: true }];
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
     } else if (cat.kind === "exe_list") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       const items = await api().list_section_items(cat.id);
+      // Option/addon plugins targeting this section (Chat's Discord/
+      // Telegram/etc, or any plug-on aimed at Apps/Games/Emulators/Chat)
+      // - below the section's own built-in entries, per plug-on ordering.
+      const pluginItems = await getSectionOptionItems(cat.id);
       if (cat.id === "games") {
         const recents = await api().get_recent_games();
-        state.items = [GAME_LIBRARY_ITEM, ...recents.map((r) => ({ ...r, __recent: true })), ...items];
-      } else if (cat.id === "chat") {
-        // Discord/Telegram/Messenger/Snapchat/Phone Link etc — enabled
-        // "option"-type plugins targeting this section, alongside
-        // whatever regular launchable items live here too.
-        state.chatOptions = (await api().list_section_options("chat")) || [];
-        const pluginItems = state.chatOptions.map((p) => ({
-          __chatPlugin: true, pluginId: p.id, name: p.label,
-        }));
-        state.items = [...pluginItems, ...items];
-        if (!state.items.length) state.items = [{ __empty: true }];
+        state.items = [GAME_LIBRARY_ITEM, ...recents.map((r) => ({ ...r, __recent: true })), ...items, ...pluginItems];
       } else {
-        state.items = items.length ? items : [{ __empty: true }];
+        state.items = [...items, ...pluginItems];
+        if (!state.items.length) state.items = [{ __empty: true }];
       }
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
     } else if (cat.kind === "plugin_list") {
       // Plain data-driven list plugin (e.g. Start) — no list/gallery
       // toggle, no subfolder panel, just up/down + A like exe_list.
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       const items = await api().list_plugin_items(cat.pluginId);
       state.items = items.length ? items : [{ __empty: true }];
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
     } else if (cat.kind === "explorer_section") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       el("item-panel").innerHTML = `<div class="explorer-box-placeholder empty-msg">Loading Meridian Explorer&hellip;</div>`;
       await loadExplorerBox(state.explorerPendingPath || null);
     } else if (cat.kind === "browser_section") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       el("item-panel").innerHTML = `<div class="explorer-box-placeholder empty-msg">Loading Meridian NetBrowse&hellip;</div>`;
       await loadBrowserBox(state.browserPendingUrl || null);
     } else if (cat.kind === "plugin_webapp") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       el("item-panel").innerHTML = `<div class="explorer-box-placeholder empty-msg">Loading ${escapeHtml(cat.label)}&hellip;</div>`;
       await loadPluginWebappBox(cat.pluginId);
     } else if (cat.kind === "macro_list") {
-      el("subfolder-nav").classList.add("hidden");
+      setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
       const items = await api().list_macro_items();
       state.items = items;
@@ -1077,14 +1104,16 @@ async function refreshItemPanel() {
 async function refreshMediaBrowseView(kind) {
   const roots = await api().get_root_folders(kind);
   if (!roots.length) {
-    el("subfolder-nav").classList.add("hidden");
+    setSubfolderNavHidden(true);
     el("preview-pane").classList.add("hidden");
-    state.items = [{ __empty: true }];
+    const cat = state.categories[state.catIndex];
+    const addonItems = cat ? await getSectionOptionItems(cat.id) : [];
+    state.items = addonItems.length ? addonItems : [{ __empty: true }];
     state.selected = 0;
     renderItemList(state.categories[state.catIndex]);
     return;
   }
-  el("subfolder-nav").classList.remove("hidden");
+  setSubfolderNavHidden(false);
   if (!state.folderStack[kind] || !state.folderStack[kind].length) {
     state.folderStack[kind] = [roots[0]];
   }
@@ -1096,7 +1125,12 @@ async function loadCurrentBrowsePath(kind) {
   const path = stack[stack.length - 1];
   const [result, roots] = await Promise.all([api().browse_folder(kind, path), api().get_root_folders(kind)]);
   state.subfoldersCurrent = result.subfolders;
-  state.items = result.items.length ? result.items : [{ __empty: true, __browsingEmpty: true }];
+  let items = result.items;
+  if (kind === "music") items = sortMusicItems(items);
+  const cat = state.categories[state.catIndex];
+  const addonItems = cat ? await getSectionOptionItems(cat.id) : [];
+  const combined = [...items, ...addonItems];
+  state.items = combined.length ? combined : [{ __empty: true, __browsingEmpty: true }];
   state.selected = 0;
   state.folderEntries = buildFolderEntries(kind, roots);
   state.folderCursor = Math.max(0, Math.min(state.folderCursor, state.folderEntries.length - 1));
@@ -1188,6 +1222,45 @@ function renderSubfolderSidebar(kind) {
 // offset for one arc position, this measures the real geometry each
 // time and narrows the bar (shrinking in from its left edge) only when
 // there's an actual overlap, restoring full width otherwise.
+// Whether the subfolder bar's grid column should stay reserved/visible
+// even when this particular section has no subfolder content of its
+// own - see setSubfolderNavHidden() below. Deliberately excludes the
+// embedded-native-window sections (Explorer/Browser/webapp plugins),
+// which need the full width back and wouldn't make sense showing a
+// decorative filler next to someone else's window.
+function _subfolderNavStaysReservedFor(cat) {
+  if (!cat) return false;
+  if (!document.body.classList.contains("layout-cyberradial")) return false;
+  if (document.body.className.indexOf("layout-user-") !== -1) return false; // drop-in themes fully own their own layout
+  return !["explorer_section", "browser_section", "plugin_webapp"].includes(cat.kind);
+}
+
+// CyberRadial's box-size bug: #item-panel's grid column used to depend
+// on whether #subfolder-nav was showing real content or was
+// display:none (see the #content-area:has(#subfolder-nav.hidden) rule
+// in style.css) - a section with no subfolder content at all (Apps,
+// Games, Chat, System, ...) hid the bar entirely, which is exactly when
+// the reserved-but-empty 220px column caused visible sizing
+// inconsistencies. This keeps the bar's column PERMANENTLY reserved
+// (never true display:none) for every list-based section in this theme,
+// filling it with a decorative placeholder (gif + note, customizable in
+// Settings > Theme) instead of hiding it outright - the two "bars"
+// (subfolder width and options width) are no longer linked to whether
+// this particular section happens to use subfolder navigation.
+function setSubfolderNavHidden(hidden) {
+  const nav = el("subfolder-nav");
+  const cat = state.categories[state.catIndex];
+  if (hidden && _subfolderNavStaysReservedFor(cat)) {
+    nav.classList.remove("hidden");
+    nav.classList.add("subfolder-filler");
+    const gifUrl = (state.settings && state.settings.subfolder_filler_gif) || "assets/subfolder_filler.gif";
+    nav.innerHTML = `<div class="subfolder-filler-inner"><img src="${escapeHtml(gifUrl)}" alt=""><p>No subfolder navigation here</p></div>`;
+    return;
+  }
+  nav.classList.remove("subfolder-filler");
+  nav.classList.toggle("hidden", hidden);
+}
+
 function syncSubfolderNavWidth() {
   const nav = el("subfolder-nav");
   if (!nav) return;
@@ -1241,6 +1314,13 @@ function rowContentFor(cat, item, i) {
   }
   if (item.__empty) {
     return `<div class="row-visual">${iconFor(cat.id)}</div><div class="meta"><div class="title">Nothing added yet — press confirm to add it in Settings</div></div>`;
+  }
+  // Same reasoning as activateCurrentSelection: a plug-on/option-plugin
+  // item can now be spliced into any built-in section's list, so it
+  // needs its own row style checked before any per-section branch below
+  // assumes fields (title/thumbUrl/is_dir/etc) an addon item doesn't have.
+  if (item.__chatPlugin) {
+    return `<div class="row-visual">${ICONS.browser || ICONS.generic}</div><div class="meta"><div class="title">${escapeHtml(item.name)}</div>${item.__addon ? `<div class="subtitle">Plug-on</div>` : ""}</div>`;
   }
   if (cat.id === "music") {
     return `
@@ -1393,12 +1473,17 @@ async function activateCurrentSelection() {
   if (item.__browsingEmpty) return; // just an inert "this folder is empty" placeholder
   if (item.__empty) { await goToSettingsFor(cat); return; }
   if (item.__gameLibrary) { await activateGameLibrary(); return; }
+  // Plug-on / option-plugin entries can now appear spliced into any
+  // built-in section's list (not just Chat's exe_list), so this has to
+  // be checked before any of the per-section special cases below -
+  // otherwise e.g. an addon entry in the Music list would fall into
+  // playMusicAt() and try to play it as if it were a track.
+  if (item.__chatPlugin) { activateChatPluginItem(item); return; }
 
   if (cat.id === "music") playMusicAt(state.selected);
   else if (cat.id === "photos") openPhoto(state.selected);
   else if (cat.id === "videos") openVideo(state.selected);
   else if (item.__playnite) launchRecentPlayniteGame(item);
-  else if (cat.kind === "exe_list" && item.__chatPlugin) activateChatPluginItem(item);
   else if (cat.kind === "exe_list") launchAndNotify(item.path, cat.id);
   else if (cat.kind === "desktop_list") {
     if (item.is_dir) activateDesktopEntry(item);
@@ -1413,7 +1498,33 @@ async function activateCurrentSelection() {
 
 async function activatePluginItem(cat, item) {
   const res = await api().activate_plugin_item(cat.pluginId, item.id);
-  if (res && res.ok === false) showToast(`Couldn't open: ${res.error}`);
+  if (res && res.ok === false) { showToast(`Couldn't open: ${res.error}`); return; }
+  // A plugin can hand back the same route convention Desktop/Web items
+  // use to ask for the embedded Explorer/Browser section instead of
+  // launching anything itself - this used to be silently dropped here
+  // (the only route handling lived in activateDesktopEntry/
+  // openInternalUrl), so a plugin's request to open Explorer/Browser did
+  // nothing at all, including when switching directly from a different
+  // plugin section's list. Routing here the same way those two do means
+  // a plugin can never end up launching Explorer/CyberDeckBrowser as a
+  // separate external window either - only the boxed section, in every
+  // theme, same as any other entry point into those sections.
+  if (res && res.route === "explorer_section") {
+    const idx = state.categories.findIndex((c) => c.kind === "explorer_section");
+    if (idx !== -1) {
+      state.explorerPendingPath = res.path || "";
+      selectCategory(idx, true);
+    }
+    return;
+  }
+  if (res && res.route === "browser_section") {
+    const idx = state.categories.findIndex((c) => c.kind === "browser_section");
+    if (idx !== -1) {
+      state.browserPendingUrl = res.url || "";
+      selectCategory(idx, true);
+    }
+    return;
+  }
 }
 
 // Jump straight into Settings, scrolled to and briefly highlighting the
@@ -1526,7 +1637,33 @@ function embeddedBoxGeometry() {
   // straight down to the bottom of the window" sidesteps all of that -
   // it's correct regardless of which theme/layout scheme is active.
   const panel = el("item-panel");
+
+  // Factory Central (and any other theme using a transform to slide
+  // #item-panel on/off screen based on data-radial-focus) animates that
+  // transform over ~420ms. selectCategory() already sets radialFocus to
+  // "options" before this runs, but that only changes which transform
+  // the CSS *targets* - immediately measuring afterward can still catch
+  // the panel mid-transition (or, worse, still at its off-screen
+  // "sections" position if this runs in the same tick as the attribute
+  // change, before the browser has committed to animating toward the
+  // new value at all). Either way the measured rect would be wrong,
+  // which is exactly why Explorer/Browser/plugin webapps previously
+  // sometimes rendered off-position or looked like they'd opened as a
+  // separate external window in that theme. Forcing the transform off
+  // and reading the rect synchronously sidesteps the animation timing
+  // entirely and always measures the settled, final position - a no-op
+  // everywhere else, since only a theme using a transform like this is
+  // affected by overriding it to "none".
+  const prevTransition = panel.style.transition;
+  const prevTransform = panel.style.transform;
+  panel.style.transition = "none";
+  panel.style.transform = "none";
+  void panel.offsetHeight; // force a synchronous layout flush before reading the rect below
   const rect = panel.getBoundingClientRect();
+  panel.style.transform = prevTransform;
+  panel.style.transition = prevTransition;
+  void panel.offsetHeight; // and again, so restoring the override doesn't itself flash a frame
+
   const x = Math.round(window.screenX + rect.left);
   const y = Math.round(window.screenY + rect.top);
   const w = Math.round(rect.width);
@@ -1534,6 +1671,7 @@ function embeddedBoxGeometry() {
   return { x, y, w, h };
 }
 
+let _explorerBoxLoadToken = 0;
 async function loadExplorerBox(path) {
   const { x, y, w, h } = embeddedBoxGeometry();
   // window.screenX/screenY is the OS position of this window's top-left;
@@ -1542,7 +1680,18 @@ async function loadExplorerBox(path) {
   // OS scale factor isn't 100%, these coordinates may need adjusting for
   // your setup — verify on-device and scale x/y/w/h if it lands offset.
   state.explorerPendingPath = path;
+  // Re-entrancy guard: if refreshItemPanel() somehow lands back on the
+  // Explorer section again (a re-render, theme switch, etc.) before this
+  // call's response has come back, only the LATEST call's result actually
+  // applies - an earlier in-flight call finishing after a newer one
+  // started would otherwise stomp on it, and more importantly, firing the
+  // backend call twice in close succession was exactly what let two
+  // Meridian FileBrowse.exe instances spawn at once (see
+  // unload_explorer_box's docstring in main.py for the backend half of
+  // this fix).
+  const myToken = ++_explorerBoxLoadToken;
   const res = await api().load_explorer_box(path || "", x, y, w, h);
+  if (myToken !== _explorerBoxLoadToken) return; // a newer call has already superseded this one
   if (res && res.ok === false) {
     el("item-panel").innerHTML = `<div class="empty-msg">${escapeHtml(res.error || "Couldn't load Meridian Explorer.")}</div>`;
   }
@@ -1557,19 +1706,84 @@ async function loadBrowserBox(url) {
   }
 }
 
-async function activateChatPluginItem(item) {
-  // Same boxed-webapp mechanic as a dedicated plugin section (Telegram
-  // etc when it WAS its own section) — just triggered from inside the
-  // Chat list instead of by entering a section. state.chatPluginActive
-  // marks that this came from the list, so onEmbeddedPluginExited returns
-  // to the Chat list on exit instead of the Sections bar.
-  state.chatPluginActive = item.pluginId;
-  document.body.classList.add("embedded-plugin-active");
-  await loadPluginWebappBox(item.pluginId);
+// ---------------- plug-on ("addon") layout preferences ----------------
+// Applied while an addon's boxed window is open, restored on exit. Every
+// preset is computed relative to #item-panel's own rect (via the same
+// transform-neutralizing measurement as embeddedBoxGeometry), which is
+// already clear of the Sections bar/hub in every theme - so every preset
+// automatically "physically stops before" it too, including Dawning
+// Horizon, where #item-panel already sits below the Sections bar by that
+// theme's own layout rules.
+state.activeAddonLayout = null;
+
+function computeAddonBoxGeometry(windowPosition) {
+  const base = embeddedBoxGeometry(); // {x,y,w,h}, already content-area-relative
+  if (!windowPosition || windowPosition === "default") return base;
+  if (windowPosition === "centered") {
+    const w = Math.round(base.w * 0.7);
+    const h = Math.round(base.h * 0.7);
+    return { x: base.x + Math.round((base.w - w) / 2), y: base.y + Math.round((base.h - h) / 2), w, h };
+  }
+  if (windowPosition === "left_edge_to_right_edge") {
+    // Full width from the item-panel's own left edge (already clear of
+    // the Sections bar) out to the right edge of the window.
+    const w = Math.round(window.innerWidth - base.x - 24);
+    return { x: base.x, y: base.y, w: Math.max(w, 100), h: base.h };
+  }
+  if (windowPosition === "left_half") {
+    return { x: base.x, y: base.y, w: Math.round(base.w / 2) - 10, h: base.h };
+  }
+  if (windowPosition === "right_half") {
+    const w = Math.round(base.w / 2) - 10;
+    return { x: base.x + base.w - w, y: base.y, w, h: base.h };
+  }
+  return base;
 }
 
-async function loadPluginWebappBox(pluginId) {
-  const { x, y, w, h } = embeddedBoxGeometry();
+// show_subfolder/show_thumbnail/show_clock/show_battery/show_taskbar,
+// each defaulting true if unset. Taskbar is the one exception even when
+// false: pressing X still shows it on demand (see toggleTaskbarFocus),
+// drawn above the boxed window instead of being unavailable outright -
+// applyAddonLayout only sets up the "hidden unless forced" CSS class for
+// that, it doesn't touch anything else about how X/the taskbar work.
+function applyAddonLayout(layout) {
+  state.activeAddonLayout = layout || null;
+  const L = layout || {};
+  if (L.show_subfolder === false) el("subfolder-nav").classList.add("addon-force-hidden");
+  if (L.show_thumbnail === false) el("preview-pane").classList.add("addon-force-hidden");
+  document.body.classList.toggle("addon-hide-clock", L.show_clock === false);
+  document.body.classList.toggle("addon-hide-battery", L.show_battery === false);
+  document.body.classList.toggle("addon-hide-music-player", L.show_music_player === false);
+  // show_taskbar defaults true; addon-show-taskbar only actually reveals
+  // it in practice for a non-"default" window_position (see the CSS
+  // comment on .addon-show-taskbar) since "default" covers that screen
+  // area with the boxed window's own OS-level topmost placement.
+  document.body.classList.toggle("addon-show-taskbar", L.show_taskbar !== false);
+  document.body.classList.toggle("addon-hide-taskbar", L.show_taskbar === false);
+}
+
+function restoreAddonLayout() {
+  state.activeAddonLayout = null;
+  el("subfolder-nav").classList.remove("addon-force-hidden");
+  el("preview-pane").classList.remove("addon-force-hidden");
+  document.body.classList.remove("addon-hide-clock", "addon-hide-battery", "addon-hide-music-player", "addon-hide-taskbar", "addon-show-taskbar", "addon-taskbar-forced");
+}
+
+
+async function activateChatPluginItem(item) {
+  // Same boxed-webapp mechanic as a dedicated plugin section (Telegram
+  // etc when it WAS its own section) — just triggered from inside a
+  // section's list instead of by entering a section. state.chatPluginActive
+  // marks that this came from the list, so onEmbeddedPluginExited returns
+  // to that list on exit instead of the Sections bar.
+  state.chatPluginActive = item.pluginId;
+  document.body.classList.add("embedded-plugin-active");
+  if (item.__addon) applyAddonLayout(item.addonLayout);
+  await loadPluginWebappBox(item.pluginId, item.__addon ? item.addonLayout : null);
+}
+
+async function loadPluginWebappBox(pluginId, addonLayout) {
+  const { x, y, w, h } = addonLayout ? computeAddonBoxGeometry(addonLayout.window_position) : embeddedBoxGeometry();
   const res = await api().load_plugin_webapp_box(pluginId, x, y, w, h);
   if (res && res.ok === false) {
     el("item-panel").innerHTML = `<div class="empty-msg">${escapeHtml(res.error || "Couldn't load this app.")}</div>`;
@@ -1591,7 +1805,11 @@ async function activateDesktopEntry(item) {
 async function activateWebItem(item) {
   if (item.__addShortcut) { openWebShortcutModal(); return; }
   if (item.__customWeb) { await openInternalUrl(item.url); return; }
-  if (item.id === "cyberdeck") { await openInternalUrl(null); return; }
+  if (item.id === "cyberdeck") {
+    const res = await api().launch_cyberdeckbrowser_standalone();
+    if (res && res.ok === false) showToast(`Couldn't open: ${res.error}`);
+    return;
+  }
   const res = await api().open_web();
   if (res && res.ok === false) showToast(`Couldn't open: ${res.error}`);
 }
@@ -1615,6 +1833,7 @@ async function openInternalUrl(url) {
 async function activateSystemItem(item) {
   const map = {
     shutdown: () => api().system_shutdown(),
+    restart: () => api().system_restart(),
     sleep: () => api().system_sleep(),
     hibernate: () => api().system_hibernate(),
     close: () => api().quit_app(),
@@ -1628,6 +1847,7 @@ async function activateSystemItem(item) {
     windowsupdate: () => api().system_windows_update(),
     wifi: () => { openNetworkOverlay("wifi"); return null; },
     bluetooth: () => { openNetworkOverlay("bluetooth"); return null; },
+    audio: () => { openNetworkOverlay("audio"); return null; },
   };
   const fn = map[item.id];
   if (!fn) return;
@@ -1646,7 +1866,7 @@ el("network-refresh").addEventListener("click", refreshNetworkList);
 
 async function openNetworkOverlay(mode) {
   networkMode = mode;
-  el("network-title").textContent = mode === "wifi" ? "Wi-Fi" : "Bluetooth";
+  el("network-title").textContent = mode === "wifi" ? "Wi-Fi" : mode === "audio" ? "Audio Output" : "Bluetooth";
   el("network-overlay").classList.remove("hidden");
   await refreshNetworkList();
 }
@@ -1658,6 +1878,17 @@ async function refreshNetworkList() {
     const res = await api().wifi_scan();
     if (!res.ok) { list.innerHTML = `<div class="empty-msg">${escapeHtml(res.error || "Couldn't scan for networks.")}</div>`; return; }
     renderWifiList(res.networks);
+  } else if (networkMode === "audio") {
+    const res = await api().list_audio_devices();
+    list.innerHTML = "";
+    if (!res.ok) {
+      const msg = document.createElement("div");
+      msg.className = "empty-msg";
+      msg.textContent = res.error || "Couldn't list audio devices.";
+      list.appendChild(msg);
+    } else {
+      renderAudioList(res.devices || []);
+    }
   } else {
     const res = await api().bluetooth_list_devices();
     list.innerHTML = "";
@@ -1702,6 +1933,30 @@ function renderWifiList(networks) {
         showToast(res.ok ? `Connected to ${n.ssid}.` : `Couldn't connect: ${res.error}`);
         if (res.ok) refreshNetworkList();
       }
+    });
+    row.appendChild(btn);
+    list.appendChild(row);
+  });
+}
+
+function renderAudioList(devices) {
+  const list = el("network-list");
+  list.innerHTML = "";
+  if (!devices.length) { list.innerHTML = `<div class="empty-msg">No active playback devices found.</div>`; return; }
+  devices.forEach((d) => {
+    const row = document.createElement("div");
+    row.className = "network-row";
+    row.innerHTML = `
+      ${ICONS.audio.replace('class="', 'class="net-icon ')}
+      <span class="net-name">${escapeHtml(d.name)}</span>
+      <span class="net-status">${d.is_default ? "Default" : ""}</span>`;
+    const btn = document.createElement("button");
+    btn.textContent = d.is_default ? "Default" : "Set as Default";
+    btn.disabled = d.is_default;
+    btn.addEventListener("click", async () => {
+      const res = await api().set_audio_output_device(d.id);
+      showToast(res.ok ? `${d.name} is now the default output.` : `Couldn't switch: ${res.error}`);
+      if (res.ok) refreshNetworkList();
     });
     row.appendChild(btn);
     list.appendChild(row);
@@ -1847,8 +2102,21 @@ function currentPhotoPath() {
   return item && item.path ? item.path : null;
 }
 
+// Belt-and-suspenders guard: the instant the Start menu (or Photo menu,
+// which the same Start press can open instead) opens, the very next
+// "confirm" dispatch is swallowed here rather than reaching
+// activateCurrentSelection() - normally isStartMenuOpen()/isPhotoMenuOpen()
+// already prevent that (checked before the plain "confirm" handler ever
+// runs), but this closes the gap for a same-tick double-fire from
+// whatever triggered the menu open in the first place, so pressing
+// Start can never also open/activate whatever was already selected
+// underneath it.
+let _suppressNextConfirm = false;
+
 function handleMenuStart() {
-  if (isPhotoMenuOpen() || isStartMenuOpen() || isTutorialOpen() || isConfirmOpen() || isOverlayOpen() || isOskCapturing()) return;
+  if (isPhotoMenuOpen() || isStartMenuOpen() || isMusicSortMenuOpen() || isTutorialOpen() || isConfirmOpen() || isOverlayOpen() || isOskCapturing()) return;
+  _suppressNextConfirm = true;
+  setTimeout(() => { _suppressNextConfirm = false; }, 150);
   const path = currentPhotoPath();
   if (path) {
     photoMenuCursor = 0;
@@ -1856,7 +2124,98 @@ function handleMenuStart() {
     highlightPhotoMenuCursor();
     return;
   }
+  const cat = state.categories[state.catIndex];
+  if (cat && cat.kind === "media" && cat.id === "music") {
+    openMusicSortMenu();
+    return;
+  }
   openStartMenu();
+}
+
+// ---------------- Music sort menu (Start button, Music section) ----------------
+let musicSortMenuCursor = 0;
+const MUSIC_SORT_MENU_ITEMS = [
+  "music-sort-title-asc", "music-sort-title-desc", "music-sort-artist-asc",
+  "music-sort-artist-desc", "music-sort-date-desc", "music-sort-random", "music-sort-cancel",
+];
+const MUSIC_SORT_MODES = {
+  "music-sort-title-asc": "title_asc", "music-sort-title-desc": "title_desc",
+  "music-sort-artist-asc": "artist_asc", "music-sort-artist-desc": "artist_desc",
+  "music-sort-date-desc": "date_desc", "music-sort-random": "random",
+};
+
+function isMusicSortMenuOpen() {
+  return !el("music-sort-overlay").classList.contains("hidden");
+}
+
+function openMusicSortMenu() {
+  const current = (state.settings && state.settings.music_sort_mode) || "title_asc";
+  musicSortMenuCursor = Math.max(0, MUSIC_SORT_MENU_ITEMS.findIndex((id) => MUSIC_SORT_MODES[id] === current));
+  el("music-sort-overlay").classList.remove("hidden");
+  highlightMusicSortMenuCursor();
+}
+
+function closeMusicSortMenu() {
+  el("music-sort-overlay").classList.add("hidden");
+}
+
+function highlightMusicSortMenuCursor() {
+  const current = (state.settings && state.settings.music_sort_mode) || "title_asc";
+  MUSIC_SORT_MENU_ITEMS.forEach((id, i) => {
+    el(id).classList.toggle("settings-focus", i === musicSortMenuCursor);
+    el(id).classList.toggle("music-sort-active", MUSIC_SORT_MODES[id] === current);
+  });
+}
+
+async function activateMusicSortMenuItem() {
+  const choice = MUSIC_SORT_MENU_ITEMS[musicSortMenuCursor];
+  closeMusicSortMenu();
+  if (choice === "music-sort-cancel") return;
+  const mode = MUSIC_SORT_MODES[choice];
+  if (!mode) return;
+  state.settings = await api().set_music_sort_mode(mode);
+  await refreshItemPanel();
+}
+
+function handleMusicSortMenuInput(action) {
+  if (action === "up") { musicSortMenuCursor = (musicSortMenuCursor + MUSIC_SORT_MENU_ITEMS.length - 1) % MUSIC_SORT_MENU_ITEMS.length; highlightMusicSortMenuCursor(); }
+  else if (action === "down") { musicSortMenuCursor = (musicSortMenuCursor + 1) % MUSIC_SORT_MENU_ITEMS.length; highlightMusicSortMenuCursor(); }
+  else if (action === "confirm") activateMusicSortMenuItem();
+  else if (action === "back") closeMusicSortMenu();
+}
+
+MUSIC_SORT_MENU_ITEMS.forEach((id, i) => {
+  el(id).addEventListener("click", (e) => { e.stopPropagation(); musicSortMenuCursor = i; activateMusicSortMenuItem(); });
+});
+
+// Sorts a freshly-scanned music item list according to the persisted
+// music_sort_mode setting. Client-side (not part of scan_library) since
+// every field it sorts by is already present on each item and this
+// keeps the sort order changeable instantly without a rescan.
+function sortMusicItems(items, modeOverride) {
+  const mode = modeOverride || (state.settings && state.settings.music_sort_mode) || "title_asc";
+  const collator = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" });
+  const sorted = items.slice();
+  if (mode === "title_desc") {
+    sorted.sort((a, b) => collator(b.title, a.title));
+  } else if (mode === "artist_asc") {
+    sorted.sort((a, b) => collator(a.artist, b.artist) || collator(a.title, b.title));
+  } else if (mode === "artist_desc") {
+    sorted.sort((a, b) => collator(b.artist, a.artist) || collator(a.title, b.title));
+  } else if (mode === "date_desc") {
+    sorted.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+  } else if (mode === "random") {
+    // Fresh shuffle every time this runs (Fisher-Yates), not a fixed
+    // order pinned once and reused - so picking Random reshuffles again
+    // each time the Music list is (re)loaded, not just the first time.
+    for (let i = sorted.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
+    }
+  } else {
+    sorted.sort((a, b) => collator(a.title, b.title)); // title_asc, the default
+  }
+  return sorted;
 }
 
 function closePhotoMenu() {
@@ -1894,17 +2253,69 @@ el("photo-menu-cancel").addEventListener("click", (e) => { e.stopPropagation(); 
 
 // ---------------- Start menu (Start button, everywhere but photos) ----------------
 let startMenuCursor = 0;
-const START_MENU_ITEMS = [
+const START_MENU_ITEMS_BASE = [
   "start-menu-tutorial", "start-menu-close-section", "start-menu-osm",
   "start-menu-minimize", "start-menu-close-launcher", "start-menu-cancel",
 ];
+let startMenuItems = START_MENU_ITEMS_BASE;
 
 function isStartMenuOpen() {
   return !el("start-menu-overlay").classList.contains("hidden");
 }
 
+// Controller Bridge (see xinput_to_keyboard.py) only makes sense with an
+// actual Apps/Games item selected to enable it for - shown/hidden in the
+// Start menu depending on context rather than being permanently there.
+function _controllerBridgeEligibleItem() {
+  const cat = state.categories[state.catIndex];
+  if (!cat || cat.kind !== "exe_list" || (cat.id !== "apps" && cat.id !== "games")) return null;
+  const item = state.items[state.selected];
+  if (!item || !item.path || item.__gameLibrary || item.__recent || item.__chatPlugin) return null;
+  return item;
+}
+
+// Delete (send to Recycle Bin) - only meaningful for a real file/folder:
+// the Desktop section's own items, or a plugin_list item that exposes a
+// real path (currently just the "Start" plugin's shortcuts - see
+// Plugins/Start/backend.py). Returns {path, pluginId} where pluginId is
+// null for the Desktop section (deleted via delete_desktop_item) or set
+// for a plugin item (deleted via delete_plugin_item instead).
+function _deleteEligibleItem() {
+  const cat = state.categories[state.catIndex];
+  if (!cat) return null;
+  const item = state.items[state.selected];
+  if (!item || !item.path || item.__chatPlugin) return null;
+  if (cat.kind === "desktop_list") return { item, pluginId: null };
+  if (cat.kind === "plugin_list") return { item, pluginId: cat.pluginId };
+  return null;
+}
+
 function openStartMenu() {
   startMenuCursor = 0;
+  const bridgeItem = _controllerBridgeEligibleItem();
+  const bridgeBtn = el("start-menu-controller-bridge");
+  if (bridgeItem) {
+    bridgeBtn.classList.remove("hidden");
+    const enabled = (state.settings && state.settings.controller_bridge_items || []).includes(bridgeItem.path);
+    bridgeBtn.textContent = enabled
+      ? `Disable Controller Bridge for "${bridgeItem.title || bridgeItem.name}"`
+      : `Enable Controller Bridge for "${bridgeItem.title || bridgeItem.name}" (needs a keyboard-controlled app)`;
+    startMenuItems = START_MENU_ITEMS_BASE.slice();
+    startMenuItems.splice(1, 0, "start-menu-controller-bridge");
+  } else {
+    bridgeBtn.classList.add("hidden");
+    startMenuItems = START_MENU_ITEMS_BASE.slice();
+  }
+  const deleteEligible = _deleteEligibleItem();
+  const deleteBtn = el("start-menu-delete");
+  if (deleteEligible) {
+    deleteBtn.classList.remove("hidden");
+    const { item } = deleteEligible;
+    deleteBtn.textContent = `Delete "${item.title || item.name || item.label}" (Recycle Bin)`;
+    startMenuItems.splice(1, 0, "start-menu-delete");
+  } else {
+    deleteBtn.classList.add("hidden");
+  }
   el("start-menu-overlay").classList.remove("hidden");
   highlightStartMenuCursor();
 }
@@ -1914,14 +2325,43 @@ function closeStartMenu() {
 }
 
 function highlightStartMenuCursor() {
-  START_MENU_ITEMS.forEach((id, i) => el(id).classList.toggle("settings-focus", i === startMenuCursor));
+  startMenuItems.forEach((id, i) => el(id).classList.toggle("settings-focus", i === startMenuCursor));
 }
 
 async function activateStartMenuItem() {
-  const choice = START_MENU_ITEMS[startMenuCursor];
+  const choice = startMenuItems[startMenuCursor];
   if (choice === "start-menu-cancel") { closeStartMenu(); return; }
   if (choice === "start-menu-tutorial") { closeStartMenu(); openTutorial(); return; }
   if (choice === "start-menu-close-section") { closeStartMenu(); closeCurrentSection(); return; }
+  if (choice === "start-menu-controller-bridge") {
+    closeStartMenu();
+    const bridgeItem = _controllerBridgeEligibleItem();
+    if (!bridgeItem) return;
+    const res = await api().toggle_controller_bridge_for_item(bridgeItem.path);
+    if (res) state.settings = res;
+    const enabledNow = (state.settings && state.settings.controller_bridge_items || []).includes(bridgeItem.path);
+    showToast(enabledNow
+      ? `Controller Bridge will run while "${bridgeItem.title || bridgeItem.name}" is open.`
+      : `Controller Bridge disabled for "${bridgeItem.title || bridgeItem.name}".`);
+    return;
+  }
+  if (choice === "start-menu-delete") {
+    closeStartMenu();
+    const eligible = _deleteEligibleItem();
+    if (!eligible) return;
+    const { item, pluginId } = eligible;
+    const ok = await openConfirmModal(
+      "Delete this item?",
+      `"${item.title || item.name || item.label}" will be moved to the Recycle Bin.`,
+    );
+    if (!ok) return;
+    const res = pluginId
+      ? await api().delete_plugin_item(pluginId, item.id)
+      : await api().delete_desktop_item(item.path);
+    if (res && res.ok === false) showToast(`Couldn't delete: ${res.error}`);
+    else { showToast(`Moved to Recycle Bin.`); await refreshItemPanel(); }
+    return;
+  }
   if (choice === "start-menu-osm") {
     closeStartMenu();
     const res = await api().toggle_onscreenmenu();
@@ -1933,14 +2373,18 @@ async function activateStartMenuItem() {
 }
 
 function handleStartMenuInput(action) {
-  if (action === "up") { startMenuCursor = (startMenuCursor + START_MENU_ITEMS.length - 1) % START_MENU_ITEMS.length; highlightStartMenuCursor(); }
-  else if (action === "down") { startMenuCursor = (startMenuCursor + 1) % START_MENU_ITEMS.length; highlightStartMenuCursor(); }
+  if (action === "up") { startMenuCursor = (startMenuCursor + startMenuItems.length - 1) % startMenuItems.length; highlightStartMenuCursor(); }
+  else if (action === "down") { startMenuCursor = (startMenuCursor + 1) % startMenuItems.length; highlightStartMenuCursor(); }
   else if (action === "confirm") activateStartMenuItem();
   else if (action === "back") closeStartMenu();
 }
 
-START_MENU_ITEMS.forEach((id, i) => {
-  el(id).addEventListener("click", (e) => { e.stopPropagation(); startMenuCursor = i; activateStartMenuItem(); });
+[...START_MENU_ITEMS_BASE, "start-menu-controller-bridge", "start-menu-delete"].forEach((id) => {
+  el(id).addEventListener("click", (e) => {
+    e.stopPropagation();
+    const i = startMenuItems.indexOf(id);
+    if (i !== -1) { startMenuCursor = i; activateStartMenuItem(); }
+  });
 });
 
 // "Close Section": hides the options/subfolder/thumbnail panels and moves
@@ -1952,7 +2396,7 @@ START_MENU_ITEMS.forEach((id, i) => {
 // actually uses.
 function closeCurrentSection() {
   el("item-panel").classList.add("hidden");
-  el("subfolder-nav").classList.add("hidden");
+  setSubfolderNavHidden(true);
   el("preview-pane").classList.add("hidden");
   state.sectionManuallyClosed = true;
   state.radialFocus = "sections";
@@ -1979,11 +2423,12 @@ const TUTORIAL_TEXT = {
   Start (over a photo) - Edit / Set as Background popup
   Start (elsewhere) - This menu
   X (tap) - Jump to/from the open-programs bar
-  X (hold 3s) - Close the highlighted task
+  X (hold 2s) - Close the highlighted task
   LB / RB - Previous / next music track
   LB+RB - Random track
+  R3 (click right stick) - Stop music
+  Right stick left/right - Rewind / fast-forward 10 seconds
   Start+Select - Bring Meridian Launcher to the foreground
-  L3+R3 - Quit instantly
 
 Keyboard:
   Enter - Confirm    Space - Back    Arrow keys - Navigate
@@ -2038,8 +2483,9 @@ mouse or keyboard.
 Controller:
   Left stick - Move the on-screen cursor
   A - Left click    B - Right click
-  Y - Shortcuts menu    X - Key-combo menu
-  Start+Select - Hibernate    L3+R3 - Quit
+  Y - Shortcuts menu    X - Key-combo menu (also has Virtual Keyboard
+    and Close Onscreenmenu)
+  R3 (click right stick) - Hibernate/wake
 
 Keyboard/Mouse: the real keyboard and mouse still work normally alongside
 onscreenmenu at any time.`,
@@ -2127,7 +2573,9 @@ async function buildPluginsSettingsBlock() {
       await refreshAfterSettingsChange();
     });
     row.appendChild(toggle);
-    row.appendChild(document.createTextNode(`${p.label} — ${p.visible ? "Shown" : "Hidden"}`));
+    const typeLabel = p.type === "addon" ? "Plug-on" : p.type === "option" ? "Option" : p.type === "webapp" ? "Webapp" : "List";
+    const sectionSuffix = p.section ? ` → ${p.section}` : "";
+    row.appendChild(document.createTextNode(`${p.label} (${typeLabel}${sectionSuffix}) — ${p.visible ? "Shown" : "Hidden"}`));
     wrap.appendChild(row);
   });
 
@@ -2175,6 +2623,119 @@ function openSettingsGroup(key) {
   renderSettings(key);
 }
 
+// Settings > Addon Settings. One built-in block (CyberRadial's
+// subfolder filler image) that used to live scattered elsewhere. Below
+// that: every Plugins/<name>/settings.json and themes/<name>/
+// settings.json discovered on disk, rendered generically from their own
+// schema - see addon_settings.py for the full scanning/schema story.
+async function renderAddonSettingsBlocks(c, settings) {
+  // ---- CyberRadial: subfolder bar filler image ----
+  const fillerBlock = document.createElement("div");
+  fillerBlock.className = "settings-block";
+  const fillerGif = settings.subfolder_filler_gif;
+  fillerBlock.innerHTML = `<h3>Subfolder Bar Filler (CyberRadial theme)</h3>
+    <p class="settings-note">Shown in the subfolder bar for sections that don't have real subfolder navigation of their own. ${fillerGif ? "Using a custom image." : "Using the default."}</p>`;
+  const fillerRow = document.createElement("div");
+  fillerRow.className = "settings-row";
+  const chooseFillerBtn = document.createElement("button");
+  chooseFillerBtn.className = "btn-link";
+  chooseFillerBtn.textContent = "Choose custom image\u2026";
+  chooseFillerBtn.addEventListener("click", async () => {
+    state.settings = await api().set_subfolder_filler_gif();
+    renderSettings();
+  });
+  fillerRow.appendChild(chooseFillerBtn);
+  if (fillerGif) {
+    const resetFillerBtn = document.createElement("button");
+    resetFillerBtn.className = "btn-link";
+    resetFillerBtn.textContent = "Reset to default";
+    resetFillerBtn.addEventListener("click", async () => {
+      state.settings = await api().clear_subfolder_filler_gif();
+      renderSettings();
+    });
+    fillerRow.appendChild(resetFillerBtn);
+  }
+  fillerBlock.appendChild(fillerRow);
+  c.appendChild(fillerBlock);
+
+  // ---- Scanned Plugins/*/settings.json and themes/*/settings.json ----
+  let groups = [];
+  try { groups = await api().list_addon_setting_groups(); } catch (e) { groups = []; }
+  if (!groups.length) {
+    const note = document.createElement("p");
+    note.className = "settings-note";
+    note.textContent = "No plugin, plug-on, or theme has its own settings.json yet - see addon_settings.py for the schema a Plugins/<name>/ or themes/<name>/ folder can drop in to show up here.";
+    c.appendChild(note);
+    return;
+  }
+  groups.forEach((group) => {
+    const block = document.createElement("div");
+    block.className = "settings-block";
+    const sourceLabel = group.source === "plugin" ? "Plugin" : "Theme";
+    block.innerHTML = `<h3>${escapeHtml(group.title)} (${sourceLabel})</h3>`;
+    group.fields.forEach((field) => {
+      const row = document.createElement("div");
+      row.className = "settings-row";
+      row.style.marginTop = "8px";
+      if (field.type === "toggle") {
+        const isOn = !!field.value;
+        const toggle = document.createElement("div");
+        toggle.className = "toggle-switch" + (isOn ? " on" : "");
+        toggle.innerHTML = `<div class="knob"></div>`;
+        toggle.addEventListener("click", async () => {
+          state.settings = await api().set_addon_setting_value(group.id, field.key, !isOn);
+          renderSettings();
+        });
+        row.appendChild(toggle);
+        row.appendChild(document.createTextNode(field.label || field.key));
+      } else if (field.type === "choice") {
+        const label = document.createElement("span");
+        const current = field.choices.find((ch) => ch[0] === field.value) || field.choices[0];
+        label.textContent = `${field.label || field.key}: ${current ? current[1] : field.value}`;
+        const btn = document.createElement("button");
+        btn.className = "btn-link";
+        btn.textContent = "Change";
+        btn.addEventListener("click", async () => {
+          const idx = field.choices.findIndex((ch) => ch[0] === field.value);
+          const next = field.choices[(idx + 1) % field.choices.length];
+          state.settings = await api().set_addon_setting_value(group.id, field.key, next[0]);
+          renderSettings();
+        });
+        row.appendChild(label);
+        row.appendChild(btn);
+      } else if (field.type === "file") {
+        const label = document.createElement("span");
+        label.textContent = `${field.label || field.key}: ${field.value ? escapeHtml(String(field.value)) : "(default)"}`;
+        const btn = document.createElement("button");
+        btn.className = "btn-link";
+        btn.textContent = "Choose\u2026";
+        btn.addEventListener("click", async () => {
+          state.settings = await api().pick_addon_setting_file(group.id, field.key, field.accept || "");
+          renderSettings();
+        });
+        row.appendChild(label);
+        row.appendChild(btn);
+      } else if (field.type === "text") {
+        const label = document.createElement("span");
+        label.textContent = `${field.label || field.key}: `;
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = field.value || "";
+        input.className = "addon-setting-text-input";
+        input.addEventListener("focus", () => showOskFor(input));
+        input.addEventListener("blur", async () => {
+          hideOsk();
+          state.settings = await api().set_addon_setting_value(group.id, field.key, input.value);
+        });
+        row.appendChild(label);
+        row.appendChild(input);
+      }
+      block.appendChild(row);
+    });
+    c.appendChild(block);
+  });
+}
+
 async function renderSettings(group) {
   // Settings renders EITHER its option list (group == null/"menu") or one
   // group's blocks. Rather than reorder the ~550 lines that build every
@@ -2220,22 +2781,31 @@ async function renderSettings(group) {
   controlsBlock.className = "settings-block";
   controlsBlock.innerHTML = `<h3>Controller controls</h3>\n    <div id="controller-status-line" class="controller-status">Controller API: checking\u2026</div>
     <p class="settings-note">What each controller button does in Meridian Launcher. Confirm/Back/directions can be remapped in controller_controls.json; combos always use the physical buttons listed. Keyboard: Enter confirm, Space back, arrow keys navigate, the \\ key jumps to the side panel, Shift jumps to the open-programs bar, Delete closes the highlighted task there.</p>
-    <div class="controls-grid"><div class="controls-row"><span class="controls-btn">A</span><span class="controls-desc">Confirm / select the highlighted item</span></div><div class="controls-row"><span class="controls-btn">B</span><span class="controls-desc">Back / close overlays</span></div><div class="controls-row"><span class="controls-btn">D-pad / Left stick</span><span class="controls-desc">Navigate — up/down through lists, left/right across sections</span></div><div class="controls-row"><span class="controls-btn">Y (tap)</span><span class="controls-desc">Jump to the subfolder / filter side panel</span></div><div class="controls-row"><span class="controls-btn">X (tap)</span><span class="controls-desc">Jump to / away from the open-programs bar (shown in every theme)</span></div><div class="controls-row"><span class="controls-btn">X (hold 3 seconds)</span><span class="controls-desc">Close the highlighted task on the open-programs bar (asks first unless "Close tasks without prompt" is on)</span></div><div class="controls-row"><span class="controls-btn">LB</span><span class="controls-desc">Previous music track</span></div><div class="controls-row"><span class="controls-btn">RB</span><span class="controls-desc">Next music track</span></div><div class="controls-row"><span class="controls-btn">LB + RB (together)</span><span class="controls-desc">Play a random track</span></div><div class="controls-row"><span class="controls-btn">Start + Back (together)</span><span class="controls-desc">Bring Meridian Launcher to the foreground</span></div><div class="controls-row"><span class="controls-btn">L3 + R3 (click both sticks)</span><span class="controls-desc">Quit the app instantly</span></div><div class="controls-row"><span class="controls-btn">Y (hold 45 seconds)</span><span class="controls-desc">Exit kiosk mode</span></div><div class="controls-row"><span class="controls-btn">Up Up Down Down Left Right Left Right B A (D-pad)</span><span class="controls-desc">Kiosk-mode exit code, works any time</span></div></div>`;
+    <div class="controls-grid"><div class="controls-row"><span class="controls-btn">A</span><span class="controls-desc">Confirm / select the highlighted item</span></div><div class="controls-row"><span class="controls-btn">B</span><span class="controls-desc">Back / close overlays</span></div><div class="controls-row"><span class="controls-btn">D-pad / Left stick</span><span class="controls-desc">Navigate — up/down through lists, left/right across sections</span></div><div class="controls-row"><span class="controls-btn">Y (tap)</span><span class="controls-desc">Jump to the subfolder / filter side panel</span></div><div class="controls-row"><span class="controls-btn">X (tap)</span><span class="controls-desc">Jump to / away from the open-programs bar (shown in every theme)</span></div><div class="controls-row"><span class="controls-btn">X (hold 2 seconds)</span><span class="controls-desc">Close the highlighted task on the open-programs bar (asks first unless "Close tasks without prompt" is on)</span></div><div class="controls-row"><span class="controls-btn">LB</span><span class="controls-desc">Previous music track</span></div><div class="controls-row"><span class="controls-btn">RB</span><span class="controls-desc">Next music track</span></div><div class="controls-row"><span class="controls-btn">LB + RB (together)</span><span class="controls-desc">Play a random track</span></div><div class="controls-row"><span class="controls-btn">R3 (click right stick)</span><span class="controls-desc">Stop music</span></div><div class="controls-row"><span class="controls-btn">Right stick left/right</span><span class="controls-desc">Rewind / fast-forward 10 seconds</span></div><div class="controls-row"><span class="controls-btn">Start (Music section)</span><span class="controls-desc">Sort menu</span></div><div class="controls-row"><span class="controls-btn">Start + Back (together)</span><span class="controls-desc">Bring Meridian Launcher to the foreground</span></div><div class="controls-row"><span class="controls-btn">Y (hold 45 seconds)</span><span class="controls-desc">Exit kiosk mode</span></div><div class="controls-row"><span class="controls-btn">Up Up Down Down Left Right Left Right B A (D-pad)</span><span class="controls-desc">Kiosk-mode exit code, works any time</span></div></div>`;
   c.appendChild(controlsBlock);
   setTimeout(updateControllerStatusLine, 0);
 
   // Input backend: cycles xinput (default) -> gameinput -> directinput ->
-  // sdl3 -> auto -> xinput... XInput is the default because it's the
-  // plain, stable, fully-public API and correctly reports every button/
-  // trigger/stick; GameInput's vtable-slot probing has only ever reliably
-  // decoded buttons, not sticks/triggers, on real hardware.
-  const INPUT_BACKEND_ORDER = ["xinput", "gameinput", "directinput", "sdl3", "auto"];
+  // sdl3 -> joycon_pair -> auto -> xinput... XInput is the default because
+  // it's the plain, stable, fully-public API and correctly reports every
+  // button/trigger/stick; GameInput's vtable-slot probing has only ever
+  // reliably decoded buttons, not sticks/triggers, on real hardware.
+  // PlayStation controllers (DualShock 4 / DualSense) don't speak XInput
+  // at all — "Auto" (or DirectInput/SDL3 directly) is what picks those up,
+  // with correct Cross/Circle/Square/Triangle button mapping either way.
+  // joycon_pair is deliberately NOT part of "Auto"'s chain (unlike every
+  // other backend here) - see JoyConPairGamepad's docstring in
+  // gameinput_api.py for why its button mapping is best-effort/unverified
+  // rather than something safe to guess into automatically.
+  const INPUT_BACKEND_ORDER = ["xinput", "gameinput", "directinput", "sdl3", "joycon_pair", "browser_gamepad", "auto"];
   const INPUT_BACKEND_LABEL = {
-    xinput: "XInput (default — plain, stable, all buttons/triggers/sticks work)",
-    gameinput: "GameInput (adds Guide-button reporting; sticks/triggers unreliable on some hardware)",
-    directinput: "DirectInput (for older/exotic controllers XInput doesn't recognize)",
-    sdl3: "SDL3 (needs SDL3.dll present next to the exe or on PATH)",
-    auto: "Auto (tries XInput, then GameInput, then DirectInput, then SDL3)",
+    xinput: "XInput (default — plain, stable, all buttons/triggers/sticks work; Xbox-compatible controllers only)",
+    gameinput: "GameInput (uses gameinput_native if built; falls back to a less reliable method otherwise - see gameinput_native/README.md)",
+    directinput: "DirectInput (for older/exotic controllers XInput doesn't recognize, including PlayStation DualShock 4 / DualSense)",
+    sdl3: "SDL3 (needs SDL3.dll present next to the exe or on PATH; also covers PlayStation controllers)",
+    joycon_pair: "Joy-Con Pair (combines a connected left + right Nintendo Joy-Con into one controller — experimental, button mapping unverified on real hardware)",
+    browser_gamepad: "Browser Gamepad API (reads the controller via the web browser's own Gamepad API instead of native code — has been found to keep working inside Windows' Xbox Full Screen Experience when the others don't)",
+    auto: "Auto (tries XInput, then GameInput, then DirectInput, then SDL3 — recommended for PlayStation controllers, since it finds them automatically)",
   };
   const currentBackend = settings.input_backend || "xinput";
   const ibBlock = document.createElement("div");
@@ -2248,6 +2818,7 @@ async function renderSettings(group) {
   ibBtn.addEventListener("click", async () => {
     const next = INPUT_BACKEND_ORDER[(INPUT_BACKEND_ORDER.indexOf(currentBackend) + 1) % INPUT_BACKEND_ORDER.length];
     state.settings = await api().set_input_backend(next);
+    if (next === "browser_gamepad") requestAnimationFrame(_pollBrowserGamepad);
     renderSettings();
   });
   ibBlock.appendChild(ibBtn);
@@ -2264,6 +2835,22 @@ async function renderSettings(group) {
   dbgReset.textContent = "Reset counters";
   dbgReset.addEventListener("click", async () => { await api().reset_controller_debug(); updateControllerDebug(); });
   dbgBlock.appendChild(dbgReset);
+
+  const dbgDump = document.createElement("button");
+  dbgDump.className = "btn-link";
+  dbgDump.textContent = "Dump Diagnostics Now";
+  dbgDump.title = "Writes the same diagnostic dump gameinput_api normally writes automatically a few minutes after startup, right now instead of waiting.";
+  dbgDump.addEventListener("click", async () => {
+    const original = dbgDump.textContent;
+    dbgDump.disabled = true;
+    dbgDump.textContent = "Dumping...";
+    const res = await api().dump_controller_diag_now();
+    dbgDump.disabled = false;
+    dbgDump.textContent = original;
+    showToast(res.ok ? `Dumped to ${res.path}` : `Dump failed: ${res.error}`);
+  });
+  dbgBlock.appendChild(dbgDump);
+
   c.appendChild(dbgBlock);
   startControllerDebugPolling();
   _settingsGroup("sections"); // everything after Controls, up to window mode
@@ -2313,16 +2900,6 @@ async function renderSettings(group) {
     c.appendChild(buildDisplayTypeBlock(kind));
 
     if (kind === "music") {
-      // Desktop section — off by default, always first in the *category
-      // list* when on (unrelated to its position here in Settings)
-      c.appendChild(buildToggleBlock(
-        "Desktop Section",
-        !!settings.desktop_section_enabled,
-        async () => { await api().set_desktop_section_enabled(!settings.desktop_section_enabled); await refreshAfterSettingsChange(); },
-        settings.desktop_section_enabled
-          ? "Enabled — Desktop appears as the first section, showing whatever's on your actual Windows Desktop"
-          : "Disabled — hidden from the section list",
-      ));
       // Built-in fixed sections: show/hide each one individually. All on
       // by default (nothing here changes existing behavior unless you
       // turn one off).
@@ -2348,6 +2925,18 @@ async function renderSettings(group) {
         builtinBlock.appendChild(row);
       });
       c.appendChild(builtinBlock);
+
+      // Desktop section — off by default, always first in the *category
+      // list* when on (unrelated to its position here in Settings, which
+      // is deliberately below Built-in Sections above).
+      c.appendChild(buildToggleBlock(
+        "Desktop Section",
+        !!settings.desktop_section_enabled,
+        async () => { await api().set_desktop_section_enabled(!settings.desktop_section_enabled); await refreshAfterSettingsChange(); },
+        settings.desktop_section_enabled
+          ? "Enabled — Desktop appears as the first section, showing whatever's on your actual Windows Desktop"
+          : "Disabled — hidden from the section list",
+      ));
 
       if (settings.desktop_section_enabled) c.appendChild(buildDisplayTypeBlock("desktop"));
 
@@ -2586,6 +3175,9 @@ async function renderSettings(group) {
   themeBlock.appendChild(gridWrap);
   c.appendChild(themeBlock);
 
+  _settingsGroup("addons"); // built-in theme extras + scanned plugin/plug-on/theme settings.json files
+  await renderAddonSettingsBlocks(c, settings);
+
   _settingsGroup("program"); // close-tasks through factory reset
   // open-programs bar behavior
   c.appendChild(buildToggleBlock(
@@ -2704,6 +3296,43 @@ async function renderSettings(group) {
       : "Disabled — apps launch with a normal maximize request only.",
   ));
 
+  // Controller Bridge: per-item toggle lives in that item's Start menu
+  // (Apps/Games sections only - see openStartMenu) - this is just the
+  // one thing that needs an actual Settings UI, a custom keyboard
+  // mapping file, since that applies to every item the bridge is
+  // enabled for, not any one of them.
+  {
+    const bridgeBlock = document.createElement("div");
+    bridgeBlock.className = "settings-block";
+    const bridgeCount = ((settings.controller_bridge_items) || []).length;
+    const mappingPath = await api().get_controller_bridge_mapping_path();
+    bridgeBlock.innerHTML = `<h3>Controller Bridge</h3>
+      <p class="settings-note">Translates real controller input into keyboard presses, only while a specific Apps/Games item that needs it is actually running (enabled per-item from that item's Start menu) — never left on globally, since that would make the controller fight Meridian Launcher's own keyboard shortcuts, or onscreenmenu's/CyberDeckBrowser's/Meridian Explorer's if any of those end up focused instead. Currently enabled for ${bridgeCount} item${bridgeCount === 1 ? "" : "s"}.</p>
+      <p class="settings-note">Mapping: ${mappingPath ? escapeHtml(mappingPath) : "Default (arrow keys, Z/X/A/S for the face buttons — see xinput_to_keyboard.py)"}</p>`;
+    const mappingBtnRow = document.createElement("div");
+    mappingBtnRow.className = "settings-row";
+    const chooseMappingBtn = document.createElement("button");
+    chooseMappingBtn.className = "btn-link";
+    chooseMappingBtn.textContent = "Choose custom mapping file\u2026";
+    chooseMappingBtn.addEventListener("click", async () => {
+      await api().set_controller_bridge_mapping_path();
+      renderSettings();
+    });
+    mappingBtnRow.appendChild(chooseMappingBtn);
+    if (mappingPath) {
+      const clearMappingBtn = document.createElement("button");
+      clearMappingBtn.className = "btn-link";
+      clearMappingBtn.textContent = "Reset to default mapping";
+      clearMappingBtn.addEventListener("click", async () => {
+        await api().clear_controller_bridge_mapping_path();
+        renderSettings();
+      });
+      mappingBtnRow.appendChild(clearMappingBtn);
+    }
+    bridgeBlock.appendChild(mappingBtnRow);
+    c.appendChild(bridgeBlock);
+  }
+
   // auto shuffle: when a song ends, load a random one instead of the next
   // in list order. Next/previous still just move relative to whatever's
   // currently loaded — including a shuffled pick — so they naturally keep
@@ -2712,6 +3341,15 @@ async function renderSettings(group) {
     "Auto Shuffle Songs",
     settings.auto_shuffle_songs !== false,
     async () => { await api().set_auto_shuffle_songs(!(settings.auto_shuffle_songs !== false)); renderSettings(); },
+  ));
+
+  // Plays one random track automatically once the app finishes booting -
+  // a separate thing from Auto Shuffle Songs above, which only affects
+  // what happens when a track that's ALREADY playing ends.
+  c.appendChild(buildToggleBlock(
+    "Play Random Song on Startup",
+    !!settings.play_random_song_on_startup,
+    async () => { await api().set_play_random_song_on_startup(!settings.play_random_song_on_startup); renderSettings(); },
   ));
 
   // launch external system features (Task Manager, Control Panel, Recycle
@@ -2861,6 +3499,73 @@ async function renderSettings(group) {
   cacheBlock.appendChild(cacheBtn);
   c.appendChild(cacheBlock);
 
+  // backup & restore — one .zip bundling settings.json, control maps,
+  // the selected theme (part of settings.json), activated plugins
+  // (settings.json's visibility flags) and the actual custom
+  // sections/plugins folder contents (Plugins/, themes/)
+  const backupBlock = document.createElement("div");
+  backupBlock.className = "settings-block";
+  backupBlock.innerHTML = `<h3>Backup & Restore</h3>
+    <p class="settings-note">Export everything — settings, selected theme, activated plugins, and custom sections/plugins — into one .zip. Import it later (on this install or a fresh one) to restore it.</p>`;
+  const backupRow = document.createElement("div");
+  backupRow.style.display = "flex";
+  backupRow.style.gap = "10px";
+  backupRow.style.flexWrap = "wrap";
+
+  const exportBtn = document.createElement("button");
+  exportBtn.className = "btn-outline";
+  exportBtn.textContent = "Export Backup...";
+  exportBtn.addEventListener("click", async () => {
+    exportBtn.disabled = true;
+    const original = exportBtn.textContent;
+    exportBtn.textContent = "Exporting...";
+    const result = await api().export_backup();
+    exportBtn.disabled = false;
+    exportBtn.textContent = original;
+    if (!result.path) return; // cancelled - not an error
+    showToast(result.ok ? `Backup saved to ${result.path}` : `Export failed: ${result.error}`);
+  });
+  backupRow.appendChild(exportBtn);
+
+  const importBtn = document.createElement("button");
+  importBtn.className = "btn-outline";
+  importBtn.textContent = "Import Backup...";
+  importBtn.addEventListener("click", async () => {
+    const picked = await api().pick_backup_to_import();
+    if (!picked.path) return; // cancelled
+    if (!picked.ok) {
+      showToast(`Couldn't read that backup: ${picked.error}`);
+      return;
+    }
+    const bits = [];
+    if (picked.manifest && picked.manifest.app_version) bits.push(`from v${picked.manifest.app_version}`);
+    if (picked.has_plugins) bits.push("includes Plugins/");
+    if (picked.has_themes) bits.push("includes themes/");
+    const detail = bits.length ? ` (${bits.join(", ")})` : "";
+    const yes = await openConfirmModal(
+      "Import this backup?",
+      `This overwrites your current settings, control maps, and merges in the backed-up Plugins/ and themes/ folders${detail}. Anything not in the backup is left as-is. This cannot be undone.`,
+    );
+    if (!yes) return;
+    importBtn.disabled = true;
+    const result = await api().import_backup(picked.path);
+    importBtn.disabled = false;
+    if (!result.ok) {
+      showToast(`Import failed: ${result.error}`);
+      return;
+    }
+    state.settings = result.settings;
+    await refreshCategoriesAndLand();
+    applyBackground(state.settings);
+    await applyOverlay(state.settings);
+    await updateBatteryIndicator();
+    showToast("Backup restored.");
+  });
+  backupRow.appendChild(importBtn);
+
+  backupBlock.appendChild(backupRow);
+  c.appendChild(backupBlock);
+
   // revert to factory settings — always the very last option
   const resetBlock = document.createElement("div");
   resetBlock.className = "settings-block";
@@ -2887,6 +3592,51 @@ async function renderSettings(group) {
 
 
   _settingsGroup("about"); // the credit footer
+  // Third-party attributions/licenses — everything this suite bundles,
+  // links against, or downloads and ships alongside itself (via
+  // InstallMeridianSuite.bat's runtime-dependency step) that isn't
+  // Meridian's own code. Compiled in good faith from requirements.txt
+  // and the runtime components the installer/build scripts fetch; this
+  // is a summary for convenience, not a substitute for each project's
+  // own license file, which is the authoritative text in every case.
+  const licenseBlock = document.createElement("div");
+  licenseBlock.className = "settings-block settings-credit";
+  licenseBlock.innerHTML = `<h3>Third-Party Software &amp; Licenses</h3>
+    <p class="settings-note">Meridian Launcher is built on the following open-source and Microsoft-redistributable components. Each remains the property of its respective authors under its own license.</p>
+    <div class="license-list">
+      <p><b>Python packages (PyPI)</b></p>
+      <ul>
+        <li>pywebview — BSD-3-Clause</li>
+        <li>PySide6 / shiboken6 (Qt for Python), including QtWebEngine — GNU Lesser General Public License v3 (LGPLv3). Distributed as dynamically-linked, unmodified libraries, as LGPLv3 requires for this kind of use; see qt.io/licensing for the upstream Qt licensing terms.</li>
+        <li>pygame — GNU Lesser General Public License v2.1 (LGPLv2.1)</li>
+        <li>mutagen — GNU General Public License v2.0 or later</li>
+        <li>Pillow — Historical Permission Notice and Disclaimer (HPND)</li>
+        <li>psutil — BSD-3-Clause</li>
+        <li>pywin32 — Python Software Foundation License / MIT-style (varies by submodule)</li>
+        <li>pycaw — MIT License</li>
+        <li>comtypes — MIT License</li>
+        <li>qrcode — BSD-3-Clause</li>
+        <li>keyboard — MIT License</li>
+        <li>PyInstaller — GNU General Public License v2.0 or later, with a bootloader exception explicitly permitting the compiled bootloader to be embedded in and distributed with applications like this one under any license, without extending GPL obligations to the packaged application's own code.</li>
+      </ul>
+      <p><b>Browser engine</b></p>
+      <ul>
+        <li>Chromium (via QtWebEngine) — BSD 3-Clause License, plus the licenses of Chromium's own numerous third-party components (see chromium.org/Home/chromium-security/... or chrome://credits from any Chromium-based browser for the full list)</li>
+        <li>Google Widevine CDM — proprietary, © Google LLC. NOT bundled or redistributed by Meridian in any form — CyberDeckBrowser/Meridian NetBrowse only locate and point Chromium at a copy already installed on this machine by Google Chrome or Microsoft Edge, if present.</li>
+      </ul>
+      <p><b>Microsoft redistributable runtimes</b> (installed by InstallMeridianSuite.bat, not authored by Meridian)</p>
+      <ul>
+        <li>Microsoft Edge WebView2 Runtime — proprietary, © Microsoft Corporation, distributed under Microsoft's own WebView2 runtime distribution terms</li>
+        <li>Microsoft Visual C++ 2015-2022 Redistributable — proprietary, © Microsoft Corporation</li>
+        <li>Microsoft GameInput SDK headers/import library (gameinput_native/vendor/GameInput/) — proprietary, © Microsoft Corporation, used under the terms of the Microsoft Game Development Kit (GDK); the gameinput.dll runtime itself is not redistributed by Meridian and must already be present via the Xbox app/Game Bar or GameInputRedist.msi</li>
+      </ul>
+      <p><b>Optional runtime components</b> (best-effort, downloaded by InstallMeridianSuite.bat if available; the suite functions without them)</p>
+      <ul>
+        <li>ffmpeg / ffprobe — GNU General Public License v2.0 or later (the "essentials" builds this installer fetches include GPL-licensed encoders such as libx264, so the overall build is GPL-licensed even though ffmpeg's own code is dual LGPL/GPL); used only for generating media thumbnails, invoked as a separate process, never linked into Meridian's own code</li>
+        <li>SDL3 — zlib License; used only if the optional "sdl3" controller input backend is selected in Settings &gt; Controls</li>
+      </ul>
+    </div>`;
+  c.appendChild(licenseBlock);
   // credit footer — always the very last thing in the settings box
   const creditBlock = document.createElement("div");
   creditBlock.className = "settings-block settings-credit";
@@ -3191,20 +3941,52 @@ function playMusicAt(i) {
   const item = state.items[i];
   if (!item) return;
   state.playIndex = i;
+  // Snapshot the currently-displayed list as the shoulder-controls queue
+  // - this used to be set nowhere at all (musicQueue/musicIndex stayed
+  // permanently empty/0), which is why LB/RB/LB+RB never worked: they
+  // read from a queue that was never populated, and their fallback path
+  // called playFromQueueAt(), a function that didn't exist anywhere in
+  // this file. Snapshotting (rather than pointing at state.items
+  // directly) is what lets the shoulder controls keep working for this
+  // queue even after navigating away from the Music section to browse
+  // something else, per the queue's own original intent (see its
+  // declaration up in `state`).
+  state.musicQueue = state.items.slice();
+  state.musicIndex = i;
+  _playQueueItem(item);
+}
+
+// Real target of playPrevTrack/playNextTrack/playRandomTrack/the "ended"
+// handler below - plays a track from the persistent shoulder-controls
+// queue (which can outlive the Music section being the active list) and
+// keeps state.playIndex in step too, so the Music list's own highlighted
+// row stays correct if that's still what's on screen.
+function playFromQueueAt(i) {
+  const item = state.musicQueue[i];
+  if (!item) return;
+  state.musicIndex = i;
+  const cat = state.categories[state.catIndex];
+  if (cat && cat.kind === "media" && cat.id === "music") state.playIndex = i;
+  _playQueueItem(item);
+}
+
+function _playQueueItem(item) {
   audioEl().src = item.url;
   audioEl().play();
   el("now-playing").classList.remove("hidden");
   el("np-title").textContent = item.title;
   el("np-artist").textContent = item.artist;
   el("np-thumb").src = item.thumbUrl || "";
-  renderItemList(state.categories[state.catIndex]);
+  const cat = state.categories[state.catIndex];
+  if (cat && cat.kind === "media" && cat.id === "music") renderItemList(cat);
 }
 audioEl().addEventListener("timeupdate", () => {
   const a = audioEl();
   if (a.duration) el("np-progress-fill").style.width = `${(a.currentTime / a.duration) * 100}%`;
 });
 audioEl().addEventListener("ended", () => {
-  if (!state.items.length) return;
+  const q = state.musicQueue || [];
+  if (!q.length) return;
   const shuffle = !state.settings || state.settings.auto_shuffle_songs !== false; // default on
   if (shuffle) {
     playRandomTrack();
@@ -3262,6 +4044,18 @@ function isOverlayOpen() {
 }
 
 function handleBack() {
+  // A plug-on with its taskbar hidden by layout prefs can have it
+  // force-shown via X (see toggleTaskbarFocus/.addon-taskbar-forced).
+  // B re-hides it rather than falling through to whatever Back normally
+  // does. This only ever runs for a plug-on that ISN'T suspending
+  // Meridian Launcher's own controls (see _controller_suspended_for_plugin
+  // in main.py): a boxed program with independent controls of its own
+  // owns all input while it's focused, so this handler simply never gets
+  // reached for one of those - nothing extra to gate here for that case.
+  if (document.body.classList.contains("addon-taskbar-forced")) {
+    document.body.classList.remove("addon-taskbar-forced");
+    return;
+  }
   if (!el("video-overlay").classList.contains("hidden")) { closeVideo(); return; }
   if (!el("photo-overlay").classList.contains("hidden")) { closePhoto(); return; }
   if (!el("modal-overlay").classList.contains("hidden")) { closeSectionModal(); return; }
@@ -3285,6 +4079,16 @@ function handleBack() {
   if (state.radialFocus === "subfolder") { setRadialFocus("options"); return; }
   if (state.radialFocus === "options") { setRadialFocus("sections"); return; }
   // Nothing else to "back" out of — the category bar is always visible.
+}
+
+// B held for 2 seconds (see controller_input.py's B_HOLD_SECONDS): same
+// "close whatever options section is open" as a normal back press, but
+// instead of just landing on the Sections bar, jumps straight into the
+// System section and opens it immediately.
+function handleBackHoldSystem() {
+  const idx = state.categories.findIndex((c) => c.id === "system");
+  if (idx === -1) return;
+  selectCategory(idx, true);
 }
 
 // Y (quick press) / \ key: jump straight to the subfolder panel from
@@ -3316,6 +4120,28 @@ function playRandomTrack() {
   playFromQueueAt(idx);
 }
 
+// R3: stop playback outright (not pause-and-resume-later - back to a
+// blank now-playing state, same as if nothing had ever been played).
+function stopMusic() {
+  const a = audioEl();
+  a.pause();
+  a.removeAttribute("src");
+  a.load();
+  el("now-playing").classList.add("hidden");
+  state.musicQueue = [];
+  state.musicIndex = 0;
+  state.playIndex = -1;
+}
+
+// Right stick left/right: rewind/fast-forward the current track by
+// `seconds` (negative = back). No-op with nothing loaded or no known
+// duration yet (can't clamp sensibly before metadata arrives).
+function seekMusic(seconds) {
+  const a = audioEl();
+  if (!a.src || !isFinite(a.duration) || a.duration <= 0) return;
+  a.currentTime = Math.max(0, Math.min(a.duration, a.currentTime + seconds));
+}
+
 // ---------------- on-screen keyboard (controller-navigable) ----------------
 // Shown automatically whenever a text/password input is focused, positioned
 // below it. Real physical keyboard typing keeps working the whole time —
@@ -3326,6 +4152,11 @@ const OSK_ROWS = [
   ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
   ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
   ["⇧", "z", "x", "c", "v", "b", "n", "m", "⌫"],
+  // Symbols row: the punctuation actually needed for typing a URL
+  // (dots/slashes/colon for the address itself, @ ? # & = for query
+  // strings) or a section name (hyphens, underscores, parentheses),
+  // without trying to cram in every ASCII symbol a full keyboard has.
+  [".", "/", ":", "-", "_", "@", "?", "#", "&", "="],
   ["space", "done"],
 ];
 let oskShift = false;
@@ -3467,7 +4298,7 @@ document.addEventListener("keydown", (e) => {
 
   // Shift = keyboard equivalent of X: jump to/away from the open-programs
   // bar. Delete closes the highlighted task while the bar has focus (the
-  // keyboard stand-in for holding X for 3 seconds).
+  // keyboard stand-in for holding X for 2 seconds).
   if (e.key === "o" || e.key === "O") { if (!e.repeat) toggleOverlayVisibility(); return; }
   // ContextMenu is the dedicated "Menu" key most keyboards have (next to
   // Right Ctrl) — keyboard equivalent of pressing Start on a controller.
@@ -3529,6 +4360,14 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
+  if (isMusicSortMenuOpen()) {
+    if (e.key === "ArrowUp" || (kc && e.key === kc.up)) { handleMusicSortMenuInput("up"); return; }
+    if (e.key === "ArrowDown" || (kc && e.key === kc.down)) { handleMusicSortMenuInput("down"); return; }
+    if ((kc && e.key === kc.confirm && !e.repeat) || (e.key === "Enter" && !e.repeat)) { handleMusicSortMenuInput("confirm"); return; }
+    if (kc && e.key === kc.back && !e.repeat) { handleMusicSortMenuInput("back"); return; }
+    return;
+  }
+
   if (isTutorialOpen()) {
     if (e.key === "ArrowLeft" || (kc && e.key === kc.left)) { handleTutorialInput("left"); return; }
     if (e.key === "ArrowRight" || (kc && e.key === kc.right)) { handleTutorialInput("right"); return; }
@@ -3544,7 +4383,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   if (!kc) return;
-  if (e.key === kc.confirm) { if (!e.repeat) activateCurrentSelection(); }
+  if (e.key === kc.confirm) { if (!e.repeat) { if (_suppressNextConfirm) { _suppressNextConfirm = false; } else { activateCurrentSelection(); } } }
   else if (e.key === kc.back || e.key === "Backspace") { if (!e.repeat) handleBack(); }
   else if (e.key === "\\") { if (!e.repeat) handleJumpToSubfolder(); }
   else if (e.key === kc.up) moveSelection(-1);
@@ -3578,6 +4417,7 @@ window.handleControllerInput = function (action) {
   if (isConfirmOpen()) { handleConfirmOverlayInput(action); return; }
   if (isPhotoMenuOpen()) { handlePhotoMenuInput(action); return; }
   if (isStartMenuOpen()) { handleStartMenuInput(action); return; }
+  if (isMusicSortMenuOpen()) { handleMusicSortMenuInput(action); return; }
   if (isTutorialOpen()) { handleTutorialInput(action); return; }
   if (isOverlayOpen()) {
     if (action === "left" && !el("photo-overlay").classList.contains("hidden")) el("photo-prev").click();
@@ -3588,13 +4428,17 @@ window.handleControllerInput = function (action) {
   if (action === "x_taskbar") { toggleTaskbarFocus(); return; }
   if (taskbarState.focused) { handleTaskbarInput(action); return; }
   if (action === "x_taskbar_hold") return; // hold-to-close only applies inside the bar
-  if (action === "confirm") activateCurrentSelection();
+  if (action === "confirm") { if (_suppressNextConfirm) { _suppressNextConfirm = false; } else { activateCurrentSelection(); } }
   else if (action === "menu_start") handleMenuStart();
   else if (action === "back") handleBack();
+  else if (action === "back_hold_system") handleBackHoldSystem();
   else if (action === "y_subfolder") handleJumpToSubfolder();
   else if (action === "prev_track") playPrevTrack();
   else if (action === "next_track") playNextTrack();
   else if (action === "random_track") playRandomTrack();
+  else if (action === "stop_music") stopMusic();
+  else if (action === "seek_back_10") seekMusic(-10);
+  else if (action === "seek_fwd_10") seekMusic(10);
   else if (action === "up") moveSelection(-1);
   else if (action === "down") moveSelection(1);
   else if (action === "left") handleLeftNav();
@@ -3610,7 +4454,7 @@ window.handleControllerAny = function () {
 // A controller-first stand-in for the Windows taskbar: every open,
 // taskbar-visible window as an icon box. X (or Shift) jumps focus into
 // the bar, A refocuses the highlighted program, B returns to the sections
-// bar, holding X for 3s closes the task (with a confirm unless the
+// bar, holding X for 2s closes the task (with a confirm unless the
 // "Close tasks without prompt" setting is on), and Y still jumps to the
 // subfolder panel like everywhere else.
 //
@@ -3714,22 +4558,32 @@ function renderTaskbar() {
       ph.textContent = (t.title || "?").charAt(0).toUpperCase();
       box.appendChild(ph);
     }
+    if (t.resources) {
+      const cpu = t.resources.cpu_percent;
+      const badge = document.createElement("span");
+      badge.className = "task-res-badge" + (cpu >= 50 ? " res-high" : cpu >= 20 ? " res-med" : "");
+      badge.textContent = `${Math.round(cpu)}%`;
+      box.appendChild(badge);
+      box.title = `${t.title}\n${cpu.toFixed(1)}% CPU  ·  ${formatMb(t.resources.mem_mb)} RAM`;
+    } else {
+      box.title = t.title || "";
+    }
     // Mouse interaction:
     //  - single click: focus the item in the bar
     //  - double click: activate it (focus that window)
-    //  - press & hold 3s, then release: close it
+    //  - press & hold 2s, then release: close it
     let holdTimer = null;
     let heldLongEnough = false;
     box.addEventListener("mousedown", () => {
       heldLongEnough = false;
-      holdTimer = setTimeout(() => { heldLongEnough = true; }, 3000);
+      holdTimer = setTimeout(() => { heldLongEnough = true; }, 2000);
     });
     box.addEventListener("mouseup", () => {
       if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
       taskbarState.index = i;
       if (!taskbarState.focused) enterTaskbar();
       if (heldLongEnough) {
-        // held the full 3s -> close on release
+        // held the full 2s -> close on release
         closeTaskbarSelection();
       }
       renderTaskbar();
@@ -3747,6 +4601,11 @@ function renderTaskbar() {
   updateTaskbarBubble();
 }
 
+function formatMb(mb) {
+  if (mb == null) return "?";
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+}
+
 // The name bubble is FIXED in place (anchored just above the bar in
 // horizontal mode, beside it in vertical mode via CSS) — it changes text,
 // never position, so the eye always knows where to look.
@@ -3755,7 +4614,11 @@ function updateTaskbarBubble() {
   if (!bubble) return;
   const t = taskbarState.tasks[taskbarState.index];
   if (taskbarState.focused && t) {
-    bubble.textContent = t.title;
+    if (t.resources) {
+      bubble.innerHTML = `${escapeHtml(t.title)}<span class="task-bar-bubble-res">${t.resources.cpu_percent.toFixed(1)}% CPU &middot; ${formatMb(t.resources.mem_mb)} RAM</span>`;
+    } else {
+      bubble.textContent = t.title;
+    }
     bubble.classList.remove("hidden");
   } else {
     // Unload the name entirely when the bar isn't the section being
@@ -3789,8 +4652,19 @@ function toggleTaskbarFocus() {
   // Meridian FileBrowse/NetBrowse/webapp plugins own all input while
   // loaded — switching to the taskbar mid-section would fight over
   // controls with whatever's boxed in there, so it's blocked entirely
-  // until that section is exited.
-  if (isEmbeddedPluginSectionActive()) return;
+  // until that section is exited. Exception: an addon with the taskbar
+  // hidden by its own layout prefs still lets X force it visible - see
+  // the .addon-show-taskbar/.addon-taskbar-forced CSS. This only
+  // actually shows anything if the addon's window_position preset
+  // doesn't fully cover the taskbar's screen area (see that CSS
+  // comment); it's still safe to allow even when it wouldn't be
+  // visible, since nothing else about input ownership changes here.
+  if (isEmbeddedPluginSectionActive()) {
+    if (state.activeAddonLayout && state.activeAddonLayout.show_taskbar === false) {
+      document.body.classList.toggle("addon-taskbar-forced");
+    }
+    return;
+  }
   if (taskbarState.focused) exitTaskbar();
   else enterTaskbar();
 }
@@ -3865,6 +4739,7 @@ async function updateControllerDebug() {
   const lines = [];
   lines.push(`backend        : ${d.backend || "none"}  (input_backend setting: ${d.input_backend || "xinput"})`);
   if (d.env_override) lines.push(`env override   : MERIDIAN_INPUT_BACKEND=${d.env_override}`);
+  if (diag.native_status) lines.push(`gameinput_native: ${diag.native_status}`);
   lines.push(`controller     : ${d.connected ? "connected" : "NOT connected"}`);
   lines.push(`app focused    : ${d.foreground === null ? "?" : (d.foreground ? "yes" : "no  (input is received but won't navigate)")}`);
   lines.push("");
@@ -4051,11 +4926,12 @@ window.__meridianOpenUrlInBrowser = async function (url) {
 
 window.onEmbeddedPluginExited = function (which) {
   if (state.chatPluginActive && state.chatPluginActive === which) {
-    // Launched from inside the Chat list (Discord/Telegram/etc as an
-    // option, not its own section) — go back to that list, not all the
-    // way out to the Sections bar.
+    // Launched from inside a section's list (Chat's Discord/Telegram/etc,
+    // or a plug-on spliced into any built-in section) — go back to that
+    // list, not all the way out to the Sections bar.
     state.chatPluginActive = null;
     document.body.classList.remove("embedded-plugin-active");
+    if (state.activeAddonLayout) restoreAddonLayout();
     refreshItemPanel();
     return;
   }
@@ -4063,11 +4939,12 @@ window.onEmbeddedPluginExited = function (which) {
   document.body.dataset.radialFocus = "sections";
   document.body.classList.remove("embedded-plugin-active");
   state.explorerPendingPath = null;
+  if (state.activeAddonLayout) restoreAddonLayout();
   renderCategories();
   // Don't call refreshItemPanel() here — for an explorer_section it would
   // immediately relaunch the boxed app. Show an inert placeholder instead;
   // navigating away and back in (selectCategory) reloads it fresh.
-  el("subfolder-nav").classList.add("hidden");
+  setSubfolderNavHidden(true);
   el("preview-pane").classList.add("hidden");
   el("item-panel").innerHTML = `<div class="empty-msg">Closed. Select this section again to reopen it.</div>`;
 };
@@ -4348,7 +5225,208 @@ async function boot() {
   initSilkThreads();
 
   await playIntroIfConfigured();
+  await playRandomSongOnStartupIfConfigured();
+  // Always started, regardless of the current input_backend setting -
+  // _pollBrowserGamepad() checks that itself, fresh, every single frame
+  // (see its own comment for why relying on a one-time check here used
+  // to be fragile). Reading navigator.getGamepads() once per frame is
+  // cheap enough that this costs nothing when it isn't the active
+  // backend, and it means switching TO this backend later always finds
+  // an already-running loop instead of depending on some other call site
+  // (a Settings toggle click, a gamepadconnected event) to have fired.
+  requestAnimationFrame(_pollBrowserGamepad);
 }
+
+// Separate from Auto Shuffle Songs (which only affects what happens once
+// something already playing ends) - this plays one random track right
+// after boot finishes, without navigating into the Music section at all.
+async function playRandomSongOnStartupIfConfigured() {
+  if (!state.settings || !state.settings.play_random_song_on_startup) return;
+  try {
+    let items = await api().scan_library("music");
+    if (!items || !items.length) return;
+    items = sortMusicItems(items, "random");
+    state.musicQueue = items;
+    state.musicIndex = 0;
+    _playQueueItem(items[0]);
+  } catch (e) {
+    console.error("Couldn't start random song on startup:", e);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Browser Gamepad API backend (Settings > Controls > "Browser Gamepad
+// API") - polls navigator.getGamepads() directly in the frontend
+// instead of Meridian Launcher reading the controller natively via
+// gameinput_api.py. Whichever standard W3C Gamepad API implementation
+// the WebView2/Chromium runtime this app is embedded in ships with
+// handles the actual hardware access - notably, this has been found to
+// keep working inside Windows' Xbox Full Screen Experience even when
+// XInput/GameInput/DirectInput reads from native code don't, which is
+// the whole reason this exists as an option: it sidesteps every one of
+// the native-API reliability problems gameinput_api.py's other backends
+// have had to work around (see that file's docstring) by not touching
+// any of them at all.
+//
+// When this mode is selected (state.settings.input_backend ===
+// "browser_gamepad"), main.py's own controller_input.py listener is
+// left completely idle - open_gamepad(prefer=("browser_gamepad",))
+// doesn't recognize that name as any of its real backends, so it just
+// returns None and the Python-side polling thread never starts (see
+// ControllerListener.start()). This loop is the only thing reading the
+// controller in that mode, and it re-uses window.handleControllerInput
+// (the exact same dispatch every other backend already funnels through)
+// for everything, so all the app.js-side logic - menus, navigation,
+// music controls, taskbar, etc - works identically regardless of which
+// backend actually supplied the button press.
+//
+// Deliberately NOT the full feature set controller_input.py's own loop
+// has: no quit combo (removed everywhere anyway), no foreground combo
+// (this only runs while the app already has focus/is the active tab,
+// so there's nothing to bring TO the foreground), no kiosk-exit Y-hold
+// or raw-button kiosk-unlock code, no B-hold-2s System jump (added here
+// too, actually - see below). Core navigation, confirm/back, Start
+// menu, taskbar, and music transport controls are all covered.
+
+const BROWSER_GAMEPAD_DEADZONE = 0.25;
+const BROWSER_GAMEPAD_COOLDOWN_MS = 200;
+const BROWSER_GAMEPAD_B_HOLD_MS = 2000;
+const BROWSER_GAMEPAD_X_HOLD_MS = 2000;
+
+// Standard W3C Gamepad API button/axis indices (the "standard" gamepad
+// mapping - what every Xbox-shaped controller, and Chromium's own
+// mapping for a DualShock/DualSense, normalizes to).
+const BG_BUTTON = {
+  A: 0, B: 1, X: 2, Y: 3,
+  LEFT_SHOULDER: 4, RIGHT_SHOULDER: 5,
+  LEFT_TRIGGER: 6, RIGHT_TRIGGER: 7,
+  BACK: 8, START: 9,
+  LEFT_THUMB: 10, RIGHT_THUMB: 11,
+  DPAD_UP: 12, DPAD_DOWN: 13, DPAD_LEFT: 14, DPAD_RIGHT: 15,
+  GUIDE: 16,
+};
+
+let _bgState = {
+  lastFireAt: {},      // action -> timestamp, for the directional-repeat cooldown
+  prevDpadHeld: {},    // up/down/left/right -> bool, for edge-triggered nav
+  prevButtonHeld: {},  // confirm/back/menu_start/etc -> bool
+  bHoldStart: null, bHoldFired: false,
+  xHoldStart: null, xHoldFired: false,
+  rstickSeekLatched: false,
+  shouldersLatched: false,
+};
+
+function _bgCanFire(action) {
+  const now = performance.now();
+  const last = _bgState.lastFireAt[action] || 0;
+  if (now - last >= BROWSER_GAMEPAD_COOLDOWN_MS) {
+    _bgState.lastFireAt[action] = now;
+    return true;
+  }
+  return false;
+}
+
+function _bgDeadzone(v) {
+  return Math.abs(v) < BROWSER_GAMEPAD_DEADZONE ? 0 : v;
+}
+
+function _bgEdge(key, heldNow, fn) {
+  const wasHeld = !!_bgState.prevButtonHeld[key];
+  if (heldNow && !wasHeld) fn();
+  _bgState.prevButtonHeld[key] = heldNow;
+}
+
+function _pollBrowserGamepad() {
+  // Always reschedules itself, even when this isn't the active backend
+  // right now - this used to return here WITHOUT calling
+  // requestAnimationFrame again, which permanently killed the loop the
+  // first time it ran before state.settings was populated (a real race
+  // with boot()'s own async settings fetch, or gamepadconnected firing
+  // very early) - once dead, it never resumed even after switching to
+  // this backend later, since nothing else ever restarts it except the
+  // few explicit call sites. Checking fresh every frame and no-op'ing
+  // instead of dying is what actually makes this robust.
+  if (!state.settings || state.settings.input_backend !== "browser_gamepad") {
+    requestAnimationFrame(_pollBrowserGamepad);
+    return;
+  }
+  const pads = (navigator.getGamepads && navigator.getGamepads()) || [];
+  const gp = Array.prototype.find.call(pads, (p) => p && p.connected);
+  if (!gp) return requestAnimationFrame(_pollBrowserGamepad);
+
+  const btn = (i) => gp.buttons[i] && gp.buttons[i].pressed;
+
+  // D-pad + left stick, both drive navigation - edge-triggered with the
+  // same repeat cooldown controller_input.py's own _can_fire gives
+  // real hardware, so holding a direction repeats at the same rate.
+  const dpadUp = btn(BG_BUTTON.DPAD_UP) || _bgDeadzone(gp.axes[1] || 0) < 0;
+  const dpadDown = btn(BG_BUTTON.DPAD_DOWN) || _bgDeadzone(gp.axes[1] || 0) > 0;
+  const dpadLeft = btn(BG_BUTTON.DPAD_LEFT) || _bgDeadzone(gp.axes[0] || 0) < 0;
+  const dpadRight = btn(BG_BUTTON.DPAD_RIGHT) || _bgDeadzone(gp.axes[0] || 0) > 0;
+  if (dpadUp && _bgCanFire("up")) window.handleControllerInput("up");
+  if (dpadDown && _bgCanFire("down")) window.handleControllerInput("down");
+  if (dpadLeft && _bgCanFire("left")) window.handleControllerInput("left");
+  if (dpadRight && _bgCanFire("right")) window.handleControllerInput("right");
+
+  _bgEdge("confirm", btn(BG_BUTTON.A), () => window.handleControllerInput("confirm"));
+  _bgEdge("back", btn(BG_BUTTON.B), () => window.handleControllerInput("back"));
+  _bgEdge("menu_start", btn(BG_BUTTON.START), () => window.handleControllerInput("menu_start"));
+  _bgEdge("y_subfolder", btn(BG_BUTTON.Y), () => window.handleControllerInput("y_subfolder"));
+  _bgEdge("x_taskbar", btn(BG_BUTTON.X), () => window.handleControllerInput("x_taskbar"));
+  _bgEdge("stop_music", btn(BG_BUTTON.RIGHT_THUMB), () => window.handleControllerInput("stop_music"));
+
+  // B held 2s -> back_hold_system (same as controller_input.py's B_HOLD_SECONDS)
+  if (btn(BG_BUTTON.B)) {
+    if (_bgState.bHoldStart === null) { _bgState.bHoldStart = performance.now(); _bgState.bHoldFired = false; }
+    else if (!_bgState.bHoldFired && performance.now() - _bgState.bHoldStart >= BROWSER_GAMEPAD_B_HOLD_MS) {
+      _bgState.bHoldFired = true;
+      window.handleControllerInput("back_hold_system");
+    }
+  } else {
+    _bgState.bHoldStart = null; _bgState.bHoldFired = false;
+  }
+
+  // X held 2s -> x_taskbar_hold (close the highlighted task)
+  if (btn(BG_BUTTON.X)) {
+    if (_bgState.xHoldStart === null) { _bgState.xHoldStart = performance.now(); _bgState.xHoldFired = false; }
+    else if (!_bgState.xHoldFired && performance.now() - _bgState.xHoldStart >= BROWSER_GAMEPAD_X_HOLD_MS) {
+      _bgState.xHoldFired = true;
+      window.handleControllerInput("x_taskbar_hold");
+    }
+  } else {
+    _bgState.xHoldStart = null; _bgState.xHoldFired = false;
+  }
+
+  // Shoulders: single = prev/next track, both = random track
+  const lb = btn(BG_BUTTON.LEFT_SHOULDER), rb = btn(BG_BUTTON.RIGHT_SHOULDER);
+  if (lb && rb) {
+    if (!_bgState.shouldersLatched) { _bgState.shouldersLatched = true; window.handleControllerInput("random_track"); }
+  } else {
+    _bgState.shouldersLatched = false;
+    _bgEdge("prev_track", lb, () => window.handleControllerInput("prev_track"));
+    _bgEdge("next_track", rb, () => window.handleControllerInput("next_track"));
+  }
+
+  // Right stick left/right: rewind/fast-forward 10s, edge-triggered on
+  // crossing the deadzone (not repeat-fired while held over)
+  const rx = _bgDeadzone(gp.axes[2] || 0);
+  if (rx !== 0) {
+    if (!_bgState.rstickSeekLatched) {
+      _bgState.rstickSeekLatched = true;
+      window.handleControllerInput(rx < 0 ? "seek_back_10" : "seek_fwd_10");
+    }
+  } else {
+    _bgState.rstickSeekLatched = false;
+  }
+
+  requestAnimationFrame(_pollBrowserGamepad);
+}
+
+window.addEventListener("gamepadconnected", () => {
+  if (state.settings && state.settings.input_backend === "browser_gamepad") {
+    requestAnimationFrame(_pollBrowserGamepad);
+  }
+});
 
 if (window.pywebview) boot();
 else window.addEventListener("pywebviewready", boot);

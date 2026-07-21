@@ -190,6 +190,84 @@ CACHE_DIR = store.DATA_DIR / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
+def _controller_bridge_command():
+    exe = BASE_DIR / "xinput_to_keyboard.py"
+    if not exe.exists():
+        return None
+    return [sys.executable, str(exe)]
+
+
+def _watch_and_focus_game(exe_name, game_id=None, exe_dir=None):
+    """Waits (up to 60s - launchers/anti-cheat/etc can take a while) for a
+    just-launched game's exe to actually appear as a running process,
+    then focuses its window and, per the "close_game_library_on_launch"
+    setting, either minimizes Game Library (default) or closes it
+    outright. Also starts/stops the Controller Bridge for this specific
+    game if it's enabled (see toggle_controller_bridge_for_game) -
+    started immediately (not gated on the window appearing, unlike
+    focus/minimize/close), stopped the moment the game's process exits.
+    Runs entirely on a background thread so it never blocks the launch
+    itself."""
+    bridge_proc = None
+    if game_id and game_id in SETTINGS.get("controller_bridge_games", []):
+        cmd = _controller_bridge_command()
+        if cmd:
+            # Priority: an explicit global mapping file (chosen in
+            # Settings) always wins if set; otherwise check the game's
+            # own install folder for meridian_controller_bridge.json
+            # automatically (see xinput_to_keyboard.py's --game-dir) -
+            # no per-game file browsing needed for that common case.
+            mapping_path = SETTINGS.get("controller_bridge_mapping_path")
+            if mapping_path and os.path.isfile(mapping_path):
+                cmd = cmd + ["--config", mapping_path]
+            elif exe_dir:
+                cmd = cmd + ["--game-dir", exe_dir]
+            try:
+                bridge_proc = subprocess.Popen(
+                    cmd, cwd=str(BASE_DIR),
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception:
+                bridge_proc = None
+
+    try:
+        deadline = time.time() + 60
+        appeared = False
+        while time.time() < deadline:
+            if system_actions.is_process_running(exe_name):
+                appeared = True
+                break
+            time.sleep(1)
+        if not appeared:
+            return  # never appeared within the window - nothing to focus/bridge
+
+        # A window might not exist the instant the process does (still
+        # loading) - keep trying to focus for a few more seconds.
+        focus_deadline = time.time() + 15
+        while time.time() < focus_deadline:
+            if system_actions.focus_process_window(exe_name):
+                try:
+                    if SETTINGS.get("close_game_library_on_launch"):
+                        webview.windows[0].destroy()
+                    else:
+                        webview.windows[0].minimize()
+                except Exception:
+                    pass
+                break
+            time.sleep(0.5)
+
+        # Keep the bridge running for as long as the game's process does.
+        if bridge_proc is not None:
+            while system_actions.is_process_running(exe_name):
+                time.sleep(2)
+    finally:
+        if bridge_proc is not None:
+            try:
+                bridge_proc.terminate()
+            except Exception:
+                pass
+
+
 def _cache_path(key):
     return CACHE_DIR / (hashlib.sha1(key.encode("utf-8")).hexdigest() + ".jpg")
 
@@ -666,6 +744,20 @@ class Api:
         gameinput_api.reset_diag()
         return True
 
+    def dump_controller_diag_now(self):
+        """Settings > Controls' "Dump Diagnostics Now" button - see
+        Meridian Launcher's main.py for the full explanation."""
+        import gameinput_api
+        listener = _CONTROLLER_LISTENER
+        backend_name = None
+        if listener is not None:
+            backend_name = listener.status().get("backend")
+        try:
+            gameinput_api._write_diag_dump(backend_name or "unknown")
+            return {"ok": True, "path": gameinput_api._diag_dump_path(), "error": None}
+        except Exception as e:
+            return {"ok": False, "path": None, "error": str(e)}
+
     def controller_status(self):
         """Diagnostic for the settings screen: which controller backend is
         active (GameInput / XInput / none) and whether a pad is currently
@@ -730,8 +822,17 @@ class Api:
         if self._import_source() == "heroic":
             runner = {"epic": "legendary", "gog": "gog", "other": "sideload"}.get(store_key, "legendary")
             heroic_import.launch_game(game_id, runner=runner)
+            # No exe-name resolution available for a Heroic-sourced game
+            # (see get_play_action_exe_name, Playnite-only) - focus/
+            # background/close on launch just isn't available for this path.
         else:
             playnite_import.launch_game(game_id, self._playnite_settings())
+            exe_name = playnite_import.get_play_action_exe_name(game_id, self._playnite_settings())
+            if exe_name:
+                exe_dir = playnite_import.get_play_action_exe_dir(game_id, self._playnite_settings())
+                threading.Thread(
+                    target=_watch_and_focus_game, args=(exe_name, game_id, exe_dir), daemon=True
+                ).start()
 
     def _store_install_or_uninstall(self, game_id):
         if self._import_source() == "heroic":
@@ -1077,6 +1178,53 @@ class Api:
 
     def quit_app(self):
         os._exit(0)
+
+    def set_close_game_library_on_launch(self, enabled):
+        """When a game launches: always focus it once its window appears,
+        then either minimize Game Library (False, default) or close it
+        outright (True) - see _watch_and_focus_game."""
+        SETTINGS["close_game_library_on_launch"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def toggle_controller_bridge_for_game(self, game_id):
+        """Controller Bridge is deliberately per-game, not a global
+        toggle: it translates real controller input into keyboard
+        presses system-wide while running, which would make the
+        controller useless for navigating Meridian Game Library itself
+        (different keyboard shortcuts) if left on outside of the one
+        game that actually needs it. Starting it right as that specific
+        game launches and stopping it the instant that game's process
+        exits (see _watch_and_focus_game) is what keeps it safe to use
+        at all."""
+        games = list(SETTINGS.get("controller_bridge_games", []))
+        if game_id in games:
+            games.remove(game_id)
+        else:
+            games.append(game_id)
+        SETTINGS["controller_bridge_games"] = games
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def set_controller_bridge_mapping_path(self):
+        """Opens a file picker for a custom xinput_to_keyboard.py JSON
+        mapping file, applied to every game the Controller Bridge is
+        enabled for."""
+        try:
+            paths = webview.windows[0].create_file_dialog(
+                _DLG_OPEN, file_types=("JSON files (*.json)", "All files (*.*)")
+            )
+        except Exception:
+            paths = None
+        if paths:
+            SETTINGS["controller_bridge_mapping_path"] = paths[0]
+            store.save_settings(SETTINGS)
+        return SETTINGS.get("controller_bridge_mapping_path")
+
+    def clear_controller_bridge_mapping_path(self):
+        SETTINGS["controller_bridge_mapping_path"] = None
+        store.save_settings(SETTINGS)
+        return None
 
     # ---------------- appearance ----------------
     # ---------------- open-programs bar (taskbar replacement) ----------------
@@ -1426,11 +1574,36 @@ def detect_screen_size():
         return 1280, 800
 
 
+def _apply_exclusive_fullscreen_at_boot(window):
+    """Runs once the webview window exists (see the func= passed to
+    webview.start below). webview.create_window()'s own fullscreen= param
+    is a plain "start fullscreen" flag with no OS-exclusive/borderless
+    distinction, so getting real OS-exclusive fullscreen at startup (not
+    just when manually toggled later via Settings > Window mode, which
+    already called window.toggle_fullscreen() correctly) needs this same
+    two-step dance Meridian Launcher's boot sequence uses: create a
+    normal window, then toggle it into exclusive fullscreen right after."""
+    if SETTINGS.get("window_mode") == "exclusive_fullscreen":
+        try:
+            window.toggle_fullscreen()
+            window._meridian_exclusive_fs = True
+        except Exception:
+            pass
+
+
 def main():
    
 
     width, height = detect_screen_size()
-    mode = SETTINGS.get("window_mode", "fullscreen")
+    # exclusive_fullscreen is the default (see store.py) - matches every
+    # other window mode's valid values (exclusive_fullscreen |
+    # windowed_fullscreen | windowed; no "kiosk" here, unlike Meridian
+    # Launcher). "fullscreen" was never actually one of them - comparing
+    # against it below always came out False, so borderless_fullscreen/
+    # frameless silently defaulted to plain windowed at startup even
+    # though the stored setting already said exclusive_fullscreen; only
+    # actually toggling the Settings radio pill by hand ever applied it.
+    mode = SETTINGS.get("window_mode", "exclusive_fullscreen")
     # Meridian Launcher passes --window-mode=borderless-fullscreen when it
     # opens this app (via the Games section's Game Library entry), asking
     # for windowed (borderless) fullscreen for this run regardless of
@@ -1438,10 +1611,14 @@ def main():
     # persisted, so a person's own saved window mode (set from this app's
     # own settings) survives the next time they open it by hand.
     if "--window-mode=borderless-fullscreen" in sys.argv:
-        mode = "fullscreen"
+        mode = "windowed_fullscreen"
     # Borderless (windowed) fullscreen instead of OS-exclusive fullscreen:
     # a frameless window sized and positioned to exactly cover the screen.
-    borderless_fullscreen = mode == "fullscreen"
+    # exclusive_fullscreen starts as a normal window here and gets
+    # switched to real OS-exclusive fullscreen by
+    # _apply_exclusive_fullscreen_at_boot once the window actually exists
+    # (toggle_fullscreen() has nothing to toggle before that).
+    borderless_fullscreen = mode == "windowed_fullscreen"
     frameless = borderless_fullscreen
 
     api = Api()
@@ -1467,7 +1644,10 @@ def main():
     SETTINGS.setdefault("playnite", {"export_path": None, "executable_path": None})
 
     start_controller()
-    webview.start(debug=False, gui="edgechromium")
+    webview.start(
+        _apply_exclusive_fullscreen_at_boot, window,
+        debug=False, gui="edgechromium",
+    )
 
 
 if __name__ == "__main__":

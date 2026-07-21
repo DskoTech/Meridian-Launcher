@@ -5,10 +5,7 @@
   "down": "DPAD_DOWN",
   "left": "DPAD_LEFT",
   "right": "DPAD_RIGHT",
-  "quit_combo": [
-    "LEFT_THUMB",
-    "RIGHT_THUMB"
-  ],
+  "quit_combo": [],
   "foreground_combo": [
     "START",
     "BACK"

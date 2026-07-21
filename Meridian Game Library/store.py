@@ -90,6 +90,16 @@ def default_settings():
         "overlay_image": None,
         "opening_video": None,
         "window_mode": "exclusive_fullscreen",  # exclusive_fullscreen | windowed_fullscreen | windowed | kiosk
+        # When a game launches: always focus it to the foreground once its
+        # window appears, then either minimize Game Library (False,
+        # default) or close it outright (True) - see _watch_and_focus_game.
+        "close_game_library_on_launch": False,
+        # Controller Bridge: per-game (not global - see toggle_
+        # controller_bridge_for_game's docstring in main.py for why),
+        # translates real controller input into keyboard presses only
+        # while a specific game that needs it is actually running.
+        "controller_bridge_games": [],
+        "controller_bridge_mapping_path": None,
         "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
         # Dawning Horizon background hue: "original", or "<palette>:<hue>"
         # where palette is light|dark|neon|primary|pastel|bubblegum and hue
@@ -192,9 +202,17 @@ def load_controller_controls():
         data = json.loads(CONTROLLER_CONTROLS_FILE.read_text(encoding="utf-8"))
         merged = dict(DEFAULT_CONTROLS)
         merged.update(data)
-        return merged
     except Exception:
-        return dict(DEFAULT_CONTROLS)
+        merged = dict(DEFAULT_CONTROLS)
+    # quit_combo (L3+R3) is fully removed, not just re-defaulted to empty -
+    # there's no Settings UI to customize it, so anything already on disk
+    # here is leftover factory-default cruft from before removal, never a
+    # deliberate user choice. Forcing it off unconditionally (rather than
+    # relying on the merge above) means it actually goes away for anyone
+    # who already has an old controller_controls.json written to
+    # %LOCALAPPDATA%, not just fresh installs.
+    merged["quit_combo"] = []
+    return merged
 
 
 def display_name(path: str) -> str:

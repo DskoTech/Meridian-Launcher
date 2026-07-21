@@ -291,6 +291,45 @@ html, body {
 .embedded-plugin-active #item-panel {
   bottom: 0 !important;
 }
+/* CyberRadial specifically: #item-panel is normally the narrow MIDDLE
+   grid column (subfolder | options | thumbnail), which is correct for a
+   real options list but left any embedded plugin/Explorer/Browser box
+   sized to just that middle slice - visibly narrower than the same box
+   in Night Horizon, where #item-panel is the one wide column by default
+   with nothing competing for space next to it. Spanning every column
+   here (not just relying on the subfolder/thumbnail collapse rule,
+   which depends on both being simultaneously hidden and has proven
+   fragile) makes the embedded box's available width match Night
+   Horizon's regardless of that. */
+body.layout-cyberradial.embedded-plugin-active #item-panel {
+  grid-column: 1 / -1 !important;
+}
+
+/* Plug-on ("addon") taskbar overrides. Only meaningful for a
+   non-"default" window_position preset (centered/left_half/right_half/
+   left_edge_to_right_edge) - those don't necessarily cover the screen
+   area Meridian Launcher's own taskbar lives in, so it can stay visibly
+   on screen (and clickable) even while the boxed program has OS focus.
+   A "default" (full item-panel) preset fully covers that area with a
+   separate topmost OS window, which no CSS rule here can draw above -
+   that would need real window z-order control, not implemented. */
+.embedded-plugin-active.addon-show-taskbar #task-bar,
+.embedded-plugin-active.addon-taskbar-forced #task-bar {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  z-index: 80;
+}
+
+/* Plug-on layout toggles: subfolder bar / thumbnail preview hidden per
+   the addon's own plugin.json ("show_subfolder"/"show_thumbnail": false).
+   !important for the same reason as #item-panel above - needs to win
+   over every theme's own positioning rules uniformly. */
+.addon-force-hidden {
+  display: none !important;
+}
+body.addon-hide-clock #clock-wrap { display: none !important; }
+body.addon-hide-battery #battery-indicator { display: none !important; }
+body.addon-hide-music-player #now-playing { display: none !important; }
 
 /* ---------------- subfolder nav ---------------- */
 /* same row as the options bar, sitting between it and the thumbnail */
@@ -624,6 +663,20 @@ body[data-radial-focus]:not([data-radial-focus="options"]) .item-row.selected {
 #start-menu-actions { display: flex; flex-direction: column; gap: 10px; }
 #start-menu-actions button { padding: 10px 18px; border: 1px solid var(--line); background: transparent; color: var(--text-hi); cursor: pointer; font-size: 13px; font-weight: 600; text-align: left; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
 #start-menu-actions button.settings-focus { outline: 2px solid var(--active-accent); outline-offset: 2px; border-color: var(--active-accent); color: var(--active-accent); }
+#start-menu-controller-bridge.hidden { display: none; }
+
+#music-sort-overlay { z-index: 62; background: rgba(2,10,5,0.85); }
+#music-sort-box {
+  background: linear-gradient(160deg, rgba(14,42,22,0.92), rgba(4,14,8,0.94));
+  border: 1px solid var(--line); padding: 26px; width: 320px;
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+  box-shadow: 0 30px 60px -20px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+#music-sort-box h3 { margin: 0 0 14px; font-family: var(--font-display); font-weight: 700; font-size: 15px; letter-spacing: 0.05em; }
+#music-sort-actions { display: flex; flex-direction: column; gap: 10px; }
+#music-sort-actions button { padding: 10px 18px; border: 1px solid var(--line); background: transparent; color: var(--text-hi); cursor: pointer; font-size: 13px; font-weight: 600; text-align: left; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
+#music-sort-actions button.settings-focus { outline: 2px solid var(--active-accent); outline-offset: 2px; border-color: var(--active-accent); color: var(--active-accent); }
+#music-sort-actions button.music-sort-active { border-color: var(--active-accent); color: var(--active-accent); }
 
 #tutorial-overlay { z-index: 63; background: rgba(2,10,5,0.9); }
 #tutorial-box {
@@ -649,7 +702,7 @@ body[data-radial-focus]:not([data-radial-focus="options"]) .item-row.selected {
   position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
   background: var(--panel); border: 1px solid var(--line); padding: 10px 22px;
   clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 50%, calc(100% - 14px) 100%, 0 100%);
-  font-size: 14px; z-index: 20; backdrop-filter: blur(10px);
+  font-size: 14px; z-index: 45; backdrop-filter: blur(10px);
 }
 #empty-toast.hidden { display: none; }
 
@@ -828,6 +881,18 @@ body.layout-cyberradial #item-panel {
      not a second reservation for now-playing too. */
   max-height: calc(100vh - 24px - 24px - 72px); /* 72px clears the open-programs bar */
   overflow-y: auto;
+  /* Explicit, not left to default: setting overflow-y to anything other
+     than "visible" while overflow-x is left unset makes the browser
+     auto-compute overflow-x to "auto" too (a CSS Overflow spec interop
+     rule, not a bug) - meaning any row whose content overflows
+     horizontally (a long unwrapped filename in Desktop, a long game or
+     song title in Games/Music) got a real horizontal scrollbar instead
+     of just being clipped, letting the whole box appear to "scroll
+     left". The panel's width is fixed by its grid column above; content
+     that's too long for it should truncate (.item-row .title already
+     has its own ellipsis rule), not make the box itself scrollable.
+  */
+  overflow-x: hidden;
 }
 /* The subfolder-nav (220px) and preview-pane (auto) grid columns are
    defined on #content-area itself, so they reserve their track width
@@ -853,6 +918,22 @@ body.layout-cyberradial #subfolder-nav {
   position: static;
   grid-column: 1; grid-row: 1;
   width: 100%;
+}
+#subfolder-nav.subfolder-filler {
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0.55;
+}
+.subfolder-filler-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  text-align: center; padding: 20px 10px;
+}
+.subfolder-filler-inner img {
+  max-width: 100%; border-radius: 8px;
+  filter: saturate(0.7);
+}
+.subfolder-filler-inner p {
+  font-size: 11px; color: var(--text-lo); margin: 0;
+  font-family: var(--font-mono); letter-spacing: 0.03em;
 }
 
 /* large thumbnail: right of the options bar (neon frame is in the base
@@ -932,6 +1013,37 @@ body.layout-cyberradial[data-radial-focus="options"] #item-panel {
    block), not just Games — any section can use it. Same items, same
    state, just a grid of tiles instead of a list. Shared between both
    layouts; only the space-reclaiming bits below differ per layout. ---- */
+/* CyberRadial only: always exactly 4 tiles per row, however many rows
+   that takes - the standard photo-grid pattern (fixed column count,
+   rows grow with content, page/scroll vertically for more), not a
+   fixed row count with tiles shrinking/scrolling horizontally to fit
+   everything at once. #item-panel's own base rule already does the
+   vertical scrolling (max-height + overflow-y: auto) every list-mode
+   section already uses - gallery mode doesn't need anything different
+   there. */
+body.layout-cyberradial[data-display-type="gallery"] .item-list {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  /* Grid tracks are otherwise free to grow past their 1fr share to fit
+     the WIDEST cell's content (grid items default to min-width: auto,
+     i.e. their content's own intrinsic minimum size, not 0) - a single
+     long unwrapped title anywhere in the grid was enough to push that
+     whole COLUMN wider than its fair share, and the grid as a whole
+     wider than its container, producing a horizontal scrollbar despite
+     the columns nominally being defined as 1fr each. min-width: 0 on
+     the cells below is what actually stops that. */
+  min-width: 0;
+}
+body.layout-cyberradial[data-display-type="gallery"] .item-row {
+  aspect-ratio: 3 / 4;
+  min-width: 0;
+}
+body.layout-cyberradial[data-display-type="gallery"] .item-row .title,
+body.layout-cyberradial[data-display-type="gallery"] .item-row .subtitle {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+
 body[data-display-type="gallery"] .item-list {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 20px;
 }
@@ -961,8 +1073,27 @@ body[data-display-type="gallery"] #preview-pane { display: none !important; }
 
 /* CyberRadial: with the thumbnail hidden in gallery mode, drop its column
    entirely so the options bar reclaims that space (subfolder bar, when
-   present, still gets its own column alongside it). */
-body[data-display-type="gallery"] #content-area {
+   present, still gets its own column alongside it). Column order here
+   MUST match the real (non-gallery) layout above: subfolder-nav is
+   grid-column:1 (220px) and #item-panel is grid-column:2 (1fr) - this
+   used to be written backwards (1fr 220px), which put #item-panel's
+   still-unchanged "grid-column: 2" into what was now the narrow 220px
+   track instead of the wide one, since a grid item's column assignment
+   doesn't move itself - only the *track widths at that column index*
+   changed. That's what made gallery view render barely wider than a
+   single tile while list view (not affected by this override) looked
+   completely normal at the same window size. Explicitly scoped to
+   CyberRadial now instead of every theme, since this only ever made
+   sense for its own column semantics in the first place. */
+body.layout-cyberradial[data-display-type="gallery"] #content-area {
+  grid-template-columns: 220px 1fr;
+}
+
+/* Night Horizon uses the base (unthemed) #content-area column order -
+   #item-panel is grid-column:1 (1fr) there, unlike CyberRadial's
+   subfolder-first order above - so it needs the opposite column values
+   for the same "drop the now-hidden thumbnail column" effect. */
+body.layout-nighthorizon[data-display-type="gallery"] #content-area {
   grid-template-columns: 1fr 220px;
 }
 
@@ -1244,6 +1375,13 @@ body.layout-nighthorizon #item-panel {
   margin: 0; font-size: 12px; color: var(--text-lo); line-height: 1.6;
   border-top: 1px solid var(--line); padding-top: 14px; font-style: italic;
 }
+.license-list {
+  font-size: 12px; color: var(--text-lo); line-height: 1.6;
+}
+.license-list p { margin: 14px 0 4px; }
+.license-list p b { color: var(--text-hi); font-style: normal; }
+.license-list ul { margin: 0 0 4px; padding-left: 18px; }
+.license-list li { margin-bottom: 4px; }
 
 /* ---------------- open-programs bar (taskbar replacement) ----------------
    Hidden until a theme claims a placement for it (TASKBAR_PLACEMENT in
@@ -1309,6 +1447,33 @@ body.layout-nighthorizon #item-panel {
   left: calc(100% + 10px);
   top: 12px;
 }
+.task-bar-bubble-res {
+  display: block;
+  font-size: 11px;
+  color: var(--text-lo);
+  margin-top: 2px;
+  font-family: var(--font-mono);
+}
+/* Per-task CPU% badge, corner-anchored on each taskbar icon. Green/plain
+   at idle, amber past 20%, red past 50% - a glance at the bar should be
+   enough to spot something misbehaving without opening Task Manager. */
+.task-box { position: relative; }
+.task-res-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  line-height: 1;
+  padding: 2px 3px;
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text-lo);
+  pointer-events: none;
+}
+.task-res-badge.res-med { color: #facc15; border-color: #facc15; }
+.task-res-badge.res-high { color: #ff6b5b; border-color: #ff6b5b; }
 
 /* Controller backend status line (Settings > Controller controls) */
 .controller-status {
@@ -1392,11 +1557,13 @@ body.layout-dawninghorizon #task-bar.taskbar-pos-dawning #task-bar-bubble {
 /* Horizontal, bottom edge, from the right side of the clock/battery
    sidebar to the bottom-right corner. */
 body.layout-nighthorizon #task-bar.taskbar-pos-night {
-  left: var(--sidebar-w); right: 0; bottom: 0; top: auto;
+  left: var(--sidebar-w); right: 0; bottom: 0 !important; top: auto;
   width: auto; height: 72px;
   flex-direction: row;
   border-left: none; border-right: none; border-bottom: none;
-  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+  border-radius: 0; /* flush with the actual bottom edge of the screen - any
+                        rounding here (even just the bottom corners) can read
+                        as a gap where the bar doesn't quite reach the edge */
 }
 body.layout-nighthorizon #task-bar.taskbar-pos-night #task-bar-list {
   flex-direction: row; flex-wrap: nowrap; overflow-x: auto; align-items: center;
@@ -1441,4 +1608,10 @@ body.layout-cyberradial #task-bar.taskbar-pos-cyber #task-bar-list {
   border: 1px solid var(--line); border-radius: 8px;
   padding: 12px; margin-top: 8px; color: var(--text-lo);
   max-height: 320px; overflow-y: auto;
+}
+
+.addon-setting-text-input {
+  background: var(--bg-0); border: 1px solid var(--line); color: var(--text-hi);
+  padding: 6px 10px; border-radius: 4px; font-family: var(--font-mono); font-size: 13px;
+  flex: 1; min-width: 0;
 }

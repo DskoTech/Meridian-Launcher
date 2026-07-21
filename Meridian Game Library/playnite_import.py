@@ -222,6 +222,37 @@ def _find_raw_game(game_id, playnite_settings):
     return next((g for g in raw if g.get("Id") == game_id), None)
 
 
+def get_play_action_exe_name(game_id, playnite_settings):
+    """The basename of the exe launch_game() would directly Popen for
+    this game (e.g. "Cyberpunk2077.exe"), or None if this game doesn't
+    resolve to a directly-runnable file action (falls through to the
+    playnite:// URI instead) - used by the controller bridge (see
+    main.py's controller-bridge Start-menu option) to know which
+    process to watch for so it can auto-close the bridge the moment the
+    actual game exits, without needing launch_game() itself to change
+    its return contract."""
+    game = _find_raw_game(game_id, playnite_settings)
+    action_type = (game or {}).get("PlayActionType") or ""
+    path = (game or {}).get("PlayActionPath")
+    if path and action_type.lower() == "file" and os.path.isfile(path):
+        return os.path.basename(path)
+    return None
+
+
+def get_play_action_exe_dir(game_id, playnite_settings):
+    """The folder the game's own exe lives in (same resolution as
+    get_play_action_exe_name, just the directory instead of the
+    basename) - used by the Controller Bridge to check that folder for
+    a meridian_controller_bridge.json per-game config automatically
+    (see xinput_to_keyboard.py's --game-dir)."""
+    game = _find_raw_game(game_id, playnite_settings)
+    action_type = (game or {}).get("PlayActionType") or ""
+    path = (game or {}).get("PlayActionPath")
+    if path and action_type.lower() == "file" and os.path.isfile(path):
+        return os.path.dirname(path)
+    return None
+
+
 def launch_game(game_id, playnite_settings):
     """
     Bypasses Playnite entirely when the exporter resolved a usable Play

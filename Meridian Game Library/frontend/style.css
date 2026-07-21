@@ -548,7 +548,7 @@ html, body {
   position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
   background: var(--panel); border: 1px solid var(--line); padding: 10px 22px;
   clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 50%, calc(100% - 14px) 100%, 0 100%);
-  font-size: 14px; z-index: 20; backdrop-filter: blur(10px);
+  font-size: 14px; z-index: 45; backdrop-filter: blur(10px);
 }
 #empty-toast.hidden { display: none; }
 

@@ -1394,7 +1394,7 @@ async function renderSettings() {
   controlsBlock.className = "settings-block";
   controlsBlock.innerHTML = `<h3>Controller controls</h3>\n    <div id="controller-status-line" class="controller-status">Controller API: checking\u2026</div>
     <p class="settings-note">What each controller button does in Meridian Game Library. Confirm/Back/directions can be remapped in controller_controls.json; combos always use the physical buttons listed. Keyboard: Enter confirm, Space back, arrow keys navigate, the \\ key opens the side panel, Tab opens the Start menu, Escape quits.</p>
-    <div class="controls-grid"><div class="controls-row"><span class="controls-btn">A</span><span class="controls-desc">Confirm / launch the selected game</span></div><div class="controls-row"><span class="controls-btn">B</span><span class="controls-desc">Back / close menus and overlays</span></div><div class="controls-row"><span class="controls-btn">D-pad / Left stick</span><span class="controls-desc">Navigate — up/down through games, left/right across sections</span></div><div class="controls-row"><span class="controls-btn">Y (tap)</span><span class="controls-desc">Jump to the Show filter side panel (All / Installed / Not Installed)</span></div><div class="controls-row"><span class="controls-btn">Start</span><span class="controls-desc">Open the Start menu — hide/unhide games, rename titles, show hidden games, close the program</span></div><div class="controls-row"><span class="controls-btn">Start + Back (together)</span><span class="controls-desc">Bring Meridian Game Library to the foreground</span></div><div class="controls-row"><span class="controls-btn">L3 + R3 (click both sticks)</span><span class="controls-desc">Quit the app instantly</span></div></div>`;
+    <div class="controls-grid"><div class="controls-row"><span class="controls-btn">A</span><span class="controls-desc">Confirm / launch the selected game</span></div><div class="controls-row"><span class="controls-btn">B</span><span class="controls-desc">Back / close menus and overlays</span></div><div class="controls-row"><span class="controls-btn">D-pad / Left stick</span><span class="controls-desc">Navigate — up/down through games, left/right across sections</span></div><div class="controls-row"><span class="controls-btn">Y (tap)</span><span class="controls-desc">Jump to the Show filter side panel (All / Installed / Not Installed)</span></div><div class="controls-row"><span class="controls-btn">Start</span><span class="controls-desc">Open the Start menu — hide/unhide games, rename titles, show hidden games, close the program</span></div><div class="controls-row"><span class="controls-btn">Start + Back (together)</span><span class="controls-desc">Bring Meridian Game Library to the foreground</span></div></div>`;
   c.appendChild(controlsBlock);
   setTimeout(updateControllerStatusLine, 0);
 
@@ -1422,6 +1422,22 @@ async function renderSettings() {
   dbgReset.textContent = "Reset counters";
   dbgReset.addEventListener("click", async () => { await api().reset_controller_debug(); updateControllerDebug(); });
   dbgBlock.appendChild(dbgReset);
+
+  const dbgDump = document.createElement("button");
+  dbgDump.className = "btn-link";
+  dbgDump.textContent = "Dump Diagnostics Now";
+  dbgDump.title = "Writes the same diagnostic dump gameinput_api normally writes automatically a few minutes after startup, right now instead of waiting.";
+  dbgDump.addEventListener("click", async () => {
+    const original = dbgDump.textContent;
+    dbgDump.disabled = true;
+    dbgDump.textContent = "Dumping...";
+    const res = await api().dump_controller_diag_now();
+    dbgDump.disabled = false;
+    dbgDump.textContent = original;
+    showToast(res.ok ? `Dumped to ${res.path}` : `Dump failed: ${res.error}`);
+  });
+  dbgBlock.appendChild(dbgDump);
+
   c.appendChild(dbgBlock);
   startControllerDebugPolling();
 
@@ -1613,6 +1629,53 @@ async function renderSettings() {
     settings.battery_indicator,
     async () => { await api().set_battery_indicator(!settings.battery_indicator); renderSettings(); updateBatteryIndicator(); },
   ));
+
+  // When a game launches: always focus it once its window appears, then
+  // either minimize Game Library (default) or close it outright.
+  c.appendChild(buildToggleBlock(
+    "Close Game Library When a Game Launches",
+    !!settings.close_game_library_on_launch,
+    async () => { await api().set_close_game_library_on_launch(!settings.close_game_library_on_launch); renderSettings(); },
+    settings.close_game_library_on_launch
+      ? "On — Game Library closes once the launched game's window appears (still gets focused first either way)."
+      : "Off — Game Library minimizes instead of closing once the launched game's window appears.",
+  ));
+
+  // Controller Bridge: per-game toggle lives in each game's Start menu -
+  // this is just the one thing that needs an actual Settings UI, a
+  // custom keyboard mapping file, since that applies to every game the
+  // bridge is enabled for, not any one game.
+  const bridgeBlock = document.createElement("div");
+  bridgeBlock.className = "settings-block";
+  const bridgeGameCount = ((settings.controller_bridge_games) || []).length;
+  {
+    const mappingPath = settings.controller_bridge_mapping_path;
+    bridgeBlock.innerHTML = `<h3>Controller Bridge</h3>
+      <p class="settings-note">Translates real controller input into keyboard presses, only while a specific game that needs it is actually running (enabled per-game from that game's Start menu) — never left on globally, since that would make the controller fight Meridian Game Library's own keyboard shortcuts. Currently enabled for ${bridgeGameCount} game${bridgeGameCount === 1 ? "" : "s"}.</p>
+      <p class="settings-note">Mapping: ${mappingPath ? escapeHtml(mappingPath) : "Default (arrow keys, Z/X/A/S for the face buttons — see xinput_to_keyboard.py)"}</p>`;
+    const mappingBtnRow = document.createElement("div");
+    mappingBtnRow.className = "settings-row";
+    const chooseMappingBtn = document.createElement("button");
+    chooseMappingBtn.className = "btn-link";
+    chooseMappingBtn.textContent = "Choose custom mapping file\u2026";
+    chooseMappingBtn.addEventListener("click", async () => {
+      await api().set_controller_bridge_mapping_path();
+      renderSettings();
+    });
+    mappingBtnRow.appendChild(chooseMappingBtn);
+    if (mappingPath) {
+      const clearMappingBtn = document.createElement("button");
+      clearMappingBtn.className = "btn-link";
+      clearMappingBtn.textContent = "Reset to default mapping";
+      clearMappingBtn.addEventListener("click", async () => {
+        await api().clear_controller_bridge_mapping_path();
+        renderSettings();
+      });
+      mappingBtnRow.appendChild(clearMappingBtn);
+    }
+    bridgeBlock.appendChild(mappingBtnRow);
+  }
+  c.appendChild(bridgeBlock);
 
   // background image
   const bgBlock = document.createElement("div");
@@ -2303,6 +2366,14 @@ function buildStartMenuOptions() {
     if (!item.hidden) opts.push({ id: "hide", label: `Hide "${item.title}"` });
     if (item.hidden) opts.push({ id: "unhide", label: `Unhide "${item.title}"` });
     opts.push({ id: "rename", label: `Rename "${item.title}"` });
+    const bridgeGames = (state.settings && state.settings.controller_bridge_games) || [];
+    const bridgeOn = bridgeGames.includes(item.id);
+    opts.push({
+      id: "controller_bridge",
+      label: bridgeOn
+        ? `Disable Controller Bridge for "${item.title}"`
+        : `Enable Controller Bridge for "${item.title}" (needs a keyboard-controlled game)`,
+    });
   }
   // "Unhide hidden games" normally; flips to "Hide hidden games" only while
   // hidden titles are being shown.
@@ -2404,6 +2475,16 @@ async function activateStartMenuOption() {
   if (opt.id === "cancel") {
     startMenuState = { options: buildStartMenuOptions(), index: 0 };
     renderStartMenu();
+    return;
+  }
+  if (opt.id === "controller_bridge" && sel) {
+    state.settings = await api().toggle_controller_bridge_for_game(sel.item.id);
+    const bridgeGames = (state.settings && state.settings.controller_bridge_games) || [];
+    const enabledNow = bridgeGames.includes(sel.item.id);
+    closeStartMenu();
+    showToast(enabledNow
+      ? `Controller Bridge will run while "${sel.item.title}" is open.`
+      : `Controller Bridge disabled for "${sel.item.title}".`);
     return;
   }
   if (opt.id === "close_program") {

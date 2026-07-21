@@ -24,7 +24,13 @@ DEFAULT_CONTROLS = {
     "down": "DPAD_DOWN",
     "left": "DPAD_LEFT",
     "right": "DPAD_RIGHT",
-    "quit_combo": ["LEFT_THUMB", "RIGHT_THUMB"],
+    # L3+R3 used to instantly quit the app; removed for consistency with
+    # Meridian Launcher — a controller-only user with no other way out
+    # was one accidental double-click of the sticks away from losing the
+    # app with no confirmation. Empty means the combo is disabled
+    # outright, not "use the old default" — see the .get() call below,
+    # which no longer supplies that default either.
+    "quit_combo": [],
     "foreground_combo": ["START", "BACK"],
     "deadzone": 0.25,
     "cooldown_ms": 200,
@@ -116,7 +122,7 @@ class ControllerListener:
                 rising = pressed - self._button_names(self._prev_buttons)
 
                 # combos
-                quit_combo = set(self.controls.get("quit_combo", ["LEFT_THUMB", "RIGHT_THUMB"]))
+                quit_combo = set(self.controls.get("quit_combo", []))
                 fg_mode = self._fg_getter() if self._fg_getter else "start_select"
                 if fg_mode == "xbox":
                     fg_combo = {"GUIDE"}
