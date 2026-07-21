@@ -27,13 +27,22 @@ class BrowserController:
     def __init__(
         self,
         controller,
-        browser_tabs
+        browser_tabs,
+        is_focused_getter=None
     ):
 
 
         self.controller = controller
 
         self.browser_tabs = browser_tabs
+
+        # Optional callable -> bool, checked at the top of update() below.
+        # This timer used to run completely independently of the main
+        # window's own OS-focus tracking (self.app_focused there) -
+        # meaning tab-switch/scroll/arrow-key controller actions kept
+        # firing even while some other window was focused, the same
+        # class of bug Meridian Explorer had for its own controller loop.
+        self.is_focused_getter = is_focused_getter
 
 
 
@@ -61,6 +70,8 @@ class BrowserController:
 
     def update(self):
 
+        if self.is_focused_getter and not self.is_focused_getter():
+            return
 
         state = self.controller.state
 

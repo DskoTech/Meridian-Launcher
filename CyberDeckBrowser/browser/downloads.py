@@ -12,6 +12,8 @@ API has changed names across Qt6 minor versions
 
 
 import os
+import sys
+import subprocess
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWebEngineCore import QWebEngineProfile
@@ -145,14 +147,30 @@ class DownloadManager(QObject):
                     item["path"]
                 )
 
+                # Prefer Meridian Explorer over plain Windows Explorer when
+                # it's available (every Meridian app ends up in the same
+                # install folder, so it's expected to sit right next to
+                # this exe) - with --close-on-background, since this is a
+                # one-off "show me where that download landed" open, not
+                # something that should linger as its own persistent
+                # window once the person's back to browsing. Falls back to
+                # the plain OS folder open if Meridian Explorer isn't
+                # actually present (e.g. a CyberDeckBrowser-only install).
+                app_dir = os.path.dirname(
+                    sys.executable if getattr(sys, "frozen", False)
+                    else os.path.abspath(__file__)
+                )
+                exe = os.path.join(app_dir, "Meridian Explorer.exe")
+
                 try:
-
-                    os.startfile(
-                        folder
-                    )
-
+                    if os.path.exists(exe):
+                        subprocess.Popen([exe, folder, "--close-on-background"])
+                    else:
+                        os.startfile(folder)
                 except Exception:
-
-                    pass
+                    try:
+                        os.startfile(folder)
+                    except Exception:
+                        pass
 
                 return

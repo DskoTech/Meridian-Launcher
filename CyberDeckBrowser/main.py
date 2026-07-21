@@ -19,6 +19,7 @@ its compiled size.
 """
 
 
+import ctypes
 import os
 import sys
 
@@ -29,6 +30,252 @@ try:
     import psutil
 except ImportError:
     psutil = None
+
+
+def _find_widevine_cdm():
+    """Looks for widevinecdm.dll from an existing Chrome or Edge install
+    on this machine. Returns its path, or None if neither is installed.
+
+    WHY THIS IS NEEDED (streaming sites playing on YouTube but not
+    Netflix/Tubi/Pluto/etc)
+    -----------------------------------------------------------------
+    Netflix always requires Widevine DRM to play anything at all; Tubi,
+    Pluto, and most other ad-supported streamers require it for at
+    least a meaningful chunk of their catalog too. YouTube mostly
+    doesn't (most of its catalog streams unencrypted). Widevine's actual
+    decryption module is a closed-source binary Google licenses to
+    browser vendors - Qt/PySide6 has never been permitted to bundle it
+    themselves, on Windows or anywhere else, so a stock QtWebEngine
+    browser can play YouTube fine and simply has no way to decrypt a
+    Widevine-protected stream at all until it's explicitly pointed at a
+    real CDM binary from somewhere.
+
+    Chrome and Edge both download their own copy of it (as a browser
+    component, auto-updated) the moment either is installed and run at
+    least once - this just locates whichever one exists and hands its
+    path to Chromium via the --widevine-path switch below. If NEITHER
+    Chrome nor Edge has ever actually been run on this machine (just
+    installed isn't enough - the component downloads on first launch),
+    this returns None and DRM playback stays unavailable; there's no way
+    to conjure the binary from nothing since Meridian can't legally
+    redistribute it itself.
+
+    Doesn't touch proprietary codec support (H.264/AAC) - that's a
+    separate, compile-time Qt build option this can't affect at
+    runtime. Most Widevine-protected streams also offer a VP9 (royalty-
+    free, not patent-encumbered) variant for exactly this reason, so
+    this alone is often still enough even without H.264 - but if a
+    specific title only offers H.264 renditions, no runtime flag fixes
+    that; only a PySide6/Qt build compiled with proprietary codec
+    support would."""
+    if sys.platform != "win32":
+        return None
+    roots = []
+    localappdata = os.environ.get("LOCALAPPDATA")
+    if localappdata:
+        roots.append(os.path.join(localappdata, "Google", "Chrome", "User Data", "WidevineCdm"))
+        roots.append(os.path.join(localappdata, "Microsoft", "Edge", "User Data", "WidevineCdm"))
+    programfiles = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+    programfiles_x86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+    for base in (programfiles, programfiles_x86):
+        roots.append(os.path.join(base, "Google", "Chrome", "Application", "WidevineCdm"))
+        roots.append(os.path.join(base, "Microsoft", "Edge", "Application", "WidevineCdm"))
+
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        # Versioned subfolder (e.g. "4.10.2732.0") - take the newest if
+        # more than one is present (old versions don't always get cleaned up).
+        try:
+            versions = sorted(
+                (d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))),
+                reverse=True,
+            )
+        except OSError:
+            continue
+        for version in versions:
+            candidate = os.path.join(root, version, "_platform_specific", "win_x64", "widevinecdm.dll")
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+def _to_short_path(path):
+    """8.3 short path (e.g. C:\\PROGRA~1\\...) - guaranteed no spaces,
+    used so a real Windows path can go into QTWEBENGINE_CHROMIUM_FLAGS
+    safely. That env var is split on whitespace without reliably
+    respecting quotes across Qt/QtWebEngine versions - wrapping a
+    space-containing value in literal double-quotes (what this code
+    used to do) is exactly the kind of thing that LOOKS like it should
+    work and doesn't: "C:\\Program Files\\Google\\Chrome\\User Data\\..."
+    (both "Program Files" and "User Data" contain spaces) would get
+    split into multiple garbled tokens, handing Chromium a malformed
+    command line - not a crash, just pages silently never loading,
+    which is a much harder failure mode to trace back to its cause.
+    Falls back to the original path unchanged if short-path generation
+    fails (some systems disable 8.3 name generation via policy) - on
+    those systems a CDM path really will still hit this problem."""
+    try:
+        buf = ctypes.create_unicode_buffer(260)
+        n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, 260)
+        if n and n <= 260:
+            return buf.value
+    except Exception:
+        pass
+    return path
+
+
+def _configure_streaming_playback():
+    """Sets QTWEBENGINE_CHROMIUM_FLAGS before any PySide6/QtWebEngine
+    import happens - Chromium reads this environment variable during its
+    own static initialization when the QtWebEngine module first loads,
+    not at QApplication() construction time, so this MUST run before
+    that import, not just before main() does its own setup. See
+    _find_widevine_cdm's docstring for why the Widevine part exists.
+
+    Every flag added here can be independently disabled via an
+    environment variable for testing/bisection - set it to anything
+    non-empty before launching CyberDeckBrowser.exe (from a terminal, so
+    the variable is actually inherited: `set MERIDIAN_DISABLE_WIDEVINE_
+    FLAGS=1 && CyberDeckBrowser.exe`) to rule a specific one in or out:
+      MERIDIAN_DISABLE_WIDEVINE_FLAGS   - skip --widevine-path/--ppapi-widevine-path
+      MERIDIAN_DISABLE_AUTOPLAY_FLAG    - skip --autoplay-policy
+
+    Two more flags beyond Widevine, for the same "plays on YouTube but
+    not Tubi/Pluto/etc" class of problem:
+      - --ppapi-widevine-path alongside --widevine-path: some
+        QtWebEngine/Chromium versions still expect the older PPAPI-
+        plugin-based path instead of the newer component-based one;
+        setting both costs nothing since Chromium ignores switches it
+        doesn't recognize.
+      - --autoplay-policy=no-user-gesture-required: a genuinely
+        different failure mode than DRM that looks identical from the
+        outside ("page loads, nothing plays, no error"). Chromium
+        blocks a <video> from starting without a real user gesture on
+        it specifically, and several streaming players' own JS silently
+        stalls waiting for a canplay/playing event that never fires,
+        rather than showing a click-to-play prompt."""
+    existing = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    flags_to_add = []
+
+    if not os.environ.get("MERIDIAN_DISABLE_WIDEVINE_FLAGS"):
+        cdm_path = _find_widevine_cdm()
+        if cdm_path:
+            cdm_path = _to_short_path(cdm_path)
+            if "--widevine-path" not in existing:
+                flags_to_add.append(f"--widevine-path={cdm_path}")
+            if "--ppapi-widevine-path" not in existing:
+                flags_to_add.append(f"--ppapi-widevine-path={cdm_path}")
+
+    if not os.environ.get("MERIDIAN_DISABLE_AUTOPLAY_FLAG"):
+        if "--autoplay-policy" not in existing:
+            flags_to_add.append("--autoplay-policy=no-user-gesture-required")
+
+    if flags_to_add:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (existing + " " + " ".join(flags_to_add)).strip()
+
+
+_configure_streaming_playback()
+
+
+def _configure_persistent_web_profile(profile_key=None):
+    """Configures QWebEngineProfile.defaultProfile() - called from
+    main() once box/notify_which are known, before any browser view/page
+    can grab the profile unconfigured.
+
+    PERSISTENT LOGINS - the actual root cause of "forgets I logged in
+    when I close the window and resume": defaultProfile() was never
+    given an organization/app name, an explicit persistent storage
+    path, or a cookie policy. Either gap alone causes it: (1) without a
+    stable app/org name, Qt's auto-derived storage location isn't
+    guaranteed stable across runs; (2) without ForcePersistentCookies,
+    Qt respects a site's own "forget this when the browser closes" flag
+    on session cookies - which is exactly what most login systems set,
+    and is normally masked by how desktop Chrome treats "closing the
+    window" differently from "ending the session." Fixed by setting
+    both explicitly, at a real path under the suite's shared data
+    folder, configured before any browser view exists so nothing can
+    grab the profile unconfigured.
+
+    PER-CONTEXT ISOLATION (profile_key) - CyberDeckBrowser is
+    deliberately multi-instance when boxed (see _another_standalone_
+    instance_running's docstring: the Browser section and each webapp
+    plugin get their own simultaneously-running process). A single
+    shared persistent storage path across ALL of them looked fine in
+    isolation but broke the moment two were open at once: Chromium's
+    profile storage uses its own singleton lock to stop two unrelated
+    OS processes from touching the same profile directory concurrently
+    (the same reason launching real Chrome twice against the same
+    --user-data-dir warns instead of just working) - the SECOND process
+    to grab a shared profile would have its Chromium renderer silently
+    fail to come up at all, while the surrounding Qt window chrome
+    (background, exit button) rendered fine regardless, since that part
+    is plain Qt with no dependency on Chromium succeeding.
+    profile_key (notify_which - "browser", a plugin id, or None for a
+    standalone launch) gives each *kind* of window its own storage
+    subfolder instead: stable and shared across repeat opens of the
+    same context (so Browser-section logins still persist run to run),
+    isolated from whatever else happens to be open at the same time.
+    This also means a plugin webapp's login (Telegram, say) no longer
+    leaks into the general Browser section's cookie jar or vice versa,
+    which is arguably more correct than one shared jar would have been
+    anyway.
+
+    USER-AGENT - QtWebEngine's default UA includes a "QtWebEngine/x.x"
+    component real Chrome never sends; several streaming sites allow-
+    list known UA strings rather than testing capability directly.
+
+    PLUGINS - Chromium's EME/Widevine implementation is architecturally
+    still a "plugin" internally, and QtWebEngine doesn't default this
+    the way real desktop Chrome does, so even a correctly-provided CDM
+    path (see _configure_streaming_playback above) can go unused
+    without it.
+
+    Each piece below can be independently disabled via an environment
+    variable for testing/bisection, same convention as
+    _configure_streaming_playback's flags - see that function's
+    docstring for how to actually set one before launching:
+      MERIDIAN_DISABLE_PROFILE_PERSISTENCE - skip org/app name, storage
+        path, cache path, and cookie policy entirely (falls back to
+        whatever QtWebEngine's own defaults would have been)
+      MERIDIAN_DISABLE_UA_OVERRIDE         - skip the custom User-Agent
+      MERIDIAN_DISABLE_PLUGINS_FLAGS       - skip PluginsEnabled/
+        PlaybackRequiresUserGesture/FullScreenSupportEnabled"""
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWebEngineCore import QWebEngineProfile
+
+    profile = QWebEngineProfile.defaultProfile()
+
+    if not os.environ.get("MERIDIAN_DISABLE_PROFILE_PERSISTENCE"):
+        QCoreApplication.setOrganizationName("DskoTech")
+        QCoreApplication.setApplicationName("CyberDeckBrowser")
+
+        # Sanitize to a plain folder-name-safe string - profile_key can be
+        # a plugin id, which is developer-chosen but never validated as a
+        # safe path component.
+        safe_key = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (profile_key or "standalone"))
+        storage_path = os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+            "Meridian Launcher", "CyberDeckBrowser", "WebProfile", safe_key,
+        )
+        os.makedirs(storage_path, exist_ok=True)
+        profile.setPersistentStoragePath(storage_path)
+        profile.setCachePath(os.path.join(storage_path, "Cache"))
+        profile.setPersistentCookiesPolicy(profile.PersistentCookiesPolicy.ForcePersistentCookies)
+
+    if not os.environ.get("MERIDIAN_DISABLE_UA_OVERRIDE"):
+        profile.setHttpUserAgent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+
+    if not os.environ.get("MERIDIAN_DISABLE_PLUGINS_FLAGS"):
+        settings = profile.settings()
+        settings.setAttribute(settings.WebAttribute.PluginsEnabled, True)
+        settings.setAttribute(settings.WebAttribute.PlaybackRequiresUserGesture, False)
+        settings.setAttribute(settings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(settings.WebAttribute.FullScreenSupportEnabled, True)
+        settings.setAttribute(settings.WebAttribute.LocalStorageEnabled, True)
 
 
 def _another_standalone_instance_running():
@@ -130,12 +377,13 @@ def main():
         sys.argv
     )
 
-
     config = load_config()
 
     box = _parse_box_arg()
     minimal_menu = "--minimal-menu" in sys.argv
     notify_which = _parse_notify_exit_arg()
+
+    _configure_persistent_web_profile(notify_which)
 
     # Only guard the standalone path (no --box=) - boxed instances are
     # intentionally multi-instance (Browser section + each webapp plugin

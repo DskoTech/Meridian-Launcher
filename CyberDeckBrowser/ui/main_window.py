@@ -78,6 +78,29 @@ OSK_BAT_PATH = os.path.join(
 
 
 
+def _set_external_menu_flag(menu_open):
+    """Writes/removes the same shared flag file Meridian Explorer uses
+    (see its _update_external_menu_flag) so Meridian Launcher can
+    suspend its own controller handling while THIS app's Y/X menu wants
+    sole control of the shared physical controller - see main.py's
+    _watch_external_menu_flag. There's no OS-level way to actually stop
+    an unrelated third-party program from also reading the same
+    controller; this only reaches Meridian Launcher specifically, which
+    is the one other program actually positioned to cooperate."""
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        shared_dir = os.path.join(base, "Meridian Launcher", "shared")
+        os.makedirs(shared_dir, exist_ok=True)
+        path = os.path.join(shared_dir, "external_menu_open.flag")
+        if menu_open and not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+        elif not menu_open and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
 class MainWindow(QMainWindow):
 
 
@@ -210,7 +233,9 @@ class MainWindow(QMainWindow):
 
             self.controller,
 
-            self.browser
+            self.browser,
+
+            is_focused_getter=lambda: self.app_focused
 
         )
 
@@ -588,6 +613,8 @@ class MainWindow(QMainWindow):
 
         self.current_popup = popup
 
+        _set_external_menu_flag(True)
+
         if hasattr(popup, "open_with_keyboard"):
 
             popup.open_with_keyboard(
@@ -623,7 +650,7 @@ class MainWindow(QMainWindow):
 
         self.current_popup = None
 
-
+        _set_external_menu_flag(False)
 
     def toggle_popup(
         self,
@@ -688,11 +715,17 @@ class MainWindow(QMainWindow):
         state
     ):
 
+        was_focused = self.app_focused
+
         self.app_focused = (
 
             state == Qt.ApplicationActive
 
         )
+
+        if self.app_focused and not was_focused:
+
+            self._close_onscreenmenu_if_running()
 
         if hasattr(self, "hud"):
 
@@ -705,6 +738,26 @@ class MainWindow(QMainWindow):
             self.cursor_widget.setVisible(
                 self.app_focused
             )
+
+    def _close_onscreenmenu_if_running(self):
+        """Mirrors Meridian Launcher's own is_foreground() rising-edge
+        behavior: onscreenmenu is a controller overlay meant for other,
+        external apps - regaining focus here means it has nothing left
+        to do, same reasoning as every other app in the suite that
+        already does this."""
+        try:
+            import psutil
+        except ImportError:
+            return
+        try:
+            for proc in psutil.process_iter(["pid", "name"]):
+                try:
+                    if (proc.info.get("name") or "").lower() == "onscreenmenu.exe":
+                        proc.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+                    continue
+        except Exception:
+            pass
 
 
 
