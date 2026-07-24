@@ -136,6 +136,26 @@ if not exist "%ROOT%dist\XInputToKeyboard.exe" (
 )
 echo.
 
+REM Internal Launcher / Meridian Paint (Apps section plug-ons) - same
+REM best-effort treatment as XInputToKeyboard above.
+echo   - Internal Launcher ^(optional - Apps section plug-on^)...
+pyinstaller "%ROOT%InternalLauncher\InternalLauncher.spec" --distpath "%ROOT%dist" --workpath "%ROOT%build\internal_launcher" --noconfirm < NUL
+if not exist "%ROOT%dist\InternalLauncher.exe" (
+    echo     [WARN] Not built - the Internal Launcher plug-on won't work in this install.
+) else (
+    echo     OK - dist\InternalLauncher.exe
+)
+echo.
+
+echo   - Meridian Paint ^(optional - Apps section plug-on^)...
+pyinstaller "%ROOT%MeridianPaint\MeridianPaint.spec" --distpath "%ROOT%dist" --workpath "%ROOT%build\meridian_paint" --noconfirm < NUL
+if not exist "%ROOT%dist\MeridianPaint.exe" (
+    echo     [WARN] Not built - the Meridian Paint plug-on won't work in this install.
+) else (
+    echo     OK - dist\MeridianPaint.exe
+)
+echo.
+
 REM ---------------------------------------------------------
 REM  2. Stage everything into one flat folder, then install it
 REM     to C:\Program Files\DskoTech - identical to
@@ -164,6 +184,14 @@ if exist "%ROOT%dist\XInputToKeyboard.exe" (
     copy /y "%ROOT%dist\XInputToKeyboard.exe" "%STAGE%\" >nul
 )
 
+REM Internal Launcher / Meridian Paint (Apps section plug-ons) - best-effort.
+if exist "%ROOT%dist\InternalLauncher.exe" (
+    copy /y "%ROOT%dist\InternalLauncher.exe" "%STAGE%\" >nul
+)
+if exist "%ROOT%dist\MeridianPaint.exe" (
+    copy /y "%ROOT%dist\MeridianPaint.exe" "%STAGE%\" >nul
+)
+
 REM onedir apps - full dist contents flattened in
 robocopy "%ROOT%CyberDeckBrowser\dist\CyberDeckBrowser" "%STAGE%" /E /NFL /NDL /NJH /NJS >nul
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
@@ -171,12 +199,9 @@ robocopy "%ROOT%Meridian Game Library\dist\Meridian Game Library" "%STAGE%" /E /
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 
 REM companion scripts, docs, and the Playnite exporter extension
-copy /y "%ROOT%osm.bat"              "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%osk.bat"              "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%MakeUnmakeShell.ps1"  "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%MeridianExplorerShellIntegration.bat" "%STAGE%\" >nul || set "FAILED=1"
 copy /y "%ROOT%README.md"            "%STAGE%\" >nul || set "FAILED=1"
 copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul || set "FAILED=1"
 robocopy "%ROOT%Meridian_Exporter" "%STAGE%\Meridian_Exporter" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%themes" "%STAGE%\themes" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%Plugins" "%STAGE%\Plugins" /E /NFL /NDL /NJH /NJS >nul

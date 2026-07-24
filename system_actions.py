@@ -1,6 +1,7 @@
 """System-level actions. Windows-only by design (this app targets Windows)."""
 
 import ctypes
+import json
 import os
 import subprocess
 import webbrowser
@@ -36,6 +37,69 @@ PROTECTED_PROCESSES = {
 
 
 SW_SHOWMAXIMIZED = 3
+
+
+# Items representing an installed Windows Store (UWP/MSIX) app are stored
+# with this prefix instead of a real filesystem path (Store apps don't
+# have one launchable the normal way) - see list_installed_store_apps/
+# launch_store_app below, and main.py's Apps/Streaming/Games launch
+# handlers, which check for this prefix before treating an item's path
+# as a real file.
+STORE_APP_PATH_PREFIX = "appx:"
+
+
+def list_installed_store_apps():
+    """[{"name", "app_id", "path"}] for installed Windows Store (UWP/
+    MSIX) apps - the picker for "Add Windows Store App" in Apps/
+    Streaming. Uses Get-StartApps (PowerShell), which also lists
+    regular pinned-to-Start desktop shortcuts alongside real Store apps
+    - filtered down to just the Store ones by checking for "!" in the
+    AppID, the standard AppUserModelID format for a packaged app
+    (PackageFamilyName!AppId); a regular shortcut's "AppID" from
+    Get-StartApps is just a plain file path, which never contains that.
+    "path" is already prefixed with STORE_APP_PATH_PREFIX, ready to save
+    directly as this item's path."""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-StartApps | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        data = json.loads(result.stdout)
+        if isinstance(data, dict):
+            data = [data]
+        apps = []
+        for entry in data:
+            name = (entry.get("Name") or "").strip()
+            app_id = (entry.get("AppID") or "").strip()
+            if not name or not app_id or "!" not in app_id:
+                continue  # not a packaged Store app - a regular Start shortcut
+            apps.append({"name": name, "app_id": app_id, "path": STORE_APP_PATH_PREFIX + app_id})
+        apps.sort(key=lambda a: a["name"].lower())
+        return apps
+    except Exception:
+        return []
+
+
+def launch_store_app(path_or_app_id):
+    """Launches a Windows Store app - path_or_app_id can be either the
+    raw AppID or an item's stored "appx:<AppID>" path (see
+    STORE_APP_PATH_PREFIX above); either is accepted so callers don't
+    need to strip the prefix themselves. Store apps have no real .exe to
+    CreateProcess directly - explorer.exe's own shell:AppsFolder virtual
+    folder is the documented, supported way to launch one by AppID from
+    outside the Start menu itself. Returns (ok, error)."""
+    app_id = path_or_app_id[len(STORE_APP_PATH_PREFIX):] if path_or_app_id.startswith(STORE_APP_PATH_PREFIX) else path_or_app_id
+    if not app_id:
+        return False, "No app ID given."
+    try:
+        subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{app_id}"])
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def launch_path(path: str, args=None):

@@ -27,21 +27,32 @@ def _app_base_dir():
 
 
 def launch_onscreenmenu():
-    """Start the onscreenmenu controller overlay via osm.bat (not
-    onscreenmenu.exe directly) if it's present next to us. Used when a
-    native Windows dialog (e.g. the 'Open with' picker) is about to
-    appear, so it can be driven with a controller. Best-effort: silently
-    does nothing if osm.bat isn't found."""
+    """Start the onscreenmenu controller overlay directly (internalized
+    - no osm.bat involved), but only if it isn't already running (same
+    guard osm.bat itself had). Used when a native Windows dialog (e.g.
+    the 'Open with' picker) is about to appear, so it can be driven with
+    a controller. Best-effort: silently does nothing if onscreenmenu.exe
+    isn't found."""
     base = _app_base_dir()
-    bat = os.path.join(base, "osm.bat")
-    if os.path.isfile(bat):
+    try:
+        result = subprocess.run(
+            ["tasklist", "/fi", "ImageName eq onscreenmenu.exe", "/fo", "csv"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if "onscreenmenu.exe" in (result.stdout or "").lower():
+            return True  # already running - nothing to do
+    except Exception:
+        pass
+    exe = os.path.join(base, "onscreenmenu.exe")
+    if os.path.isfile(exe):
         try:
-            subprocess.Popen(["cmd.exe", "/c", bat], cwd=base)
+            subprocess.Popen([exe, "--window-mode=borderless-fullscreen"], cwd=base)
             return True
         except Exception:
             pass
-    # source fallback: run onscreenmenu's .py directly if present (osm.bat
-    # itself is missing, e.g. running from source rather than an install)
+    # source fallback: run onscreenmenu's .py directly if present (no
+    # compiled exe yet, e.g. running from source rather than an install)
     py = os.path.join(base, "onscreenmenu", "onscreenmenu.py")
     if os.path.isfile(py):
         try:
@@ -101,7 +112,7 @@ except ImportError:
 
 # --------------------------------------------------------------------------- #
 # NATIVE DRAG-AND-DROP (pick-up-and-drop onto another window, e.g. real
-# Windows Explorer - see MeridianExplorer.handle_mouse's long-press logic)
+# Windows Explorer - see MeridianExplorer.handle_mouse's drag-and-drop logic)
 # --------------------------------------------------------------------------- #
 # When the drop target is OUTSIDE this app's own window, there's no way to
 # hand a file to whatever's under the cursor except to do what a real drag
@@ -269,6 +280,86 @@ def _list_other_top_level_windows(exclude_hwnd):
 
 
 # --------------------------------------------------------------------------- #
+# REAL WINDOWS CLIPBOARD (CF_HDROP) - "Copy to Clipboard" in the Y/X menu,
+# replacing "Properties". Meridian Explorer's own "Copy"/"Cut"/"Paste"
+# (self.clipboard) is an app-internal bookkeeping dict shutil reads later -
+# real applications outside this one (a browser's file-upload field, a chat
+# app, real Windows Explorer) have no way to see that. Setting the ACTUAL
+# Windows clipboard in CF_HDROP format is the same thing real Explorer's own
+# Ctrl+C puts there, so anything that accepts a pasted/dropped file already
+# knows how to read it - no custom protocol needed, same reasoning as the
+# native-drag code above.
+# --------------------------------------------------------------------------- #
+_CF_HDROP = 15
+_GMEM_MOVEABLE = 0x0002
+
+_kernel32 = ctypes.windll.kernel32
+_user32_cb = ctypes.windll.user32
+_kernel32.GlobalAlloc.restype = ctypes.c_void_p
+_kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+_kernel32.GlobalLock.restype = ctypes.c_void_p
+_kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+_user32_cb.SetClipboardData.restype = ctypes.c_void_p
+_user32_cb.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+_user32_cb.OpenClipboard.argtypes = [ctypes.c_void_p]
+
+
+class _DROPFILES(ctypes.Structure):
+    # All 4-byte fields, no padding - sizeof matches the real Win32
+    # DROPFILES struct (20 bytes) exactly on both x86 and x64.
+    _fields_ = [
+        ("pFiles", ctypes.c_uint32),  # byte offset from struct start to the file list
+        ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long),  # POINT, unused (fNC below is 0)
+        ("fNC", ctypes.c_int32),
+        ("fWide", ctypes.c_int32),  # 1 = the file list is UTF-16, which it always is here
+    ]
+
+
+def _copy_paths_to_clipboard(paths):
+    """Puts real file references on the Windows clipboard (CF_HDROP) -
+    pasteable anywhere that accepts a real file paste/drop, including a
+    browser's file-upload control. Returns True/False."""
+    paths = [p for p in (paths or []) if p]
+    if not paths:
+        return False
+    file_list = "".join(p + "\x00" for p in paths) + "\x00"
+    file_list_bytes = file_list.encode("utf-16-le")
+    dropfiles_size = ctypes.sizeof(_DROPFILES)
+    total_size = dropfiles_size + len(file_list_bytes)
+
+    hglobal = _kernel32.GlobalAlloc(_GMEM_MOVEABLE, total_size)
+    if not hglobal:
+        return False
+    ptr = _kernel32.GlobalLock(hglobal)
+    if not ptr:
+        _kernel32.GlobalFree(hglobal)
+        return False
+    try:
+        df = _DROPFILES(pFiles=dropfiles_size, pt_x=0, pt_y=0, fNC=0, fWide=1)
+        ctypes.memmove(ptr, ctypes.byref(df), dropfiles_size)
+        ctypes.memmove(ptr + dropfiles_size, file_list_bytes, len(file_list_bytes))
+    finally:
+        _kernel32.GlobalUnlock(hglobal)
+
+    if not _user32_cb.OpenClipboard(None):
+        _kernel32.GlobalFree(hglobal)
+        return False
+    try:
+        _user32_cb.EmptyClipboard()
+        ok = bool(_user32_cb.SetClipboardData(_CF_HDROP, hglobal))
+        # Once SetClipboardData succeeds, Windows owns hglobal - freeing it
+        # ourselves after that would be a use-after-free for whatever just
+        # pasted it. Only free it on the failure path.
+        if not ok:
+            _kernel32.GlobalFree(hglobal)
+        return ok
+    finally:
+        _user32_cb.CloseClipboard()
+
+
+# --------------------------------------------------------------------------- #
 COOLDOWN = 0.2 # seconds between accepted controller inputs
 FAST_SCROLL_COOLDOWN = 0.05 # trigger-held repeat rate for fast scrolling
 STICK_DEADZONE = 0.5
@@ -276,7 +367,7 @@ TRIGGER_DEADZONE = 0.1 # analog trigger axis: -1 released -> 1 fully pressed
 SELECT_HOLD_TIME = 0.35 # how long Back/Select must be held to enter multi mode
 DOUBLE_CLICK_TIME = 0.4
 ROW_HEIGHT = 38
-LONG_PRESS_SECONDS = 0.5 # how long left-click must be held to "pick up"/"drop" a file
+DRAG_THRESHOLD_PIXELS = 6 # how far the mouse must move while held before a click becomes a drag
 HEADER_HEIGHT = 90
 FOOTER_HEIGHT = 60
 PANE_GAP = 14
@@ -694,10 +785,10 @@ class MeridianExplorer:
         self.flash_until = 0
         self._last_click_time = 0
         self._last_click_pos = None
-        # ---- long-press pick-up-and-drop (see handle_mouse) ---- #
-        self._press_down_time = None
-        self._press_down_pos = None
-        self.carry = None  # {"path", "is_dir", "name"} while something is "picked up"
+        # ---- standard click-hold-drag-drop (see handle_mouse) ---- #
+        self._drag_candidate = None  # {"pane_index","idx","path","is_dir","name","down_pos"} while a left button is held on a row, before it's known whether this becomes a drag or was just a click
+        self.dragging = False        # True once the held mouse has moved past DRAG_THRESHOLD_PIXELS
+        self.carry = None  # {"path", "is_dir", "name", "source_screen_pos"} - the active drag payload while self.dragging is True
         # ---- Share Screen (see begin_share_screen) ---- #
         self.share_windows = []   # [(hwnd, title), ...] populated when the picker opens
         self.share_selected = 0
@@ -1144,7 +1235,7 @@ class MeridianExplorer:
             # is a shortcut rail, not a second listing).
             if not self.single_pane and not self.three_pane:
                 self.menu_options += ["Move 2 Other Side", "Copy 2 Other Side"]
-            self.menu_options += ["Delete", "Properties"]
+            self.menu_options += ["Delete", "Copy to Clipboard"]
             # Global view/sort/search/select/undo grouped at the bottom.
             self.menu_options += ["View...", "Sort...", "Search", "Select All"]
             if self.undo_stack:
@@ -1354,9 +1445,12 @@ class MeridianExplorer:
         elif choice == "Redo Move":
             self.redo_move()
             self.close_menu()
-        elif choice == "Properties":
-            if targets:
-                self._show_properties(targets[0])
+        elif choice == "Copy to Clipboard":
+            if targets and _copy_paths_to_clipboard(targets):
+                label = targets[0].rsplit(os.sep, 1)[-1] if len(targets) == 1 else f"{len(targets)} items"
+                self.set_flash(f"Copied \u201c{label}\u201d to the clipboard \u2014 paste it into any app.")
+            else:
+                self.set_flash("Couldn't copy to the clipboard.")
             self.close_menu()
         elif choice == "Set as Background":
             if targets:
@@ -1442,6 +1536,8 @@ class MeridianExplorer:
         if event.key == pygame.K_ESCAPE and self.carry is not None:
             self.set_flash(f"Cancelled \u2014 \u201c{self.carry['name']}\u201d put back down.")
             self.carry = None
+            self.dragging = False
+            self._drag_candidate = None
             return
         # --- text entry popup swallows normal keys --- #
         if self.state == "text_input":
@@ -1601,6 +1697,18 @@ class MeridianExplorer:
             elif event.button == 3:
                 self.close_share_picker(restore=True)
             return
+        if self.state == "menu":
+            if event.button == 1:
+                _, rows = self._menu_row_rects()
+                for i, row_rect in rows:
+                    if pygame.Rect(row_rect).collidepoint(event.pos):
+                        self.menu_selected = i
+                        self.confirm_menu_selection()
+                        break
+            elif event.button == 3:
+                self.close_menu()
+            return
+        # Any popup open: clicks just act like Back except we keep it simple
         if self.state != "browse":
             if event.button == 3: # right click = back/cancel out of popups
                 if self.state == "menu":
@@ -1617,8 +1725,6 @@ class MeridianExplorer:
             if idx is None:
                 continue
             if event.button == 1: # left click
-                self._press_down_time = time.time()
-                self._press_down_pos = event.pos
                 if not self.multi_active:
                     self.active_pane = i
                 pane.selected = idx
@@ -1635,6 +1741,15 @@ class MeridianExplorer:
                     else:
                         pane.enter()
                     self.select_option()
+                entry = pane.entries[idx]
+                if not entry.is_drive:
+                    self._drag_candidate = {
+                        "pane_index": i, "idx": idx,
+                        "path": pane.full_path_of(entry),
+                        "is_dir": entry.is_dir,
+                        "name": pane.display_name_of(entry),
+                        "down_pos": event.pos,
+                    }
             elif event.button == 3: # right click = back
                 if self.multi_active:
                     self._exit_multi_mode()
@@ -1642,15 +1757,12 @@ class MeridianExplorer:
                     pane.go_up()
             return
     def handle_mouse_up(self, event):
-        if event.button == 1:
-            # A long-press already fires its action mid-hold (see
-            # _update_press_hold) and clears _press_down_time itself so it
-            # can't fire twice - this just cleans up a press that was
-            # released before crossing the long-press threshold (an
-            # ordinary click, already fully handled on the DOWN event
-            # above) so the NEXT press starts from a clean slate.
-            self._press_down_time = None
-            self._press_down_pos = None
+        if event.button != 1:
+            return
+        if self.dragging:
+            self._complete_carry()
+        self._drag_candidate = None
+        self.dragging = False
     def _resolve_pane_and_row_at(self, pos):
         """(pane_index, pane, row_idx_or_None) for whichever pane pos
         falls within, or None if pos isn't over either pane at all."""
@@ -1658,38 +1770,33 @@ class MeridianExplorer:
             if pygame.Rect(rect).collidepoint(pos):
                 return i, self.panes[i], self.row_index_at(self.panes[i], rect, pos)
         return None
-    def _try_start_carry(self):
-        """Long-press fired with nothing already picked up: pick up
-        whatever's under the press-down position (see handle_mouse - that's
-        where the press actually started, which is what should get picked
-        up even if the cursor drifted slightly by the time the hold
-        threshold crossed)."""
-        if self._press_down_pos is None:
+    def _begin_drag(self):
+        """Called once the held mouse has moved past DRAG_THRESHOLD_PIXELS
+        from where a row was pressed down on (see _update_drag_tracking) -
+        picks up whatever's under _drag_candidate's ORIGINAL down position,
+        not the current one, so a fast flick still drags the item that was
+        actually clicked."""
+        if self._drag_candidate is None:
             return
-        hit = self._resolve_pane_and_row_at(self._press_down_pos)
-        if hit is None:
-            return
-        i, pane, idx = hit
-        if idx is None:
-            return
-        entry = pane.entries[idx]
-        if entry.is_drive:
-            return # can't pick up "This PC" drive entries
-        path = pane.full_path_of(entry)
+        c = self._drag_candidate
+        self.dragging = True
         self.carry = {
-            "path": path,
-            "is_dir": entry.is_dir,
-            "name": pane.display_name_of(entry),
+            "path": c["path"],
+            "is_dir": c["is_dir"],
+            "name": c["name"],
             "source_screen_pos": _get_cursor_pos(),
         }
-        self.set_flash(f"Picked up \u201c{self.carry['name']}\u201d \u2014 long-press a destination to drop it (Esc to cancel)")
+        self.set_flash(f"Dragging \u201c{self.carry['name']}\u201d \u2014 release over a destination to drop it (Esc to cancel)")
     def _complete_carry(self):
-        """Long-press fired with something already picked up: drop it at
-        the CURRENT cursor position - inside this app's own window, that's
-        a plain file move/copy; outside it (e.g. over a real Explorer
-        window), a real synthesized OS-level drag is the only way to hand
-        it off, since nothing else understands "here's a file" across
-        process/window boundaries the way native OLE drag-and-drop does."""
+        """Mouse released while dragging: drop at the CURRENT cursor
+        position - inside this app's own window, that's a plain file
+        move/copy; outside it (e.g. over a real Explorer window), a real
+        synthesized OS-level drag is the only way to hand it off, since
+        the physical drag that already happened was consumed entirely by
+        this app's own window (it had mouse capture the whole time, so no
+        other window ever saw it) - nothing else understands "here's a
+        file" across process/window boundaries the way native OLE drag-
+        and-drop does, and only a fresh, real drag gesture triggers that."""
         carry = self.carry
         self.carry = None
         if carry is None:
@@ -1741,26 +1848,24 @@ class MeridianExplorer:
             self.set_flash(f"Couldn't drop \u201c{carry['name']}\u201d here.")
         for p in self.panes:
             p.refresh()
-    def _update_press_hold(self):
-        """Polled once per frame from run() - see LONG_PRESS_SECONDS.
-        Fires at most once per physical press (clears _press_down_time
-        immediately after) so holding past the threshold never repeats the
-        action every subsequent frame."""
-        if self._press_down_time is None:
+    def _update_drag_tracking(self):
+        """Polled once per frame from run(): the only thing this still
+        needs to do continuously (unlike completing the drop, which is a
+        discrete event handled in handle_mouse_up) is watch for the mouse
+        crossing DRAG_THRESHOLD_PIXELS while held, since that's a
+        continuous distance check rather than something a single event
+        can tell us on its own."""
+        if self._drag_candidate is None or self.dragging:
             return
         if not pygame.mouse.get_pressed()[0]:
-            # Button already released (handle_mouse_up should have caught
-            # this, but the per-frame poll can occasionally see it first) -
-            # treat as an ordinary short click, do nothing further here.
-            self._press_down_time = None
+            # Should have been caught by handle_mouse_up already, but the
+            # per-frame poll can occasionally see it first.
+            self._drag_candidate = None
             return
-        if time.time() - self._press_down_time < LONG_PRESS_SECONDS:
-            return
-        self._press_down_time = None
-        if self.carry is None:
-            self._try_start_carry()
-        else:
-            self._complete_carry()
+        cx, cy = pygame.mouse.get_pos()
+        dx0, dy0 = self._drag_candidate["down_pos"]
+        if (cx - dx0) ** 2 + (cy - dy0) ** 2 >= DRAG_THRESHOLD_PIXELS ** 2:
+            self._begin_drag()
     # ------------------------------------------------------------------ #
     # SHARE SCREEN ([O] button next to [X], or Y menu > Share Screen)
     # ------------------------------------------------------------------ #
@@ -2344,22 +2449,30 @@ class MeridianExplorer:
         title_surf = self.font_popup.render(title, True, COL_ACCENT)
         self.screen.blit(title_surf, (x + (width - title_surf.get_width()) // 2, y + 16))
         return x, y, width, height
+    def _menu_row_rects(self):
+        item_h = 44
+        width = 420
+        height = 70 + item_h * len(self.menu_options)
+        x = (self.width - width) // 2
+        y = (self.height - height) // 2
+        rects = []
+        for i in range(len(self.menu_options)):
+            row_y = y + 60 + i * item_h
+            rects.append((i, (x + 16, row_y, width - 32, item_h - 8)))
+        return (x, y, width, height), rects
     def draw_menu(self):
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         self.screen.blit(overlay, (0, 0))
-        item_h = 44
-        width = 420
-        height = 70 + item_h * len(self.menu_options)
-        x, y, w, h = self.draw_popup_box("OPTIONS", width, height)
-        for i, opt in enumerate(self.menu_options):
-            row_y = y + 60 + i * item_h
-            row_rect = (x + 16, row_y, w - 32, item_h - 8)
+        (x, y, w, h), rows = self._menu_row_rects()
+        self.draw_popup_box("OPTIONS", w, h)
+        for i, row_rect in rows:
+            opt = self.menu_options[i]
             if i == self.menu_selected:
                 pygame.draw.rect(self.screen, COL_POPUP_ITEM_HL, row_rect, border_radius=8)
             color = COL_DANGER if opt == "Delete" else COL_TEXT
             text = self.font_row.render(opt, True, color)
-            self.screen.blit(text, (row_rect[0] + 16, row_y + (item_h - 8 - text.get_height()) // 2))
+            self.screen.blit(text, (row_rect[0] + 16, row_rect[1] + (row_rect[3] - text.get_height()) // 2))
     def draw_share_picker(self):
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
@@ -2459,7 +2572,7 @@ class MeridianExplorer:
         elif self.state == "share_picker":
             self.draw_share_picker()
         if self.carry is not None:
-            label = f"Carrying \u201c{self.carry['name']}\u201d \u2014 long-press a destination to drop (Esc to cancel)"
+            label = f"Dragging \u201c{self.carry['name']}\u201d \u2014 release over a destination to drop (Esc to cancel)"
             surf = self.font_footer.render(label, True, (140, 220, 255))
             bar = pygame.Rect(0, self.height - 34, self.width, 34)
             pygame.draw.rect(self.screen, (20, 30, 45), bar)
@@ -2489,7 +2602,7 @@ class MeridianExplorer:
                         self.handle_mouse_up(event)
             if is_foreground:
                 self.handle_controller()
-                self._update_press_hold()
+                self._update_drag_tracking()
             self.draw()
             self._maybe_close_on_background()
             self.clock.tick(60)

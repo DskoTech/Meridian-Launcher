@@ -1,0 +1,15 @@
+{
+  "id": "player_one",
+  "label": "PlayerOne",
+  "type": "addon",
+  "section": "apps",
+  "option": "PlayerOne",
+  "exe": "PlayerOne.exe",
+  "window_position": "default",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": true,
+  "show_battery": true,
+  "show_taskbar": true,
+  "show_music_player": false
+}

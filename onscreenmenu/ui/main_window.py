@@ -66,7 +66,7 @@ from features.keycombo_manager import (
 from features.recent_apps_tracker import RecentAppsTracker
 from features.global_hotkeys import GlobalHotkeys
 from features import startup
-from features.foreign_focus_watcher import ForeignFocusWatcher
+from features.foreign_focus_watcher import ForeignFocusWatcher, launch_osk, close_osk, is_osk_running
 
 
 class MainWindow(QMainWindow):
@@ -574,8 +574,9 @@ class MainWindow(QMainWindow):
 
             self.open_recent_apps_menu()
 
-        # Start does nothing here - Controls (previously here) moved to
-        # the Y menu instead, alongside "Meridian Launcher".
+        if state.start and not self.last_start:
+
+            self.toggle_osk()
 
         self.last_y = state.y
 
@@ -585,6 +586,22 @@ class MainWindow(QMainWindow):
 
         self.last_start = state.start
 
+
+    def toggle_osk(self):
+        """Start button - opens the on-screen keyboard if it's not
+        already running, closes it if it is. Same underlying osk.exe
+        launch_osk()/close_osk() the foreign-focus auto-invoke uses (see
+        features/foreign_focus_watcher.py), just triggered directly
+        instead of by a foreign window taking focus - this is a manual
+        open, so the watcher's own _auto_opened bookkeeping is
+        deliberately left untouched, matching how the X menu's "Virtual
+        Keyboard" toggle already works: something the user opened on
+        purpose is never something the watcher considers itself allowed
+        to close back out again."""
+        if is_osk_running():
+            close_osk()
+        else:
+            launch_osk()
 
     def show_controls_reference(self):
 
@@ -607,41 +624,11 @@ class MainWindow(QMainWindow):
 
 
     def _run_osk_bat(self):
-
-        #
-        # "Local folder" = wherever onscreenmenu itself is
-        # running from (the built exe's folder, or the script's
-        # folder when run from source) - not the current working
-        # directory, which can vary depending on how it was
-        # launched.
-        #
-
-        base_dir = os.path.dirname(
-            startup.current_exe_path()
-        )
-
-        bat_path = os.path.join(
-            base_dir,
-            "osk.bat"
-        )
-
-        if not os.path.isfile(bat_path):
-
-            self.show_message(
-                "osk.bat wasn't found in:\n" + base_dir
-            )
-
-            return
-
-        try:
-
-            os.startfile(bat_path)
-
-        except Exception as error:
-
-            self.show_message(
-                "Couldn't run osk.bat: " + str(error)
-            )
+        # Internalized - see toggle_osk() (also what the Start button
+        # calls). Kept this method's name since handle_keycombo_menu_
+        # select already calls it, and there's no reason to rename a
+        # call site just because the implementation moved.
+        self.toggle_osk()
 
 
     #
@@ -1015,6 +1002,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "hotkeys"):
 
             self.hotkeys.stop()
+
+        if is_osk_running():
+
+            close_osk()
 
         event.accept()
 

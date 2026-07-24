@@ -6,7 +6,7 @@ hiddenimports += collect_submodules('webview')
 
 
 a = Analysis(
-    ['C:\\Users\\Administrator\\Documents\\meridian-launcher-updated (13)\\Meridian Game Library\\main.py'],
+    ['C:\\Users\\Administrator\\Downloads\\Meridian_Launcher_NEW_STABLE_BUILD_718_updated (13)\\Meridian Game Library\\main.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -14,7 +14,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['gameinput_native'],  # see gameinput_api.py's sys.path fix / meridian.spec's own excludes comment
+    excludes=[],
     noarchive=False,
     optimize=0,
 )
@@ -36,7 +36,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\Administrator\\Documents\\meridian-launcher-updated (13)\\Meridian Game Library\\icon.ico'],
+    icon=['C:\\Users\\Administrator\\Downloads\\Meridian_Launcher_NEW_STABLE_BUILD_718_updated (13)\\Meridian Game Library\\icon.ico'],
     contents_directory='MeridianGameLibrary_internal',
 )
 coll = COLLECT(

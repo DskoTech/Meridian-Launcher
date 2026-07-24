@@ -160,35 +160,6 @@ def maybe_prompt_install(config, save_config_fn):
             destination
         )
 
-        #
-        # osk.bat (or any other loose companion file sitting next
-        # to the exe) needs to move along with it - otherwise
-        # Start's "run osk.bat from the local folder" comes up
-        # empty once relocated.
-        #
-
-        source_dir = os.path.dirname(
-            current_exe_path()
-        )
-
-        osk_bat_source = os.path.join(
-            source_dir,
-            "osk.bat"
-        )
-
-        if os.path.isfile(osk_bat_source):
-
-            try:
-
-                shutil.copy2(
-                    osk_bat_source,
-                    os.path.join(INSTALL_DIR, "osk.bat")
-                )
-
-            except Exception:
-
-                pass
-
         QMessageBox.information(
             None,
             "onscreenmenu",

@@ -44,7 +44,6 @@ echo   - Run "python main.py" to launch Meridian Launcher from source.
 echo   - Run "compile.bat" to build Meridian Launcher.exe with PyInstaller.
 echo.
 echo Optional companion files to drop next to the built .exe:
-echo   - osm.bat                        (on-screen-menu companion script)
 echo   - CyberDeckBrowser.exe            (Web section)
 echo   - Meridian_Explorer.exe           (Files section)
 echo   - Meridian Game Library.exe       (Games section "Game Library" entry)

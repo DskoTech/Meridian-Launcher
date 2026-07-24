@@ -1,0 +1,15 @@
+{
+  "id": "meridian_paint",
+  "label": "Meridian Paint",
+  "type": "addon",
+  "section": "apps",
+  "option": "Meridian Paint",
+  "exe": "MeridianPaint.exe",
+  "window_position": "default",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": true,
+  "show_battery": true,
+  "show_taskbar": true,
+  "show_music_player": false
+}

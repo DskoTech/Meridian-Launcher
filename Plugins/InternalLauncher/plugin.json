@@ -1,0 +1,15 @@
+{
+  "id": "internal_launcher",
+  "label": "Internal Launcher",
+  "type": "addon",
+  "section": "apps",
+  "option": "Internal Launcher",
+  "exe": "InternalLauncher.exe",
+  "window_position": "default",
+  "show_subfolder": false,
+  "show_thumbnail": false,
+  "show_clock": true,
+  "show_battery": true,
+  "show_taskbar": true,
+  "show_music_player": false
+}

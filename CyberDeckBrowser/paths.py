@@ -11,7 +11,7 @@ Using __file__ alone breaks once frozen, since it
 then points somewhere inside PyInstaller's bundled
 internals rather than the folder the .exe actually
 lives in. Anything that needs to find files sitting
-next to the app (osk.bat, config, bookmarks) should
+next to the app (config, bookmarks) should
 import APP_ROOT from here instead of computing its
 own relative path.
 """

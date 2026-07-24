@@ -30,6 +30,7 @@ image itself are the only unauthenticated routes, and they reveal
 nothing but the (already-token-bearing) phone-page URL.
 """
 
+import ctypes
 import html
 import json
 import socket
@@ -88,6 +89,56 @@ def _inject_text(text):
             pass
 
 
+# ---------------- touchpad (relative mouse move + left/right click) ----------------
+# Plain ctypes SendInput, same technique used elsewhere in this suite
+# (Meridian_Explorer's drag-and-drop) - indistinguishable from real
+# hardware input to the rest of Windows, so it moves/clicks wherever the
+# real cursor currently is on the PC, same as a real trackpad would.
+_MOUSEEVENTF_MOVE = 0x0001
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_RIGHTDOWN = 0x0008
+_MOUSEEVENTF_RIGHTUP = 0x0010
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long), ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_ulong), ("mi", _MOUSEINPUT)]
+
+
+def _send_mouse_input(dx=0, dy=0, flags=0):
+    if not IS_WINDOWS:
+        return
+    try:
+        extra = ctypes.c_ulong(0)
+        inp = _INPUT(0, _MOUSEINPUT(dx, dy, 0, flags, 0, ctypes.pointer(extra)))  # type=0 -> INPUT_MOUSE
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(inp), ctypes.sizeof(inp))
+    except Exception:
+        pass
+
+
+def _move_mouse_relative(dx, dy):
+    with _keyboard_lock:
+        _send_mouse_input(int(dx), int(dy), _MOUSEEVENTF_MOVE)
+
+
+def _click_mouse(button):
+    down, up = (
+        (_MOUSEEVENTF_RIGHTDOWN, _MOUSEEVENTF_RIGHTUP) if button == "right"
+        else (_MOUSEEVENTF_LEFTDOWN, _MOUSEEVENTF_LEFTUP)
+    )
+    with _keyboard_lock:
+        _send_mouse_input(flags=down)
+        _send_mouse_input(flags=up)
+
+
 _PHONE_PAGE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
@@ -102,6 +153,12 @@ _PHONE_PAGE = """<!DOCTYPE html>
   button:active {{ background:#1c4a30; }}
   .hint {{ font-size:12px; color:#8aa; margin-top:10px; }}
   .status {{ font-size:13px; margin-top:14px; min-height:16px; }}
+  .touchpad {{ width:100%; height:220px; margin-top:18px; border-radius:10px; border:1px solid #244;
+    background:#0f1c16; touch-action:none; position:relative; overflow:hidden; }}
+  .touchpad .label {{ position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    color:#355; font-size:13px; pointer-events:none; }}
+  .click-row {{ display:flex; gap:10px; margin-top:10px; }}
+  .click-row button {{ margin-top:0; padding:14px; }}
 </style></head>
 <body>
   <h1>Type from Phone</h1>
@@ -109,6 +166,13 @@ _PHONE_PAGE = """<!DOCTYPE html>
   <button id="send">Send</button>
   <div class="hint">Newlines send Enter on the PC side too — handy for chat, not for passwords.</div>
   <div class="status" id="status"></div>
+
+  <div class="touchpad" id="touchpad"><div class="label">Touch and drag to move the PC's cursor</div></div>
+  <div class="click-row">
+    <button id="leftclick">Left Click</button>
+    <button id="rightclick">Right Click</button>
+  </div>
+
   <script>
     const txt = document.getElementById("txt");
     const status = document.getElementById("status");
@@ -127,6 +191,40 @@ _PHONE_PAGE = """<!DOCTYPE html>
       }} catch (e) {{ status.textContent = "Couldn't reach the PC — same Wi-Fi?"; }}
       setTimeout(() => {{ status.textContent = ""; }}, 1500);
     }});
+
+    // ---------------- touchpad ----------------
+    // Sends relative move deltas as the finger drags, same as a laptop
+    // trackpad - not absolute position, so there's no need to know the
+    // PC's screen size or account for multiple monitors.
+    const pad = document.getElementById("touchpad");
+    let lastX = null, lastY = null, pending = null;
+    function sendMove(dx, dy) {{
+      if (pending) return; // one in flight at a time - dropping a few intermediate points under fast dragging is fine, queuing them up is not
+      pending = fetch(`/mouse_move?t={token}&dx=${{dx}}&dy=${{dy}}`, {{ method: "POST" }})
+        .catch(() => {{}}).finally(() => {{ pending = null; }});
+    }}
+    pad.addEventListener("touchstart", (e) => {{
+      const t = e.touches[0];
+      lastX = t.clientX; lastY = t.clientY;
+    }}, {{ passive: true }});
+    pad.addEventListener("touchmove", (e) => {{
+      e.preventDefault();
+      const t = e.touches[0];
+      if (lastX !== null) {{
+        const dx = t.clientX - lastX, dy = t.clientY - lastY;
+        // A little amplification - phone screens are small, the whole
+        // PC display should be reachable without an enormous drag.
+        sendMove(Math.round(dx * 1.6), Math.round(dy * 1.6));
+      }}
+      lastX = t.clientX; lastY = t.clientY;
+    }}, {{ passive: false }});
+    pad.addEventListener("touchend", () => {{ lastX = null; lastY = null; }});
+
+    function click(button) {{
+      fetch(`/mouse_click?t={token}&button=${{button}}`, {{ method: "POST" }}).catch(() => {{}});
+    }}
+    document.getElementById("leftclick").addEventListener("click", () => click("left"));
+    document.getElementById("rightclick").addEventListener("click", () => click("right"));
   </script>
 </body></html>"""
 
@@ -207,10 +305,30 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        if parsed.path == "/mouse_move":
+            if not self._valid_token(qs):
+                self.send_error(403, "Bad or missing link — rescan the QR code.")
+                return
+            try:
+                dx = int(float(qs.get("dx", ["0"])[0]))
+                dy = int(float(qs.get("dy", ["0"])[0]))
+            except Exception:
+                dx, dy = 0, 0
+            _move_mouse_relative(dx, dy)
+            self._send_html("ok")
+            return
+        if parsed.path == "/mouse_click":
+            if not self._valid_token(qs):
+                self.send_error(403, "Bad or missing link — rescan the QR code.")
+                return
+            button = qs.get("button", ["left"])[0]
+            _click_mouse("right" if button == "right" else "left")
+            self._send_html("ok")
+            return
         if parsed.path != "/type":
             self.send_error(404)
             return
-        qs = parse_qs(parsed.query)
         if not self._valid_token(qs):
             self.send_error(403, "Bad or missing link — rescan the QR code.")
             return

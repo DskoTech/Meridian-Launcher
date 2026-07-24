@@ -1,0 +1,35 @@
+{
+  "_comment": "Demo mapping for xinput_to_keyboard.py (Controller Bridge) - every input a modern Xbox/PlayStation controller has, all filled in as an example. JSON has no real comment syntax, so this _comment key is just documentation; the loader ignores unrecognized keys, so leaving it here is harmless. Copy this file, rename it, and edit the values (any name the 'keyboard' library's press()/release() accept - see xinput_to_keyboard.py's own module docstring) to build a real mapping - or drop a trimmed-down copy named meridian_controller_bridge.json in a game's own install folder for a per-game override.",
+
+  "A": "z",
+  "B": "x",
+  "X": "a",
+  "Y": "s",
+
+  "LEFT_SHOULDER": "q",
+  "RIGHT_SHOULDER": "w",
+  "LEFT_TRIGGER": "e",
+  "RIGHT_TRIGGER": "r",
+
+  "START": "enter",
+  "BACK": "esc",
+  "GUIDE": "tab",
+
+  "LEFT_THUMB": "1",
+  "RIGHT_THUMB": "2",
+
+  "DPAD_UP": "up",
+  "DPAD_DOWN": "down",
+  "DPAD_LEFT": "left",
+  "DPAD_RIGHT": "right",
+
+  "LSTICK_UP": "i",
+  "LSTICK_DOWN": "k",
+  "LSTICK_LEFT": "j",
+  "LSTICK_RIGHT": "l",
+
+  "RSTICK_UP": "8",
+  "RSTICK_DOWN": "5",
+  "RSTICK_LEFT": "4",
+  "RSTICK_RIGHT": "6"
+}

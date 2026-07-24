@@ -130,6 +130,7 @@ const state = {
   settings: null,
   playIndex: -1,
   musicQueue: [], // persistent Music queue for shoulder controls across sections
+  musicRandomOrder: null, // cached shuffled path order for the persisted Random sort mode - see sortMusicItems
   userThemes: [], // discovered themes from the themes/ folder
   userThemeCss: {}, // { __active: slug } tracks which user theme CSS is injected
   musicIndex: 0,
@@ -1606,7 +1607,7 @@ async function activateMacro(item) {
 // administrator rather than just reporting a dead-end error.
 async function runElevatedMacro(invoke) {
   const res = await invoke();
-  if (res.ok) { showToast("Done."); return; }
+  if (res.ok) { showToast(res.message || "Done."); return; }
   if (res.needs_admin_relaunch) {
     const yes = await openConfirmModal(
       "Administrator access needed",
@@ -2028,6 +2029,92 @@ function isConfirmOpen() {
   return !el("confirm-overlay").classList.contains("hidden");
 }
 
+// Windows Store app picker (Apps/Streaming/etc. sections' "+ Add Windows
+// Store App" button) - a search-filterable list of installed packaged
+// apps (see system_actions.list_installed_store_apps for how they're
+// found). Built as its own lightweight overlay rather than reusing the
+// text-entry modal (#modal-overlay) or the yes/no confirm modal, since
+// neither fits "pick one item from a list" - torn down completely on
+// close/pick rather than kept as hidden DOM, since it's opened rarely.
+function openStoreAppPicker(apps, onPick) {
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:500;";
+
+  const box = document.createElement("div");
+  box.style.cssText = "background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;width:min(480px,90vw);max-height:80vh;display:flex;flex-direction:column;";
+  overlay.appendChild(box);
+
+  const title = document.createElement("h3");
+  title.textContent = "Add Windows Store App";
+  title.style.margin = "0 0 12px";
+  box.appendChild(title);
+
+  if (!apps || !apps.length) {
+    const empty = document.createElement("p");
+    empty.className = "settings-note";
+    empty.textContent = "No installed Windows Store apps found.";
+    box.appendChild(empty);
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "btn-outline";
+    closeBtn.textContent = "Close";
+    closeBtn.addEventListener("click", () => overlay.remove());
+    box.appendChild(closeBtn);
+    document.body.appendChild(overlay);
+    return;
+  }
+
+  const filterInput = document.createElement("input");
+  filterInput.type = "text";
+  filterInput.placeholder = "Filter by name\u2026";
+  filterInput.style.cssText = "margin-bottom:10px;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--bg-1);color:var(--text-hi);";
+  box.appendChild(filterInput);
+
+  const list = document.createElement("div");
+  list.style.cssText = "overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px;";
+  box.appendChild(list);
+
+  const renderList = (filterText) => {
+    list.innerHTML = "";
+    const filtered = apps.filter((a) => a.name.toLowerCase().includes((filterText || "").toLowerCase()));
+    if (!filtered.length) {
+      const none = document.createElement("div");
+      none.className = "empty-msg";
+      none.textContent = "No matches.";
+      list.appendChild(none);
+      return;
+    }
+    filtered.forEach((app) => {
+      const row = document.createElement("button");
+      row.className = "btn-outline";
+      row.style.textAlign = "left";
+      row.textContent = app.name;
+      row.addEventListener("click", () => {
+        overlay.remove();
+        onPick(app);
+      });
+      list.appendChild(row);
+    });
+  };
+  renderList("");
+  filterInput.addEventListener("input", () => renderList(filterInput.value));
+  filterInput.focus();
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn-link";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.style.marginTop = "12px";
+  cancelBtn.addEventListener("click", () => overlay.remove());
+  box.appendChild(cancelBtn);
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.addEventListener("keydown", function escHandler(e) {
+    if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", escHandler); }
+  });
+
+  document.body.appendChild(overlay);
+}
+
 function openConfirmModal(title, message) {
   return new Promise((resolve) => {
     confirmResolveFn = resolve;
@@ -2089,7 +2176,7 @@ window.addEventListener("keydown", (e) => {
 
 // ---------------- photo menu (Start button over a photo) ----------------
 let photoMenuCursor = 0;
-const PHOTO_MENU_ITEMS = ["photo-menu-edit", "photo-menu-background", "photo-menu-cancel"];
+const PHOTO_MENU_ITEMS = ["photo-menu-edit", "photo-menu-background", "photo-menu-open-folder", "photo-menu-delete", "photo-menu-cancel"];
 
 function isPhotoMenuOpen() {
   return !el("photo-menu-overlay").classList.contains("hidden");
@@ -2114,7 +2201,7 @@ function currentPhotoPath() {
 let _suppressNextConfirm = false;
 
 function handleMenuStart() {
-  if (isPhotoMenuOpen() || isStartMenuOpen() || isMusicSortMenuOpen() || isTutorialOpen() || isConfirmOpen() || isOverlayOpen() || isOskCapturing()) return;
+  if (isPhotoMenuOpen() || isStartMenuOpen() || isMusicSortMenuOpen() || isMusicItemMenuOpen() || isTutorialOpen() || isConfirmOpen() || isOverlayOpen() || isOskCapturing()) return;
   _suppressNextConfirm = true;
   setTimeout(() => { _suppressNextConfirm = false; }, 150);
   const path = currentPhotoPath();
@@ -2126,7 +2213,7 @@ function handleMenuStart() {
   }
   const cat = state.categories[state.catIndex];
   if (cat && cat.kind === "media" && cat.id === "music") {
-    openMusicSortMenu();
+    openMusicItemMenu();
     return;
   }
   openStartMenu();
@@ -2173,6 +2260,7 @@ async function activateMusicSortMenuItem() {
   if (choice === "music-sort-cancel") return;
   const mode = MUSIC_SORT_MODES[choice];
   if (!mode) return;
+  if (mode === "random") state.musicRandomOrder = null; // force a fresh shuffle on explicit re-pick
   state.settings = await api().set_music_sort_mode(mode);
   await refreshItemPanel();
 }
@@ -2186,6 +2274,66 @@ function handleMusicSortMenuInput(action) {
 
 MUSIC_SORT_MENU_ITEMS.forEach((id, i) => {
   el(id).addEventListener("click", (e) => { e.stopPropagation(); musicSortMenuCursor = i; activateMusicSortMenuItem(); });
+});
+
+// ---------------- Music item options menu (Start button, Music section) ----------------
+// Separate from the sort menu above - this is per-TRACK actions (Open
+// Folder, Delete) plus a way into the sort picker ("Sort by..."),
+// mirroring how the Photo options menu works for Photos. Start opens
+// THIS menu now (see handleMenuStart), not the sort menu directly.
+let musicItemMenuCursor = 0;
+const MUSIC_ITEM_MENU_ITEMS = ["music-item-menu-sort", "music-item-menu-open-folder", "music-item-menu-delete", "music-item-menu-cancel"];
+
+function isMusicItemMenuOpen() {
+  return !el("music-item-menu-overlay").classList.contains("hidden");
+}
+
+function openMusicItemMenu() {
+  musicItemMenuCursor = 0;
+  el("music-item-menu-overlay").classList.remove("hidden");
+  highlightMusicItemMenuCursor();
+}
+
+function closeMusicItemMenu() {
+  el("music-item-menu-overlay").classList.add("hidden");
+}
+
+function highlightMusicItemMenuCursor() {
+  MUSIC_ITEM_MENU_ITEMS.forEach((id, i) => el(id).classList.toggle("settings-focus", i === musicItemMenuCursor));
+}
+
+async function activateMusicItemMenuItem() {
+  const choice = MUSIC_ITEM_MENU_ITEMS[musicItemMenuCursor];
+  const item = state.items[state.selected];
+  closeMusicItemMenu();
+  if (choice === "music-item-menu-cancel") return;
+  if (choice === "music-item-menu-sort") {
+    openMusicSortMenu();
+    return;
+  }
+  if (!item || !item.path) return;
+  if (choice === "music-item-menu-open-folder") {
+    const res = await api().open_containing_folder(item.path);
+    if (res && res.ok === false) showToast(`Couldn't open the folder: ${res.error}`);
+  } else if (choice === "music-item-menu-delete") {
+    const label = item.title || item.name || "this track";
+    const ok = await openConfirmModal("Delete this item?", `"${label}" will be moved to the Recycle Bin.`);
+    if (!ok) return;
+    const res = await api().delete_media_item("music", item.path);
+    if (res && res.ok === false) showToast(`Couldn't delete: ${res.error}`);
+    else { showToast("Moved to Recycle Bin."); await refreshItemPanel(); }
+  }
+}
+
+function handleMusicItemMenuInput(action) {
+  if (action === "up") { musicItemMenuCursor = (musicItemMenuCursor + MUSIC_ITEM_MENU_ITEMS.length - 1) % MUSIC_ITEM_MENU_ITEMS.length; highlightMusicItemMenuCursor(); }
+  else if (action === "down") { musicItemMenuCursor = (musicItemMenuCursor + 1) % MUSIC_ITEM_MENU_ITEMS.length; highlightMusicItemMenuCursor(); }
+  else if (action === "confirm") activateMusicItemMenuItem();
+  else if (action === "back") closeMusicItemMenu();
+}
+
+MUSIC_ITEM_MENU_ITEMS.forEach((id, i) => {
+  el(id).addEventListener("click", (e) => { e.stopPropagation(); musicItemMenuCursor = i; activateMusicItemMenuItem(); });
 });
 
 // Sorts a freshly-scanned music item list according to the persisted
@@ -2205,13 +2353,39 @@ function sortMusicItems(items, modeOverride) {
   } else if (mode === "date_desc") {
     sorted.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
   } else if (mode === "random") {
-    // Fresh shuffle every time this runs (Fisher-Yates), not a fixed
-    // order pinned once and reused - so picking Random reshuffles again
-    // each time the Music list is (re)loaded, not just the first time.
-    for (let i = sorted.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
+    if (modeOverride === "random" || !state.musicRandomOrder) {
+      // Fresh Fisher-Yates shuffle - either this is the one-off "play a
+      // random song" case (always wants a genuinely new shuffle, not a
+      // browsing order), or there's no cached order yet for the
+      // persisted Random sort mode (first time it's been applied this
+      // session, or it was just explicitly re-picked - see
+      // activateMusicSortMenuItem, which clears the cache on purpose).
+      const shuffled = sorted.slice();
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      if (modeOverride !== "random") {
+        // Cache the ORDER (paths), not the item objects themselves - the
+        // underlying item list gets refetched/rebuilt on every refresh,
+        // so caching objects would just go stale; caching the path
+        // order lets it be reapplied to a freshly-fetched item list.
+        state.musicRandomOrder = shuffled.map((it) => it.path);
+      }
+      return shuffled;
     }
+    // Persisted Random mode, already shuffled once this session -
+    // reapply that SAME order rather than reshuffling again, so the
+    // list stays stable across incidental re-renders. Anything not in
+    // the cached order (e.g. a newly added file) gets appended at the
+    // end rather than silently dropped.
+    const byPath = new Map(sorted.map((it) => [it.path, it]));
+    const ordered = [];
+    state.musicRandomOrder.forEach((p) => {
+      if (byPath.has(p)) { ordered.push(byPath.get(p)); byPath.delete(p); }
+    });
+    byPath.forEach((it) => ordered.push(it));
+    return ordered;
   } else {
     sorted.sort((a, b) => collator(a.title, b.title)); // title_asc, the default
   }
@@ -2237,6 +2411,17 @@ async function activatePhotoMenuItem() {
   } else if (choice === "photo-menu-background") {
     const res = await api().set_background_from_path(path);
     if (res) { state.settings = res; showToast("Background updated"); applyBackground(res); }
+  } else if (choice === "photo-menu-open-folder") {
+    const res = await api().open_containing_folder(path);
+    if (res && res.ok === false) showToast(`Couldn't open the folder: ${res.error}`);
+  } else if (choice === "photo-menu-delete") {
+    const item = state.items[state.selected];
+    const label = (item && (item.title || item.name)) || "this photo";
+    const ok = await openConfirmModal("Delete this item?", `"${label}" will be moved to the Recycle Bin.`);
+    if (!ok) return;
+    const res = await api().delete_media_item("photos", path);
+    if (res && res.ok === false) showToast(`Couldn't delete: ${res.error}`);
+    else { showToast("Moved to Recycle Bin."); await refreshItemPanel(); }
   }
 }
 
@@ -2249,6 +2434,8 @@ function handlePhotoMenuInput(action) {
 
 el("photo-menu-edit").addEventListener("click", (e) => { e.stopPropagation(); photoMenuCursor = 0; activatePhotoMenuItem(); });
 el("photo-menu-background").addEventListener("click", (e) => { e.stopPropagation(); photoMenuCursor = 1; activatePhotoMenuItem(); });
+el("photo-menu-open-folder").addEventListener("click", (e) => { e.stopPropagation(); photoMenuCursor = 2; activatePhotoMenuItem(); });
+el("photo-menu-delete").addEventListener("click", (e) => { e.stopPropagation(); photoMenuCursor = 3; activatePhotoMenuItem(); });
 el("photo-menu-cancel").addEventListener("click", (e) => { e.stopPropagation(); closePhotoMenu(); });
 
 // ---------------- Start menu (Start button, everywhere but photos) ----------------
@@ -2275,19 +2462,51 @@ function _controllerBridgeEligibleItem() {
 }
 
 // Delete (send to Recycle Bin) - only meaningful for a real file/folder:
-// the Desktop section's own items, or a plugin_list item that exposes a
+// the Desktop section's own items, a plugin_list item that exposes a
 // real path (currently just the "Start" plugin's shortcuts - see
-// Plugins/Start/backend.py). Returns {path, pluginId} where pluginId is
-// null for the Desktop section (deleted via delete_desktop_item) or set
-// for a plugin item (deleted via delete_plugin_item instead).
+// Plugins/Start/backend.py), or a Photos/Videos/Music item. Returns
+// {item, target, pluginId?, mediaKind?} - target is "desktop" (deleted
+// via delete_desktop_item), "plugin" (delete_plugin_item, pluginId
+// set), or "media" (delete_media_item, mediaKind set to which section).
 function _deleteEligibleItem() {
   const cat = state.categories[state.catIndex];
   if (!cat) return null;
   const item = state.items[state.selected];
   if (!item || !item.path || item.__chatPlugin) return null;
-  if (cat.kind === "desktop_list") return { item, pluginId: null };
-  if (cat.kind === "plugin_list") return { item, pluginId: cat.pluginId };
+  if (cat.kind === "desktop_list") return { item, target: "desktop" };
+  if (cat.kind === "plugin_list") return { item, target: "plugin", pluginId: cat.pluginId };
+  if (cat.kind === "media") return { item, target: "media", mediaKind: cat.id };
   return null;
+}
+
+// Open Folder - Photos/Videos/Music sections only, as asked for; opens
+// Windows Explorer with the file highlighted (the standard "show in
+// folder" behavior), rather than just the folder with nothing selected.
+function _openFolderEligibleItem() {
+  const cat = state.categories[state.catIndex];
+  if (!cat || cat.kind !== "media") return null;
+  const item = state.items[state.selected];
+  if (!item || !item.path) return null;
+  return item;
+}
+
+// Open in Meridian Paint - Photos section, or the Downloads plugin (see
+// Plugins/Downloads/backend.py), with an actual image file selected.
+// Deliberately checks the extension rather than trying every item (a
+// stray non-image landing on the Photos section's item list, or most
+// things in Downloads, wouldn't make sense to hand to a paint program).
+const _PAINT_OPENABLE_EXT = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
+function _openInPaintEligibleItem() {
+  const cat = state.categories[state.catIndex];
+  if (!cat) return null;
+  const item = state.items[state.selected];
+  if (!item || !item.path) return null;
+  const isPhotos = cat.kind === "media" && cat.id === "photos";
+  const isDownloads = cat.kind === "plugin_list" && cat.pluginId === "downloads";
+  if (!isPhotos && !isDownloads) return null;
+  const lower = item.path.toLowerCase();
+  if (!_PAINT_OPENABLE_EXT.some((ext) => lower.endsWith(ext))) return null;
+  return item;
 }
 
 function openStartMenu() {
@@ -2315,6 +2534,24 @@ function openStartMenu() {
     startMenuItems.splice(1, 0, "start-menu-delete");
   } else {
     deleteBtn.classList.add("hidden");
+  }
+  const openFolderItem = _openFolderEligibleItem();
+  const openFolderBtn = el("start-menu-open-folder");
+  if (openFolderItem) {
+    openFolderBtn.classList.remove("hidden");
+    openFolderBtn.textContent = `Open Folder ("${openFolderItem.title || openFolderItem.name || openFolderItem.label}")`;
+    startMenuItems.splice(1, 0, "start-menu-open-folder");
+  } else {
+    openFolderBtn.classList.add("hidden");
+  }
+  const paintItem = _openInPaintEligibleItem();
+  const paintBtn = el("start-menu-open-paint");
+  if (paintItem) {
+    paintBtn.classList.remove("hidden");
+    paintBtn.textContent = `Open "${paintItem.title || paintItem.name || paintItem.label}" in Meridian Paint`;
+    startMenuItems.splice(1, 0, "start-menu-open-paint");
+  } else {
+    paintBtn.classList.add("hidden");
   }
   el("start-menu-overlay").classList.remove("hidden");
   highlightStartMenuCursor();
@@ -2349,17 +2586,34 @@ async function activateStartMenuItem() {
     closeStartMenu();
     const eligible = _deleteEligibleItem();
     if (!eligible) return;
-    const { item, pluginId } = eligible;
+    const { item, target, pluginId, mediaKind } = eligible;
     const ok = await openConfirmModal(
       "Delete this item?",
       `"${item.title || item.name || item.label}" will be moved to the Recycle Bin.`,
     );
     if (!ok) return;
-    const res = pluginId
-      ? await api().delete_plugin_item(pluginId, item.id)
-      : await api().delete_desktop_item(item.path);
+    let res;
+    if (target === "plugin") res = await api().delete_plugin_item(pluginId, item.id);
+    else if (target === "media") res = await api().delete_media_item(mediaKind, item.path);
+    else res = await api().delete_desktop_item(item.path);
     if (res && res.ok === false) showToast(`Couldn't delete: ${res.error}`);
     else { showToast(`Moved to Recycle Bin.`); await refreshItemPanel(); }
+    return;
+  }
+  if (choice === "start-menu-open-folder") {
+    closeStartMenu();
+    const item = _openFolderEligibleItem();
+    if (!item) return;
+    const res = await api().open_containing_folder(item.path);
+    if (res && res.ok === false) showToast(`Couldn't open the folder: ${res.error}`);
+    return;
+  }
+  if (choice === "start-menu-open-paint") {
+    closeStartMenu();
+    const item = _openInPaintEligibleItem();
+    if (!item) return;
+    const res = await api().open_picture_in_paint(item.path);
+    if (res && res.ok === false) showToast(`Couldn't open in Meridian Paint: ${res.error}`);
     return;
   }
   if (choice === "start-menu-osm") {
@@ -2379,7 +2633,7 @@ function handleStartMenuInput(action) {
   else if (action === "back") closeStartMenu();
 }
 
-[...START_MENU_ITEMS_BASE, "start-menu-controller-bridge", "start-menu-delete"].forEach((id) => {
+[...START_MENU_ITEMS_BASE, "start-menu-controller-bridge", "start-menu-delete", "start-menu-open-folder", "start-menu-open-paint"].forEach((id) => {
   el(id).addEventListener("click", (e) => {
     e.stopPropagation();
     const i = startMenuItems.indexOf(id);
@@ -3232,7 +3486,7 @@ async function renderSettings(group) {
         renderSettings();
       },
       settings.route_folders_to_meridian_explorer
-        ? "Folder shortcuts and folder opens from the Launcher go to Meridian Explorer. For system-wide folder handling, run MeridianExplorerShellIntegration.bat."
+        ? "Folder shortcuts and folder opens from the Launcher go to Meridian Explorer. For system-wide folder handling (right-click menu, or making it the default), see the Macros section."
         : "Folder shortcuts and folder opens from the Launcher use Windows Explorer.",
     ));
   } else {
@@ -3353,13 +3607,13 @@ async function renderSettings(group) {
   ));
 
   // launch external system features (Task Manager, Control Panel, Recycle
-  // Bin, Uninstall Apps, "open Windows Bluetooth settings") with osm.bat
+  // Bin, Uninstall Apps, "open Windows Bluetooth settings") with onscreenmenu
   c.appendChild(buildToggleBlock(
     "Launch External System features with onscreenmenu?",
     settings.launch_system_with_osm,
     async () => { await api().set_system_osm(!settings.launch_system_with_osm); renderSettings(); },
     settings.launch_system_with_osm
-      ? "Enabled — opening Task Manager, Control Panel, Recycle Bin, Uninstall Apps, or Bluetooth settings also runs osm.bat, so those native dialogs are controller-navigable."
+      ? "Enabled — opening Task Manager, Control Panel, Recycle Bin, Uninstall Apps, or Bluetooth settings also launches onscreenmenu, so those native dialogs are controller-navigable."
       : "Disabled — those System features open on their own, without the on-screen menu overlay.",
   ));
 
@@ -3592,6 +3846,14 @@ async function renderSettings(group) {
 
 
   _settingsGroup("about"); // the credit footer
+  // Meridian Launcher's own license - shown ahead of the third-party
+  // list below since it's the one that actually governs this codebase
+  // itself, not something bundled/linked-against.
+  const ownLicenseBlock = document.createElement("div");
+  ownLicenseBlock.className = "settings-block settings-credit";
+  ownLicenseBlock.innerHTML = `<h3>License</h3>
+    <p class="settings-note">Meridian Launcher is licensed under the <b>DskoTech Source Available License 1.0</b> — see <code>LICENSE.txt</code> in the install folder for the full text. Summary, not a substitute for that file: free to view, study, compile, modify, and run for personal/educational/research/non-commercial use, and to fork or submit pull requests back — selling it, offering it as a paid service, redistributing a modified version, or using Meridian Launcher's branding/trademarks/artwork all require DskoTech's written permission first.</p>`;
+  c.appendChild(ownLicenseBlock);
   // Third-party attributions/licenses — everything this suite bundles,
   // links against, or downloads and ships alongside itself (via
   // InstallMeridianSuite.bat's runtime-dependency step) that isn't
@@ -3640,7 +3902,7 @@ async function renderSettings(group) {
   // credit footer — always the very last thing in the settings box
   const creditBlock = document.createElement("div");
   creditBlock.className = "settings-block settings-credit";
-  creditBlock.innerHTML = `<p>Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026; This is open source software. Donations Appreciated, but Money Not Required.</p>`;
+  creditBlock.innerHTML = `<p>Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026 — see the License block above for terms. Donations Appreciated, but Money Not Required.</p>`;
   c.appendChild(creditBlock);
 
   panel.appendChild(_realC);
@@ -3724,6 +3986,18 @@ function buildExeSectionBlock(sec, settings) {
   });
   block.appendChild(addBtn);
 
+  const addStoreBtn = document.createElement("button");
+  addStoreBtn.className = "add-folder-btn";
+  addStoreBtn.textContent = `+ Add Windows Store App to ${sec.label}`;
+  addStoreBtn.addEventListener("click", async () => {
+    const apps = await api().list_installed_store_apps();
+    openStoreAppPicker(apps, async (app) => {
+      const updated = await api().add_store_app_to_section(sec.id, app.app_id, app.name);
+      refreshList(updated);
+    });
+  });
+  block.appendChild(addStoreBtn);
+
   if (sec.custom) {
     const rm = document.createElement("button");
     rm.className = "btn-link";
@@ -3793,6 +4067,7 @@ function openSectionModal() {
   modalMode = "section";
   el("modal-title").textContent = "New section";
   el("modal-input").placeholder = "";
+  el("modal-input").maxLength = 24;
   el("modal-overlay").classList.remove("hidden");
   el("modal-input").value = "";
   el("modal-input").focus();
@@ -3801,6 +4076,7 @@ function openWebShortcutModal() {
   modalMode = "web_shortcut";
   el("modal-title").textContent = "Add web shortcut";
   el("modal-input").placeholder = "https://example.com";
+  el("modal-input").maxLength = 100;
   el("modal-overlay").classList.remove("hidden");
   el("modal-input").value = "";
   el("modal-input").focus();
@@ -4368,6 +4644,14 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
+  if (isMusicItemMenuOpen()) {
+    if (e.key === "ArrowUp" || (kc && e.key === kc.up)) { handleMusicItemMenuInput("up"); return; }
+    if (e.key === "ArrowDown" || (kc && e.key === kc.down)) { handleMusicItemMenuInput("down"); return; }
+    if ((kc && e.key === kc.confirm && !e.repeat) || (e.key === "Enter" && !e.repeat)) { handleMusicItemMenuInput("confirm"); return; }
+    if (kc && e.key === kc.back && !e.repeat) { handleMusicItemMenuInput("back"); return; }
+    return;
+  }
+
   if (isTutorialOpen()) {
     if (e.key === "ArrowLeft" || (kc && e.key === kc.left)) { handleTutorialInput("left"); return; }
     if (e.key === "ArrowRight" || (kc && e.key === kc.right)) { handleTutorialInput("right"); return; }
@@ -4418,6 +4702,7 @@ window.handleControllerInput = function (action) {
   if (isPhotoMenuOpen()) { handlePhotoMenuInput(action); return; }
   if (isStartMenuOpen()) { handleStartMenuInput(action); return; }
   if (isMusicSortMenuOpen()) { handleMusicSortMenuInput(action); return; }
+  if (isMusicItemMenuOpen()) { handleMusicItemMenuInput(action); return; }
   if (isTutorialOpen()) { handleTutorialInput(action); return; }
   if (isOverlayOpen()) {
     if (action === "left" && !el("photo-overlay").classList.contains("hidden")) el("photo-prev").click();

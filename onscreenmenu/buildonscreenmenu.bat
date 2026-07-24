@@ -21,18 +21,6 @@ pyinstaller ^
     --name onscreenmenu ^
     launcher.py
 
-REM osk.bat lives NEXT TO the exe (not bundled inside it), since
-REM it's meant to be user-editable - onscreenmenu looks for it in
-REM its own exe's folder at runtime. Copy it into dist/ so it's
-REM there the moment the exe is.
-
-if exist osk.bat (
-    copy /Y osk.bat dist\osk.bat >nul
-    echo Copied osk.bat next to the built exe.
-) else (
-    echo WARNING: osk.bat not found - Start button won't have anything to run.
-)
-
 echo.
-echo Build complete. Find onscreenmenu.exe (and osk.bat) in the "dist" folder.
+echo Build complete. Find onscreenmenu.exe in the "dist" folder.
 pause

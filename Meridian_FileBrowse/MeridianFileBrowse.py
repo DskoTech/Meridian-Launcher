@@ -26,21 +26,32 @@ def _app_base_dir():
 
 
 def launch_onscreenmenu():
-    """Start the onscreenmenu controller overlay via osm.bat (not
-    onscreenmenu.exe directly) if it's present next to us. Used when a
-    native Windows dialog (e.g. the 'Open with' picker) is about to
-    appear, so it can be driven with a controller. Best-effort: silently
-    does nothing if osm.bat isn't found."""
+    """Start the onscreenmenu controller overlay directly (internalized
+    - no osm.bat involved), but only if it isn't already running (same
+    guard osm.bat itself had). Used when a native Windows dialog (e.g.
+    the 'Open with' picker) is about to appear, so it can be driven with
+    a controller. Best-effort: silently does nothing if onscreenmenu.exe
+    isn't found."""
     base = _app_base_dir()
-    bat = os.path.join(base, "osm.bat")
-    if os.path.isfile(bat):
+    try:
+        result = subprocess.run(
+            ["tasklist", "/fi", "ImageName eq onscreenmenu.exe", "/fo", "csv"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if "onscreenmenu.exe" in (result.stdout or "").lower():
+            return True  # already running - nothing to do
+    except Exception:
+        pass
+    exe = os.path.join(base, "onscreenmenu.exe")
+    if os.path.isfile(exe):
         try:
-            subprocess.Popen(["cmd.exe", "/c", bat], cwd=base)
+            subprocess.Popen([exe, "--window-mode=borderless-fullscreen"], cwd=base)
             return True
         except Exception:
             pass
-    # source fallback: run onscreenmenu's .py directly if present (osm.bat
-    # itself is missing, e.g. running from source rather than an install)
+    # source fallback: run onscreenmenu's .py directly if present (no
+    # compiled exe yet, e.g. running from source rather than an install)
     py = os.path.join(base, "onscreenmenu", "onscreenmenu.py")
     if os.path.isfile(py):
         try:

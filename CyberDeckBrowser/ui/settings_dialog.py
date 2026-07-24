@@ -113,7 +113,7 @@ class SettingsDialog(QWidget):
             "Translate, Settings, Find In Page)</td></tr>"
             "<tr><td><b>X</b></td><td>Tools menu</td></tr>"
             "<tr><td><b>Start</b></td><td>Open the search window</td></tr>"
-            "<tr><td><b>Select / Back</b></td><td>Launch the Windows on-screen keyboard (osk.bat)</td></tr>"
+            "<tr><td><b>Select / Back</b></td><td>Launch the Windows on-screen keyboard</td></tr>"
             "</table>"
         )
 

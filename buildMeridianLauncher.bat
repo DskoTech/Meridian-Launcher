@@ -43,7 +43,7 @@ echo.
 echo Remember: settings.json, keyboard_controls.json, and
 echo controller_controls.json are generated next to the .exe on first
 echo run, so they are NOT bundled. Drop any of these next to the .exe
-echo if you want them: osm.bat, CyberDeckBrowser.exe,
+echo if you want them: CyberDeckBrowser.exe,
 echo Meridian_Explorer.exe, "Meridian Game Library.exe".
 
 :end

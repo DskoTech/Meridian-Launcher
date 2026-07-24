@@ -52,6 +52,7 @@ import ctypes
 from ctypes import wintypes
 import os
 import sys
+import time
 
 try:
     import psutil
@@ -180,13 +181,34 @@ def close_osk():
 class ForeignFocusWatcher:
     """Polled from a QTimer in MainWindow (see wire-up there). Tracks
     whether IT was the one that opened osk.exe, so a manually-opened
-    keyboard (via the X menu) is never force-closed out from under
-    someone - only a keyboard this watcher itself opened gets auto-
-    closed again when focus returns to a Meridian window."""
+    keyboard (via the X menu, or the Start button - see MainWindow's
+    toggle_osk) is never force-closed out from under someone - only a
+    keyboard this watcher itself opened gets auto-closed again when
+    focus returns to a Meridian window."""
+
+    # onscreenmenu's own overlay window isn't guaranteed to be THE
+    # foreground window the instant it starts (it's a click-through/
+    # always-on-top overlay, not something that necessarily grabs
+    # activation) - without a short grace period, the very first tick or
+    # two right at boot could see whatever transient window happens to
+    # have focus at that exact moment (not necessarily anything the user
+    # actually opened) and spuriously auto-launch osk.exe before anyone's
+    # done anything at all. This only delays the FOREIGN-WINDOW
+    # auto-launch path, not the Secure Desktop one - a genuine early UAC
+    # prompt right at boot should still get the same handling either way.
+    _STARTUP_GRACE_SECONDS = 5
 
     def __init__(self):
         self._auto_opened = False
         self._was_secure_desktop = False
+        self._started_at = time.time()
+        # The foreign process name auto-invoke last acted on - lets a
+        # manual close (the X on osk.exe itself, or the Start button)
+        # actually stick while that same window stays focused, instead
+        # of getting silently reopened on the very next tick. Auto-
+        # invoke gets exactly one attempt per focus TRANSITION (this
+        # value changing), not a standing "keep it running" guarantee.
+        self._last_foreign_proc_name = None
 
     def tick(self):
         if not IS_WINDOWS:
@@ -210,6 +232,9 @@ class ForeignFocusWatcher:
         # than doing anything special here.
         self._was_secure_desktop = False
 
+        if time.time() - self._started_at < self._STARTUP_GRACE_SECONDS:
+            return
+
         proc_name = _foreground_process_name()
         if proc_name is None:
             return  # couldn't determine - do nothing rather than guess
@@ -217,10 +242,19 @@ class ForeignFocusWatcher:
         is_meridian_or_shell = proc_name in MERIDIAN_PROCESS_NAMES or proc_name == "__shell__"
 
         if not is_meridian_or_shell and proc_name != "osk.exe":
-            if not is_osk_running():
-                launch_osk()
-                self._auto_opened = True
+            if proc_name != self._last_foreign_proc_name:
+                # A genuinely fresh transition (focus just moved to this
+                # window, whether from Meridian or a different foreign
+                # one) - give auto-invoke its one attempt for this
+                # session. If it's closed again afterward while THIS
+                # SAME window stays focused, proc_name won't change on
+                # the next tick, so it won't be reopened - that's the fix.
+                if not is_osk_running():
+                    launch_osk()
+                    self._auto_opened = True
+                self._last_foreign_proc_name = proc_name
         else:
             if self._auto_opened and is_osk_running():
                 close_osk()
             self._auto_opened = False
+            self._last_foreign_proc_name = None

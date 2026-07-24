@@ -152,7 +152,7 @@ def default_settings():
         # .exe opens, for apps that ignore the normal "start maximized"
         # request or only appear maximized with chrome still showing. See
         # fullscreen_helper.py.
-        "fullscreen_helper_enabled": False,
+        "fullscreen_helper_enabled": True,
         # when a song ends, load a random one instead of the next in list order
         "auto_shuffle_songs": True,
         "music_sort_mode": "title_asc",  # title_asc/title_desc/artist_asc/artist_desc/date_desc/random

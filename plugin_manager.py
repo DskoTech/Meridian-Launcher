@@ -132,6 +132,12 @@ def _plugin_json(folder: Path):
     info = {"id": pid, "label": label, "path": str(folder), "type": ptype}
     if ptype in ("webapp", "option", "addon"):
         info["url"] = data.get("url", "")
+        # An addon can box a real standalone program instead of a URL -
+        # "exe" names a file relative to the plugin's own folder (or an
+        # absolute path). Only one of url/exe should really be set; if
+        # both are, url wins (existing behavior for anything that
+        # predates this).
+        info["exe"] = data.get("exe", "")
     if ptype == "option":
         info["section"] = data.get("section") or "chat"
     if ptype == "addon":
@@ -175,6 +181,37 @@ def get_plugin_url(plugin_id):
         if info["id"] == plugin_id:
             return info.get("url", "")
     return ""
+
+
+def get_plugin_exe_field(plugin_id):
+    """The raw, unresolved "exe" string from plugin.json - "" if not
+    set at all. Lets a caller tell "this plugin has no exe configured"
+    apart from "it's configured but the file doesn't exist yet (hasn't
+    been built)" - get_plugin_exe_path alone collapses both into None."""
+    for info in scan_plugins():
+        if info["id"] == plugin_id:
+            return info.get("exe", "")
+    return ""
+
+
+def get_plugin_exe_path(plugin_id):
+    """For an addon plugin that boxes a real standalone program instead
+    of a URL (see _plugin_json's "exe" field) - resolves a relative path
+    against BASE_DIR (where MeridianLauncher.exe itself lives), same
+    convention as every other companion exe in this suite
+    (CyberDeckBrowser.exe, XInputToKeyboard.exe, etc. all live there too,
+    not inside Plugins/). Returns None if the plugin has no exe set, or
+    the resolved file doesn't actually exist."""
+    for info in scan_plugins():
+        if info["id"] == plugin_id:
+            exe = info.get("exe", "")
+            if not exe:
+                return None
+            path = Path(exe)
+            if not path.is_absolute():
+                path = BASE_DIR / exe
+            return path if path.exists() else None
+    return None
 
 
 def _backend_path(plugin_id):

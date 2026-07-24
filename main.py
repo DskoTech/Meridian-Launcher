@@ -51,6 +51,7 @@ import phone_type_server
 import task_manager_server
 import display_audio_server
 import network_pairing_server
+import desktop_refocus_watcher
 import system_actions
 import tasks_win
 import explorer_shell
@@ -133,6 +134,61 @@ SCRIPT_FILE_TYPES = ("Scripts (*.bat;*.ps1)",)
 
 SETTINGS = store.load_settings()
 store.ensure_controls_files()
+
+
+def _unblock_all_files_in(root_dir):
+    """Internalized equivalent of:
+        Get-ChildItem -Path <root_dir> -Recurse -Force | Unblock-File
+    Removes the NTFS "Zone.Identifier" alternate data stream from every
+    file under root_dir - the "Mark of the Web" Windows attaches to
+    files that arrived via a browser download or an extracted zip,
+    which is what makes Windows show a "this file came from another
+    computer, are you sure?" SmartScreen prompt, and can silently block
+    script/DLL loading in some contexts. A fresh install (downloaded as
+    a zip, then extracted) has this on every single file, which is
+    exactly the scenario this exists to clean up once, automatically,
+    rather than needing everyone to know to run the PowerShell one-
+    liner by hand.
+
+    Deleting an NTFS alternate data stream is just deleting a file whose
+    path happens to be "realpath:StreamName" - no special API needed,
+    a plain os.remove() on that colon-suffixed path does it. Silently
+    skips anything without that stream (the overwhelming majority of
+    files, and the only realistic case: nothing to unblock) or that
+    can't be touched for permission reasons - this is a nice-to-have
+    cleanup pass, not something that should ever block startup or
+    surface an error over a single file it couldn't reach."""
+    if not root_dir or not os.path.isdir(root_dir):
+        return
+    for dirpath, _dirnames, filenames in os.walk(root_dir):
+        for name in filenames:
+            try:
+                os.remove(os.path.join(dirpath, name) + ":Zone.Identifier")
+            except OSError:
+                pass  # no ADS present - the common case - or inaccessible
+
+
+def _run_first_boot_unblock_if_needed():
+    """Runs _unblock_all_files_in(BASE_DIR) exactly once per install,
+    tracked via a SETTINGS flag so it doesn't re-sweep the whole folder
+    on every single launch. On its own daemon thread - this has nothing
+    to do with getting the window on screen, so it shouldn't delay that
+    even by the fraction of a second a few hundred files might take."""
+    if SETTINGS.get("_first_boot_unblock_done"):
+        return
+    SETTINGS["_first_boot_unblock_done"] = True
+    store.save_settings(SETTINGS)
+
+    def _sweep():
+        try:
+            _unblock_all_files_in(str(BASE_DIR))
+        except Exception:
+            pass
+
+    threading.Thread(target=_sweep, daemon=True).start()
+
+
+_run_first_boot_unblock_if_needed()
 
 _explorer_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian FileBrowse instance, if any
 _explorer_box_lock = threading.RLock()  # serializes load_explorer_box/unload_explorer_box against each other -
@@ -283,12 +339,37 @@ def _start_plugon_server(module, sync_fn, name):
         return {"port": None}
 
 
-_phone_type_status = _start_plugon_server(phone_type_server, _sync_phone_type_plugin_manifest, "phone_type_server")
-_task_manager_status = _start_plugon_server(task_manager_server, _sync_task_manager_plugin_manifest, "task_manager_server")
-_display_audio_status = _start_plugon_server(display_audio_server, _sync_display_audio_plugin_manifest, "display_audio_server")
-_network_pairing_status = _start_plugon_server(network_pairing_server, _sync_network_pairing_plugin_manifest, "network_pairing_server")
+# Deliberately NOT started here anymore - see _ensure_plugon_server_started()
+# below, called lazily from load_plugin_webapp_box() only when one of
+# these plugins is actually opened. Starting all four unconditionally at
+# every Launcher boot (the original approach) meant four background HTTP
+# servers running for the entire session even if someone never opens a
+# single one of these plug-ons.
+_LAZY_PLUGIN_SERVERS = {
+    "type_from_phone": (phone_type_server, "_sync_phone_type_plugin_manifest"),
+    "meridian_task_manager": (task_manager_server, "_sync_task_manager_plugin_manifest"),
+    "display_audio_settings": (display_audio_server, "_sync_display_audio_plugin_manifest"),
+    "network_pairing": (network_pairing_server, "_sync_network_pairing_plugin_manifest"),
+}
+
+
+def _ensure_plugon_server_started(plugin_id):
+    """Starts the given plug-on's local server on first use (idempotent -
+    each module's own start_server() is a no-op if already running), then
+    re-syncs its plugin.json in case a fixed port had to fall back, and
+    re-scans plugins so the freshly-synced URL is what gets read right
+    after this returns."""
+    entry = _LAZY_PLUGIN_SERVERS.get(plugin_id)
+    if not entry:
+        return
+    module, sync_fn_name = entry
+    sync_fn = globals()[sync_fn_name]
+    _start_plugon_server(module, sync_fn, plugin_id)
+    _rescan_plugins()
 
 _rescan_plugins()
+
+desktop_refocus_watcher.start()
 
 
 # --------------------------------------------------------------------------
@@ -856,27 +937,87 @@ def _open_file_dialog(file_types):
     return list(result) if result else []
 
 
-def _maybe_launch_osm():
-    """Best-effort launch of osm.bat (the on-screen-menu companion script)
-    from the app's own folder. Silently does nothing if the file isn't
-    there — the toggle that triggers this defaults to on, so a missing
-    osm.bat shouldn't spam the user with error toasts."""
-    bat = BASE_DIR / "osm.bat"
-    if bat.exists():
+def _toggle_default_shell():
+    """Internalized equivalent of MakeUnmakeShell.ps1: toggles
+    HKCU\\...\\Winlogon's "Shell" value between MeridianLauncher.exe and
+    removed (= Windows' own default explorer.exe shell). Returns
+    (ok, error, message). Deliberately does NOT force an immediate sign-
+    out the way the original interactive script's "press any key to sign
+    out" prompt did - triggered from a menu click rather than a console
+    script someone deliberately ran, an unprompted forced logout would
+    be a much bigger surprise here; the message tells the frontend to
+    show the "you'll need to sign out to apply this" note instead, and
+    leaves actually doing that up to the person."""
+    try:
+        import winreg
+    except ImportError:
+        return False, "winreg unavailable (not Windows).", None
+    key_path = r"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+    except Exception as e:
+        return False, str(e), None
+    try:
         try:
-            system_actions.launch_path(str(bat))
-        except Exception:
-            pass
+            winreg.QueryValueEx(key, "Shell")
+            had_value = True
+        except FileNotFoundError:
+            had_value = False
+
+        if had_value:
+            winreg.DeleteValue(key, "Shell")
+            return True, None, "Reverted to the default Windows desktop shell. Sign out (or restart) to apply."
+        else:
+            exe_path = str(BASE_DIR / "MeridianLauncher.exe")
+            if not os.path.exists(exe_path):
+                return False, "MeridianLauncher.exe not found next to this installation.", None
+            winreg.SetValueEx(key, "Shell", 0, winreg.REG_SZ, exe_path)
+            return True, None, f"Custom shell set to {exe_path}. Sign out (or restart) to apply."
+    except Exception as e:
+        return False, str(e), None
+    finally:
+        winreg.CloseKey(key)
+
+
+def _launch_onscreenmenu(window_mode="borderless-fullscreen"):
+    """Internalized equivalent of osm.bat: launches onscreenmenu.exe
+    from BASE_DIR, but only if it isn't already running (osm.bat's own
+    behavior - see its former docstring: launching again while it's
+    already open used to close it, which was surprising, so this
+    deliberately does nothing instead of double-launching or toggling).
+    Returns (ok, error)."""
+    if system_actions.is_process_running("onscreenmenu.exe"):
+        return True, None
+    exe = BASE_DIR / "onscreenmenu.exe"
+    if not exe.exists():
+        return False, "onscreenmenu.exe not found in the app folder."
+    try:
+        subprocess.Popen(
+            [str(exe), f"--window-mode={window_mode}"], cwd=str(BASE_DIR),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def _maybe_launch_osm():
+    """Best-effort: launches onscreenmenu.exe (if not already running)
+    directly - no osm.bat involved. The toggle that triggers this
+    defaults to on, so a failure here shouldn't spam the user with error
+    toasts, hence best-effort rather than surfacing the (ok, error)."""
+    try:
+        _launch_onscreenmenu()
+    except Exception:
+        pass
 
 
 def _maybe_launch_onscreenmenu():
-    """Best-effort launch of the on-screen menu companion via osm.bat (not
-    onscreenmenu.exe directly) from the app's own folder, but only if
-    onscreenmenu.exe isn't already running — used after opening the app
-    data folder so the on-screen menu companion is available to navigate
-    it with a controller."""
-    if system_actions.is_process_running("onscreenmenu.exe"):
-        return
+    """Best-effort launch of onscreenmenu.exe, but only if it isn't
+    already running - used after opening the app data folder so the
+    on-screen menu companion is available to navigate it with a
+    controller. _launch_onscreenmenu() already checks this itself, so
+    this is now just a thin, clearly-named wrapper for that call site."""
     _maybe_launch_osm()
 
 
@@ -1208,6 +1349,26 @@ class Api:
         store.save_settings(SETTINGS)
         return _with_icons(sec["items"])
 
+    def list_installed_store_apps(self):
+        """Populates the "Add Windows Store App" picker (Apps/Streaming
+        sections) - see system_actions.list_installed_store_apps for how
+        these are found and filtered down to genuine packaged apps."""
+        return system_actions.list_installed_store_apps()
+
+    def add_store_app_to_section(self, section_id, app_id, name):
+        """Adds a Windows Store app (picked from list_installed_store_apps)
+        to a section's item list - same shape as add_exe_to_section, just
+        with a caller-supplied app_id/name instead of a file dialog, since
+        there's no real file to pick from disk."""
+        sec = _section_store(section_id)
+        if sec is None:
+            return []
+        path = system_actions.STORE_APP_PATH_PREFIX + app_id
+        if not any(it["path"] == path for it in sec["items"]):
+            sec["items"].append({"path": path, "name": name or app_id})
+        store.save_settings(SETTINGS)
+        return _with_icons(sec["items"])
+
     def remove_exe_from_section(self, section_id, path):
         sec = _section_store(section_id)
         if sec is None:
@@ -1217,6 +1378,14 @@ class Api:
         return _with_icons(sec["items"])
 
     def launch_exe(self, path, section_id=None):
+        # Windows Store (UWP/MSIX) app item - not a real filesystem path,
+        # so this has to be caught before any of the path-based logic
+        # below (folder check, fullscreen helper, etc.) ever touches it.
+        if path and path.startswith(system_actions.STORE_APP_PATH_PREFIX):
+            ok, err = system_actions.launch_store_app(path)
+            if ok and section_id and _section_launches_with_osm(section_id):
+                _maybe_launch_osm()
+            return {"ok": ok, "error": err}
         # Folder shortcuts are first-class launchable items: a directory
         # path opens in Meridian Explorer (when the routing setting is on
         # and it's installed alongside) or Windows Explorer otherwise.
@@ -1341,6 +1510,32 @@ class Api:
         ok, err = system_actions.delete_to_recycle_bin(path)
         return {"ok": ok, "error": err}
 
+    def delete_media_item(self, kind, path):
+        """Sends a real Photos/Videos/Music file to the Recycle Bin -
+        the Start menu's Delete option there. Restricted to files inside
+        one of that section's own configured library folders (SETTINGS
+        ["folders"][kind]), same safety reasoning as delete_desktop_item:
+        confirmation already happened on the frontend before this runs."""
+        folders = SETTINGS.get("folders", {}).get(kind, [])
+        target = os.path.normcase(os.path.abspath(path))
+        if not any(target.startswith(os.path.normcase(os.path.abspath(f))) for f in folders if f):
+            return {"ok": False, "error": "Refusing to delete something outside this section's configured folders."}
+        ok, err = system_actions.delete_to_recycle_bin(path)
+        return {"ok": ok, "error": err}
+
+    def open_containing_folder(self, path):
+        """Start menu's Open Folder option (Photos/Videos/Music) - opens
+        Windows Explorer with the file itself highlighted/selected
+        (explorer.exe's /select, convention), not just the bare folder
+        with nothing selected."""
+        if not path or not os.path.exists(path):
+            return {"ok": False, "error": "That file no longer exists."}
+        try:
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def set_builtin_section_visible(self, section_id, visible):
         hidden = set(SETTINGS.get("hidden_builtin_sections", []))
         if visible:
@@ -1413,17 +1608,35 @@ class Api:
         bundles side by side was the single biggest contributor to the
         suite's compiled size.)"""
         global _plugin_webapp_procs
+        _ensure_plugon_server_started(plugin_id)
         url = plugin_manager.get_plugin_url(plugin_id)
-        if not url:
-            return {"ok": False, "error": "This plugin has no url configured in its plugin.json."}
-        exe = BASE_DIR / "CyberDeckBrowser.exe"
+        exe_field = "" if url else plugin_manager.get_plugin_exe_field(plugin_id)
+        exe_path = None if url else plugin_manager.get_plugin_exe_path(plugin_id)
+        if not url and not exe_field:
+            return {"ok": False, "error": "This plugin has no url or exe configured in its plugin.json."}
+        if exe_field and not exe_path:
+            # The manifest DOES name an exe - it just isn't sitting next
+            # to MeridianLauncher.exe yet, almost always because it
+            # hasn't been built (see e.g. InternalLauncher.spec/
+            # MeridianPaint.spec) rather than a plugin.json authoring
+            # mistake - worth a message that actually says that instead
+            # of the generic "not configured" one above.
+            return {"ok": False, "error": f"{exe_field} isn't built/staged yet - see the plug-on's own README/spec for how to build it."}
+        exe = exe_path if exe_path else BASE_DIR / "CyberDeckBrowser.exe"
         if not exe.exists():
-            return {"ok": False, "error": "CyberDeckBrowser.exe not found in the app folder."}
+            return {"ok": False, "error": f"{exe.name} not found."}
         self.unload_plugin_webapp_box(plugin_id)
         _close_onscreenmenu_if_running()
         try:
-            args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}", "--minimal-menu",
-                    f"--notify-exit={plugin_id}", url]
+            if exe_path:
+                # A real standalone program (e.g. Internal Launcher) -
+                # boxed directly, no CyberDeckBrowser/--minimal-menu/url
+                # involved at all.
+                args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}",
+                        f"--notify-exit={plugin_id}"]
+            else:
+                args = [str(exe), f"--box={int(x)},{int(y)},{int(w)},{int(h)}", "--minimal-menu",
+                        f"--notify-exit={plugin_id}", url]
             proc = subprocess.Popen(
                 args, cwd=str(BASE_DIR),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -1436,15 +1649,36 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def unload_plugin_webapp_box(self, plugin_id):
-        """Terminate the boxed process for this plugin, if any, so it
+        """Close the boxed process for this plugin, if any, so it
         doesn't keep running in the background once the user leaves that
-        section, and hand Meridian Launcher's own controls back."""
+        section, and hand Meridian Launcher's own controls back.
+
+        Closes gracefully (WM_CLOSE, via taskkill without /F) rather than
+        an abrupt kill - this runs every single time someone leaves a
+        plugin webapp section, so an abrupt TerminateProcess kill here
+        meant Chromium's cookie/session database (and CyberDeckBrowser's
+        own tab-session save in its closeEvent) never got a chance to
+        flush to disk, which was very likely why plugin webapps' logins
+        and sessions weren't actually persisting between restarts despite
+        the profile itself being configured correctly - the process was
+        being killed too abruptly to ever write anything down. Only
+        force-kills as a fallback if the graceful close doesn't finish
+        within a couple seconds (e.g. a truly hung renderer)."""
         global _plugin_webapp_procs
         proc = _plugin_webapp_procs.pop(plugin_id, None)
         if proc is not None:
             try:
                 if proc.poll() is None:
-                    proc.terminate()
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(proc.pid)],
+                            capture_output=True, timeout=5,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                        proc.wait(timeout=3)
+                    except Exception:
+                        if proc.poll() is None:
+                            proc.terminate()
             except Exception:
                 pass
         suspend_main_controls(False)
@@ -1562,12 +1796,13 @@ class Api:
         builtin = [
             {"type": "builtin", "id": "close_others", "name": "Close all other programs"},
         ]
-        shell_ps1 = BASE_DIR / "MakeUnmakeShell.ps1"
-        if shell_ps1.exists():
-            builtin.append({
-                "type": "builtin", "id": "toggle_default_shell",
-                "name": "Make / Unmake Meridian The Default Shell",
-            })
+        # Internalized (see _toggle_default_shell) - no MakeUnmakeShell.ps1
+        # file dependency anymore, so this is always offered rather than
+        # gated on that file existing.
+        builtin.append({
+            "type": "builtin", "id": "toggle_default_shell",
+            "name": "Make / Unmake Meridian The Default Shell",
+        })
         cdb = BASE_DIR / "CyberDeckBrowser.exe"
         if cdb.exists():
             builtin.append({
@@ -1638,7 +1873,8 @@ class Api:
             whitelist.add(Path(sys.executable).name)
             return system_actions.close_all_except(whitelist)
         if macro_id == "toggle_default_shell":
-            return self.run_ps1_file(str(BASE_DIR / "MakeUnmakeShell.ps1"))
+            ok, error, message = _toggle_default_shell()
+            return {"ok": ok, "error": error, "message": message}
         if macro_id == "cdb_default_browser":
             cdb = BASE_DIR / "CyberDeckBrowser.exe"
             if not cdb.exists():
@@ -1736,22 +1972,8 @@ class Api:
 
     # Helper method (add this to your class)
     def _run_osm_batch(self):
-        try:
-            # Get the directory where the Python script is located
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            bat_path = os.path.join(script_dir, "osm.bat")   # Change name if different
-        
-            if os.path.exists(bat_path):
-            # Run the batch file hidden (no window)
-                subprocess.Popen(
-                [bat_path],
-                shell=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            else:
-                print(f"Warning: {bat_path} not found")
-        except Exception as e:
-            print(f"Failed to run OSM batch: {e}")
+        # Internalized - see _launch_onscreenmenu(), no osm.bat involved.
+        _maybe_launch_osm()
 
     def system_shutdown(self):
         ok, err = system_actions.shutdown()
@@ -1973,6 +2195,25 @@ class Api:
             return {"ok": True, "error": None}
 
     # ---------------- Web section ----------------
+    def open_picture_in_paint(self, path):
+        """Pictures/Downloads sections' Start menu > "Open in Meridian
+        Paint" option. Standalone (not boxed) - editing a picture is a
+        deliberate side-trip, not something that belongs pinned inside
+        whichever section you launched it from."""
+        if not path or not os.path.isfile(path):
+            return {"ok": False, "error": "That file no longer exists."}
+        exe = BASE_DIR / "MeridianPaint.exe"
+        if not exe.exists():
+            return {"ok": False, "error": "MeridianPaint.exe isn't built/staged yet - see MeridianPaint/MeridianPaint.spec."}
+        try:
+            subprocess.Popen(
+                [str(exe), path], cwd=str(BASE_DIR),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def launch_cyberdeckbrowser_standalone(self):
         """The Web section's own "CyberDeckBrowser" entry - this
         represents the PROGRAM itself, not a URL, so it always opens the
@@ -2038,14 +2279,27 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def unload_browser_box(self):
-        """Terminate the boxed Meridian NetBrowse process, if any, so it
+        """Close the boxed CyberDeckBrowser process, if any, so it
         doesn't keep running in the background once the user leaves the
-        Browser section, and hand Meridian Launcher's own controls back."""
+        Browser section, and hand Meridian Launcher's own controls back.
+        Graceful close (see unload_plugin_webapp_box's docstring for why -
+        same fix, same reason: an abrupt kill here was very likely why
+        the Browser section's own logins/sessions weren't persisting
+        either)."""
         global _browser_box_proc
         if _browser_box_proc is not None:
             try:
                 if _browser_box_proc.poll() is None:
-                    _browser_box_proc.terminate()
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(_browser_box_proc.pid)],
+                            capture_output=True, timeout=5,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                        _browser_box_proc.wait(timeout=3)
+                    except Exception:
+                        if _browser_box_proc.poll() is None:
+                            _browser_box_proc.terminate()
             except Exception:
                 pass
             _browser_box_proc = None
@@ -2095,20 +2349,14 @@ class Api:
     def toggle_onscreenmenu(self):
         """Start menu's "Launch/Close onscreenmenu" option: if
         onscreenmenu.exe is already running, terminate it; otherwise
-        launch it via osm.bat from the local folder (never both — no
-        double-launching)."""
+        launch it directly (see _launch_onscreenmenu - no osm.bat
+        involved) - never both (no double-launching)."""
         try:
             if system_actions.is_process_running("onscreenmenu.exe"):
                 ok, err = system_actions.kill_process("onscreenmenu.exe")
                 return {"ok": ok, "error": err}
-            bat = BASE_DIR / "osm.bat"
-            if not bat.exists():
-                return {"ok": False, "error": "osm.bat not found in the app folder."}
-            subprocess.Popen(
-                ["cmd.exe", "/c", str(bat)], cwd=str(BASE_DIR),
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            return {"ok": True, "error": None}
+            ok, err = _launch_onscreenmenu()
+            return {"ok": ok, "error": err}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 

@@ -9,7 +9,7 @@ REM  five apps from their own folders (each app's own build
 REM  script handles installing its own requirements and running
 REM  PyInstaller), leaving each app's compiled output in its own
 REM  "dist" folder, exactly like running each build script by
-REM  hand would. Then stages osm.bat and osk.bat into DskoTech\,
+REM  hand would. Then stages the built exes into DskoTech\,
 REM  and copies DskoTech\ to C:\Program Files\DskoTech\.
 REM
 REM  Run this as Administrator - writing to C:\Program Files\
@@ -123,6 +123,29 @@ if not exist "%ROOT%dist\XInputToKeyboard.exe" (
 )
 echo.
 
+echo   - Internal Launcher (optional - Apps section plug-on, embeds an
+echo     arbitrary picked file/program's window inline)...
+pyinstaller "%ROOT%InternalLauncher\InternalLauncher.spec" --distpath "%ROOT%dist" --workpath "%ROOT%build\internal_launcher" --noconfirm < NUL
+if not exist "%ROOT%dist\InternalLauncher.exe" (
+    echo     [WARN] Not built - the Internal Launcher plug-on won't work in
+    echo     this build ^(everything else still works^). Usually means the
+    echo     'psutil' package isn't installed.
+) else (
+    echo     OK - dist\InternalLauncher.exe
+)
+echo.
+
+echo   - Meridian Paint (optional - Apps section plug-on, simple
+echo     controller-friendly paint program)...
+pyinstaller "%ROOT%MeridianPaint\MeridianPaint.spec" --distpath "%ROOT%dist" --workpath "%ROOT%build\meridian_paint" --noconfirm < NUL
+if not exist "%ROOT%dist\MeridianPaint.exe" (
+    echo     [WARN] Not built - the Meridian Paint plug-on won't work in
+    echo     this build ^(everything else still works^).
+) else (
+    echo     OK - dist\MeridianPaint.exe
+)
+echo.
+
 echo ============================================================
 echo  All 6 apps compiled. Each app's output is sitting in its
 echo  own "dist" folder inside its project folder:
@@ -159,23 +182,28 @@ if exist "%ROOT%dist\XInputToKeyboard.exe" (
     copy /y "%ROOT%dist\XInputToKeyboard.exe" "%ROOT%DskoTech\" >nul
 )
 
+REM InternalLauncher.exe (Internal Launcher plug-on) - best-effort only.
+REM Lives next to MeridianLauncher.exe, same convention as every other
+REM companion exe here - see plugin_manager.get_plugin_exe_path.
+if exist "%ROOT%dist\InternalLauncher.exe" (
+    copy /y "%ROOT%dist\InternalLauncher.exe" "%ROOT%DskoTech\" >nul
+)
+
+REM MeridianPaint.exe (Meridian Paint plug-on) - best-effort only.
+if exist "%ROOT%dist\MeridianPaint.exe" (
+    copy /y "%ROOT%dist\MeridianPaint.exe" "%ROOT%DskoTech\" >nul
+)
+
 REM onedir apps - full dist contents flattened in
 robocopy "%ROOT%CyberDeckBrowser\dist\CyberDeckBrowser" "%ROOT%DskoTech" /E /NFL /NDL /NJH /NJS >nul
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 robocopy "%ROOT%Meridian Game Library\dist\Meridian Game Library" "%ROOT%DskoTech" /E /NFL /NDL /NJH /NJS >nul
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 
-copy /y "%ROOT%osm.bat" "%ROOT%DskoTech\osm.bat" >nul
-if errorlevel 1 (
-    echo   [ERROR] Couldn't copy osm.bat into DskoTech\.
-    set "FAILED=1"
-)
-
-copy /y "%ROOT%osk.bat" "%ROOT%DskoTech\osk.bat" >nul
-if errorlevel 1 (
-    echo   [ERROR] Couldn't copy osk.bat into DskoTech\.
-    set "FAILED=1"
-)
+REM osm.bat/osk.bat are no longer needed - onscreenmenu launching and
+REM OSK toggling are both fully internalized in Python now (see
+REM main.py _launch_onscreenmenu / onscreenmenu toggle_osk), so there is
+REM nothing left to stage here.
 
 REM Plugins/ (auto-scanned custom sections), examples/ (blank plugin
 REM template), and themes/ ride along too.
@@ -209,7 +237,8 @@ echo.
 echo ============================================================
 echo  SUCCESS
 echo    - All 6 apps compiled to their own dist\ folders.
-echo    - osm.bat and osk.bat staged in DskoTech\.
+echo    - onscreenmenu/OSK-toggle launching is internalized in Python
+    echo      now, no separate osm.bat/osk.bat staging needed.
 echo    - DskoTech\ copied to C:\Program Files\DskoTech\.
 echo ============================================================
 pause

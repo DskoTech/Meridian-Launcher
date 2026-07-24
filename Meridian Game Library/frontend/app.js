@@ -1832,7 +1832,7 @@ async function renderSettings() {
   // credit footer — always the very last thing in the settings box
   const creditBlock = document.createElement("div");
   creditBlock.className = "settings-block settings-credit";
-  creditBlock.innerHTML = `<p>Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026; This is open source software. Donations Appreciated, but Money Not Required.</p>`;
+  creditBlock.innerHTML = `<p>Vibecoded by Samuel "Zenith" Schimmel (Madisico) 2026 — licensed under the DskoTech Source Available License 1.0, see LICENSE.txt in the install folder. Donations Appreciated, but Money Not Required.</p>`;
   c.appendChild(creditBlock);
 
   panel.appendChild(c);

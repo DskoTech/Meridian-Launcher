@@ -140,6 +140,8 @@ def _configure_streaming_playback():
     FLAGS=1 && CyberDeckBrowser.exe`) to rule a specific one in or out:
       MERIDIAN_DISABLE_WIDEVINE_FLAGS   - skip --widevine-path/--ppapi-widevine-path
       MERIDIAN_DISABLE_AUTOPLAY_FLAG    - skip --autoplay-policy
+      MERIDIAN_DISABLE_ANTI_DETECTION_FLAG - skip --disable-blink-features=AutomationControlled
+      MERIDIAN_DISABLE_CLIENT_HINTS_FLAG - skip --disable-features=UserAgentClientHint
 
     Two more flags beyond Widevine, for the same "plays on YouTube but
     not Tubi/Pluto/etc" class of problem:
@@ -170,6 +172,37 @@ def _configure_streaming_playback():
     if not os.environ.get("MERIDIAN_DISABLE_AUTOPLAY_FLAG"):
         if "--autoplay-policy" not in existing:
             flags_to_add.append("--autoplay-policy=no-user-gesture-required")
+
+    if not os.environ.get("MERIDIAN_DISABLE_ANTI_DETECTION_FLAG"):
+        # Several streaming sites (Tubi/Pluto's login flows in particular)
+        # run bot-detection checks that look at navigator.webdriver and a
+        # handful of related automation markers - unrelated to DRM/
+        # Widevine entirely, but failing that check gets treated the same
+        # way as failing DRM: playback just never starts, or the site
+        # shows its own "unsupported browser" page instead of a specific
+        # error. This is the standard, widely-used flag for turning that
+        # off in any Chromium-based embedding.
+        if "--disable-blink-features" not in existing:
+            flags_to_add.append("--disable-blink-features=AutomationControlled")
+
+    if not os.environ.get("MERIDIAN_DISABLE_CLIENT_HINTS_FLAG"):
+        # The likely real explanation for Google itself throwing a
+        # "detected unusual traffic" CAPTCHA (a much broader/stronger
+        # signal than any single site's own bot check): overriding ONLY
+        # the User-Agent HEADER (setHttpUserAgent above) doesn't stop
+        # Chromium from ALSO sending Client Hints headers (Sec-CH-UA,
+        # Sec-CH-UA-Full-Version-List, etc.) alongside it - and those
+        # report this build's TRUE underlying Chromium/QtWebEngine
+        # version, independent of whatever UA string got set. A request
+        # claiming to be Chrome 150 in its User-Agent while its Client
+        # Hints headers say something else entirely is a textbook
+        # inconsistent-fingerprint signal - often MORE suspicious to
+        # sophisticated bot detection than an honest, if less common,
+        # User-Agent would have been. This disables Client Hints
+        # entirely rather than trying to also spoof them to match,
+        # which would be a much deeper (and more fragile) rabbit hole.
+        if "--disable-features" not in existing:
+            flags_to_add.append("--disable-features=UserAgentClientHint")
 
     if flags_to_add:
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (existing + " " + " ".join(flags_to_add)).strip()
@@ -266,7 +299,7 @@ def _configure_persistent_web_profile(profile_key=None):
     if not os.environ.get("MERIDIAN_DISABLE_UA_OVERRIDE"):
         profile.setHttpUserAgent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "(KHTML, like Gecko) Chrome/150.0.7871.101 Safari/537.36"
         )
 
     if not os.environ.get("MERIDIAN_DISABLE_PLUGINS_FLAGS"):
@@ -276,13 +309,32 @@ def _configure_persistent_web_profile(profile_key=None):
         settings.setAttribute(settings.WebAttribute.JavascriptEnabled, True)
         settings.setAttribute(settings.WebAttribute.FullScreenSupportEnabled, True)
         settings.setAttribute(settings.WebAttribute.LocalStorageEnabled, True)
+        # Most streaming sites' actual login flow (Tubi/Pluto/most others
+        # that support signing in with Google/Facebook/Apple) opens the
+        # identity provider in a JS-driven popup window - without these
+        # two, QtWebEngine silently drops window.open() calls, which looks
+        # identical to "the login button does nothing."
+        settings.setAttribute(settings.WebAttribute.JavascriptCanOpenWindows, True)
+        settings.setAttribute(settings.WebAttribute.AllowWindowActivationFromJavaScript, True)
 
 
 def _another_standalone_instance_running():
     """Only guards the STANDALONE launch path (no --box=) - CyberDeckBrowser
     is intentionally multi-instance when boxed by Meridian Launcher (the
-    Browser section and each webapp plugin like Telegram/Discord get
-    their own instance simultaneously), so this must never block that.
+    Browser section and each webapp plugin like Telegram/Discord/Task
+    Manager/Type from Phone/etc get their own instance simultaneously),
+    so this must never block that.
+
+    Matching on process name alone isn't enough to tell those apart from
+    a genuine second standalone launch - a same-named "cyberdeckbrowser.exe"
+    process is just as likely to be one of those legitimately-concurrent
+    BOXED instances as it is to be an actual duplicate standalone one, and
+    with more and more plug-ons boxing CyberDeckBrowser too (see the
+    ever-growing list above), that's the common case now, not an edge
+    case - so this checks each candidate's own command line for --box=
+    and skips it entirely if present; only a same-named process with NO
+    --box= argument counts as "another standalone instance".
+
     Excludes both our own PID and our own PARENT's PID: a compiled
     --onefile build's bootloader briefly runs as its own process sharing
     the same exe name before exec'ing the real app as a child, so on
@@ -299,8 +351,15 @@ def _another_standalone_instance_running():
         try:
             if proc.pid in (my_pid, my_parent_pid):
                 continue
-            if (proc.info.get("name") or "").lower() == "cyberdeckbrowser.exe":
-                return True
+            if (proc.info.get("name") or "").lower() != "cyberdeckbrowser.exe":
+                continue
+            try:
+                cmdline = proc.cmdline()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if any(str(arg).startswith("--box=") for arg in cmdline):
+                continue  # a legitimately-concurrent BOXED instance, not a duplicate standalone one
+            return True
         except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
             continue
     return False

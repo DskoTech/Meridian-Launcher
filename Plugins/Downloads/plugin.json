@@ -1,0 +1,7 @@
+{
+  "id": "downloads",
+  "label": "Downloads",
+  "type": "list",
+  "version": "1.0",
+  "description": "Fixed to the Windows user's Downloads folder - functions as a simple file browser, same idea as the Photos/Videos/Music sections but for whatever actually lands in Downloads. Top-level only, no subfolders."
+}

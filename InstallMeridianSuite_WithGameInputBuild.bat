@@ -36,8 +36,9 @@ REM       scripts (Meridian Launcher, CyberDeckBrowser, Meridian
 REM       Explorer, Meridian FileBrowse + its shell-handler
 REM       trampoline, onscreenmenu, Meridian Game Library).
 REM    5. Stages the built apps, the Plugins/ and examples/
-REM       folders, plus osm.bat, osk.bat, MakeUnmakeShell.ps1,
-REM       README.md, CONTROLS_README.txt, and the
+REM       folders (osm.bat/osk.bat/MakeUnmakeShell.ps1 are all internalized in
+REM       Python now, nothing left to stage for them), plus
+REM       README.md, CONTROLS_README.txt, LICENSE.txt, and the
 REM       Meridian_Exporter Playnite extension into one flat
 REM       folder and installs it to C:\Program Files\DskoTech.
 REM    6. Downloads and silently installs the runtime
@@ -241,6 +242,27 @@ if not exist "%ROOT%dist\XInputToKeyboard.exe" (
 )
 echo.
 
+REM Internal Launcher (optional Apps section plug-on) - same
+REM best-effort treatment as XInputToKeyboard above.
+echo   - Internal Launcher ^(optional - Apps section plug-on^)...
+pyinstaller "%ROOT%InternalLauncher\InternalLauncher.spec" --distpath "%ROOT%dist" --workpath "%ROOT%build\internal_launcher" --noconfirm < NUL
+if not exist "%ROOT%dist\InternalLauncher.exe" (
+    echo     [WARN] Not built - the Internal Launcher plug-on won't work in this install.
+) else (
+    echo     OK - dist\InternalLauncher.exe
+)
+echo.
+
+REM Meridian Paint (optional Apps section plug-on).
+echo   - Meridian Paint ^(optional - Apps section plug-on^)...
+pyinstaller "%ROOT%MeridianPaint\MeridianPaint.spec" --distpath "%ROOT%dist" --workpath "%ROOT%build\meridian_paint" --noconfirm < NUL
+if not exist "%ROOT%dist\MeridianPaint.exe" (
+    echo     [WARN] Not built - the Meridian Paint plug-on won't work in this install.
+) else (
+    echo     OK - dist\MeridianPaint.exe
+)
+echo.
+
 REM gameinput_native.pyd (optional - real GameInput SDK backend for
 REM controller input, see gameinput_native/README.md) is deliberately
 REM NOT part of the FAILED check above: this whole step is best-effort,
@@ -342,6 +364,16 @@ if exist "%ROOT%dist\XInputToKeyboard.exe" (
     copy /y "%ROOT%dist\XInputToKeyboard.exe" "%STAGE%\" >nul
 )
 
+REM InternalLauncher.exe - best-effort, same flat-folder staging as everything else here.
+if exist "%ROOT%dist\InternalLauncher.exe" (
+    copy /y "%ROOT%dist\InternalLauncher.exe" "%STAGE%\" >nul
+)
+
+REM MeridianPaint.exe - best-effort.
+if exist "%ROOT%dist\MeridianPaint.exe" (
+    copy /y "%ROOT%dist\MeridianPaint.exe" "%STAGE%\" >nul
+)
+
 REM gameinput_native.pyd - best-effort, see the build step above. Only
 REM ONE copy is needed here (unlike CompileAndPackage.bat's per-app
 REM subfolder layout) since this installer flattens every app into one
@@ -358,12 +390,9 @@ robocopy "%ROOT%Meridian Game Library\dist\Meridian Game Library" "%STAGE%" /E /
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 
 REM companion scripts, docs, and the Playnite exporter extension
-copy /y "%ROOT%osm.bat"              "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%osk.bat"              "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%MakeUnmakeShell.ps1"  "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%MeridianExplorerShellIntegration.bat" "%STAGE%\" >nul || set "FAILED=1"
 copy /y "%ROOT%README.md"            "%STAGE%\" >nul || set "FAILED=1"
 copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul || set "FAILED=1"
 robocopy "%ROOT%Meridian_Exporter" "%STAGE%\Meridian_Exporter" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%themes" "%STAGE%\themes" /E /NFL /NDL /NJH /NJS >nul
 REM Plugins/ (auto-scanned custom sections) and examples/ (the blank
@@ -492,7 +521,7 @@ if exist "%INSTALL_DIR%\SDL3.dll" (
 
 REM Put the install folder on the SYSTEM PATH ^(if it isn't already^) so
 REM the apps' shutil.which^("ffmpeg"^) finds the copy that now lives next
-REM to them, and so osm.bat / osk.bat resolve from anywhere too.
+REM to them.
 echo   - Adding %INSTALL_DIR% to the system PATH ^(if needed^)...
 powershell -NoProfile -Command "$p=[Environment]::GetEnvironmentVariable('Path','Machine'); if ($p -notlike '*%INSTALL_DIR%*') { [Environment]::SetEnvironmentVariable('Path', $p.TrimEnd(';') + ';%INSTALL_DIR%', 'Machine'); Write-Host '    OK - added (takes effect in new programs/consoles).' } else { Write-Host '    OK - already on PATH.' }"
 echo.

@@ -107,7 +107,6 @@ pyinstaller --noconfirm --clean --onedir --name CyberDeckBrowser ^
     --exclude-module PySide6.QtScxml ^
     --exclude-module PySide6.QtStateMachine ^
     --exclude-module PySide6.QtTextToSpeech ^
-    --add-data "osk.bat;." ^
     --add-data "icon.ico;." ^
     launcher.py
 
@@ -127,11 +126,6 @@ if exist "dist\CyberDeckBrowser\PySide6\translations\qtwebengine_locales" (
     for %%F in ("dist\CyberDeckBrowser\PySide6\translations\qtwebengine_locales\*.pak") do (
         if /I not "%%~nxF"=="en-US.pak" del /q "%%F"
     )
-)
-
-REM Safety net in case --add-data didn't place it
-if not exist "dist\CyberDeckBrowser\osk.bat" (
-    copy /y "osk.bat" "dist\CyberDeckBrowser\osk.bat" >nul
 )
 
 if not exist "dist\CyberDeckBrowser\icon.ico" (

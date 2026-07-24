@@ -63,17 +63,9 @@ from paths import APP_ROOT
 
 
 #
-# osk.bat is expected to live next to the app - the
-# project root when running from source, or the
-# .exe's own folder once compiled
+# osk.exe toggling is now fully internalized (see run_osk below) - no
+# external .bat file or path constant needed for it anymore.
 #
-
-PROJECT_ROOT = APP_ROOT
-
-OSK_BAT_PATH = os.path.join(
-    PROJECT_ROOT,
-    "osk.bat"
-)
 
 
 
@@ -187,11 +179,39 @@ class MainWindow(QMainWindow):
         # Browser
         #
 
+        # Tab-session restore (which tabs were open last time) lives in
+        # the same per-context profile folder _configure_persistent_web_
+        # profile set up in main.py, keyed the same way (by notify_which).
+        # Applies to minimal_menu (webapp plugin) contexts too now -
+        # being pinned to one site doesn't mean there's nothing worth
+        # remembering within it: a Messenger/Discord chat thread, a
+        # streaming site's login state or browse position, etc.
+        safe_key = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (notify_which or "standalone"))
+        storage_path = os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+            "Meridian Launcher", "CyberDeckBrowser", "WebProfile", safe_key,
+        )
+        session_path = os.path.join(storage_path, "session.json")
+
+        # A plugin's own fixed URL is a FALLBACK (used only if there's no
+        # saved session yet, e.g. the very first time it's opened) - not
+        # an unconditional override the way an explicit external link
+        # (default-browser invocation, "open this in a browser" from
+        # elsewhere) needs to be. See BrowserTabs.__init__ for exactly
+        # how startup_url vs default_url get prioritized against a saved
+        # session.
+        default_url = startup_url if minimal_menu else None
+        effective_startup_url = None if minimal_menu else startup_url
+
         self.browser = BrowserTabs(
 
             config["homepage"],
 
-            startup_url
+            effective_startup_url,
+
+            session_path=session_path,
+
+            default_url=default_url,
 
         )
 
@@ -776,9 +796,9 @@ class MainWindow(QMainWindow):
     def run_osk(self):
 
         """
-        Launches osk.bat from the project root
-        instead of toggling the built-in virtual
-        keyboard overlay.
+        Toggles the real Windows on-screen keyboard (osk.exe) -
+        internalized equivalent of osk.bat's own logic (running -> kill,
+        not running -> start), no external file involved anymore.
         """
 
         self.hud.trigger_glitch()
@@ -789,15 +809,23 @@ class MainWindow(QMainWindow):
 
         try:
 
-            subprocess.Popen(
-
-                OSK_BAT_PATH,
-
-                cwd=PROJECT_ROOT,
-
-                shell=True
-
+            result = subprocess.run(
+                ["tasklist", "/fi", "ImageName eq osk.exe", "/fo", "csv"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+
+            if "osk.exe" in (result.stdout or "").lower():
+
+                subprocess.run(
+                    ["taskkill", "/f", "/im", "osk.exe"],
+                    capture_output=True, timeout=5,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+
+            else:
+
+                os.startfile("osk.exe")
 
         except Exception:
 
@@ -1416,6 +1444,9 @@ class MainWindow(QMainWindow):
 
             self.controller.stop()
 
+
+        if hasattr(self.browser, "save_session"):
+            self.browser.save_session()
 
         event.accept()
 

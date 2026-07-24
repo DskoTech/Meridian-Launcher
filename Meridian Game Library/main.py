@@ -1467,17 +1467,19 @@ class Api:
 # --------------------------------------------------------------------------
 
 def _maybe_launch_onscreenmenu():
-    """Best-effort launch of the on-screen menu companion via osm.bat (not
-    onscreenmenu.exe directly) from the app's own folder, but only if
-    onscreenmenu.exe isn't already running — used after opening the app
-    data folder so the on-screen menu companion is available to navigate
-    it with a controller."""
+    """Best-effort launch of onscreenmenu.exe directly (internalized -
+    no osm.bat involved), but only if it isn't already running - used
+    after opening the app data folder so the on-screen menu companion is
+    available to navigate it with a controller."""
     if system_actions.is_process_running("onscreenmenu.exe"):
         return
-    bat = BASE_DIR / "osm.bat"
-    if bat.exists():
+    exe = BASE_DIR / "onscreenmenu.exe"
+    if exe.exists():
         try:
-            system_actions.launch_path(str(bat))
+            subprocess.Popen(
+                [str(exe), "--window-mode=borderless-fullscreen"], cwd=str(BASE_DIR),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
         except Exception:
             pass
 

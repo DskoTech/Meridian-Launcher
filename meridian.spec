@@ -12,9 +12,9 @@
 #   sys._MEIPASS — it's what the update checker (updater.py) compares
 #   against the latest GitHub release tag. Bump it before tagging a new
 #   release.
-# - Drop osm.bat next to the built Meridian Launcher.exe if you want
-#   sections/system features with "Launch with onscreenmenu?" enabled
-#   (on by default) to trigger it; the app looks for it in its own directory.
+# - onscreenmenu launching (for sections/system features with "Launch
+#   with onscreenmenu?" enabled, on by default) is fully internalized -
+#   no companion osm.bat file needed anymore, see _launch_onscreenmenu().
 # - Optional companion executables the app looks for in its own folder:
 #   CyberDeckBrowser.exe (Web section), Meridian_Explorer.exe (Files
 #   section), Meridian Game Library.exe (Games section's "Game Library"
@@ -32,6 +32,16 @@ a = Analysis(
         'webview.platforms.edgechromium',
         'win32gui', 'win32con', 'win32api',
         'psutil',
+        # audio_devices.py, phone_type_server.py, and the Controller
+        # Bridge keystroke injection all import these inside a
+        # try/except ImportError block - PyInstaller's static analyzer
+        # doesn't reliably see through that, so without listing them
+        # explicitly here they silently never get bundled at all
+        # (the app still builds "successfully" with no error, it just
+        # doesn't work at runtime, or the .spec build itself fails
+        # depending on what else is missing at analysis time).
+        'pycaw', 'pycaw.pycaw', 'comtypes', 'comtypes.stream',
+        'qrcode', 'keyboard',
     ],
     hookspath=[],
     runtime_hooks=[],
