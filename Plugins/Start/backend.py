@@ -64,7 +64,7 @@ def list_items():
     for i, (name, path) in enumerate(shortcuts):
         item_id = f"shortcut_{i}"
         _item_cache[item_id] = str(path)
-        items.append({"id": item_id, "label": name, "icon": "app", "path": str(path)})
+        items.append({"id": item_id, "label": name, "icon": "apps", "path": str(path)})
 
     return items
 

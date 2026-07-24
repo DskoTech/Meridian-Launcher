@@ -1,5 +1,0 @@
-/* NeonSunset — a warm override on top of CyberRadial */
-body.layout-user-neonsunset { --active-accent: #ff6b35; }
-body.layout-user-neonsunset #horizon-glow {
-  background: radial-gradient(1200px 400px at 50% 100%, #ff6b3533, transparent 70%), linear-gradient(180deg, #2a0a1e, #0a0208);
-}

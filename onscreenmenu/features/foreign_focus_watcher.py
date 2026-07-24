@@ -140,6 +140,61 @@ def _foreground_process_name():
         return None
 
 
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", wintypes.RECT),
+    ]
+
+
+# Edit-control class names GetFocus() commonly resolves to when a real
+# text field has focus - checked as a second signal alongside the caret
+# (see _text_field_focused below), since some apps show a text caret in
+# contexts that aren't actually typeable (e.g. selectable read-only
+# text), and this catches the reverse case too (a real edit control that
+# happens not to be showing a blinking caret at this exact instant).
+_EDIT_CONTROL_CLASSES = {"edit", "richedit", "richedit20a", "richedit20w", "richedit50w"}
+
+
+def _focused_text_field_hwnd():
+    """The focused control's hwnd if it looks like a real text input (see
+    module-level docstring on _EDIT_CONTROL_CLASSES for the two signals
+    checked), else None. Returns the CONTROL's hwnd specifically (not
+    just a bool) so callers can tell one focused field apart from
+    another - see ForeignFocusWatcher.tick() for why that distinction
+    matters for not undoing a manual close."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        fg_thread_id = user32.GetWindowThreadProcessId(hwnd, None)
+        if not fg_thread_id:
+            return None
+        gti = _GUITHREADINFO()
+        gti.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if not user32.GetGUIThreadInfo(fg_thread_id, ctypes.byref(gti)):
+            return None
+        if gti.hwndCaret:
+            return gti.hwndCaret
+        if gti.hwndFocus:
+            buf = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(gti.hwndFocus, buf, 64)
+            if (buf.value or "").strip().lower() in _EDIT_CONTROL_CLASSES:
+                return gti.hwndFocus
+        return None
+    except Exception:
+        return None
+
+
 def is_osk_running():
     if psutil is None:
         return False
@@ -202,13 +257,12 @@ class ForeignFocusWatcher:
         self._auto_opened = False
         self._was_secure_desktop = False
         self._started_at = time.time()
-        # The foreign process name auto-invoke last acted on - lets a
-        # manual close (the X on osk.exe itself, or the Start button)
-        # actually stick while that same window stays focused, instead
-        # of getting silently reopened on the very next tick. Auto-
-        # invoke gets exactly one attempt per focus TRANSITION (this
-        # value changing), not a standing "keep it running" guarantee.
-        self._last_foreign_proc_name = None
+        # The specific focused-control hwnd auto-invoke last acted on -
+        # see tick() for why this needs to be the FIELD, not just the
+        # window: a manual close needs to stick while the same field
+        # stays focused, but a genuinely different field (even in the
+        # same window) deserves its own fresh attempt.
+        self._last_field_hwnd = None
 
     def tick(self):
         if not IS_WINDOWS:
@@ -242,19 +296,40 @@ class ForeignFocusWatcher:
         is_meridian_or_shell = proc_name in MERIDIAN_PROCESS_NAMES or proc_name == "__shell__"
 
         if not is_meridian_or_shell and proc_name != "osk.exe":
-            if proc_name != self._last_foreign_proc_name:
-                # A genuinely fresh transition (focus just moved to this
-                # window, whether from Meridian or a different foreign
-                # one) - give auto-invoke its one attempt for this
-                # session. If it's closed again afterward while THIS
-                # SAME window stays focused, proc_name won't change on
-                # the next tick, so it won't be reopened - that's the fix.
-                if not is_osk_running():
-                    launch_osk()
-                    self._auto_opened = True
-                self._last_foreign_proc_name = proc_name
+            # Only ever launches because something TYPEABLE actually has
+            # focus right now - see _focused_text_field_hwnd's docstring
+            # for why a plain "some foreign window is active" check (the
+            # old behavior here) wasn't enough: that opened OSK for
+            # anything at all with focus, installers/video players/
+            # anything with nowhere to type included.
+            field_hwnd = _focused_text_field_hwnd()
+            if field_hwnd:
+                if field_hwnd != self._last_field_hwnd:
+                    # A genuinely new field gained focus (could be a
+                    # different field in the same window, or a whole new
+                    # window) - give auto-invoke its one attempt for
+                    # THIS field. If manually closed again afterward
+                    # while this SAME field stays focused, field_hwnd
+                    # won't change on the next tick, so it won't be
+                    # reopened - same "manual close sticks" guarantee
+                    # the old window-based version had, just scoped to
+                    # the actual field instead of the whole window.
+                    if not is_osk_running():
+                        launch_osk()
+                        self._auto_opened = True
+                    self._last_field_hwnd = field_hwnd
+            else:
+                # No text field focused (anymore, or never was) - close
+                # what auto-invoke opened, even though the window itself
+                # may still be in the foreground.
+                if self._auto_opened and is_osk_running():
+                    close_osk()
+                self._auto_opened = False
+                self._last_field_hwnd = None
         else:
             if self._auto_opened and is_osk_running():
                 close_osk()
+            self._auto_opened = False
+            self._last_field_hwnd = None
             self._auto_opened = False
             self._last_foreign_proc_name = None

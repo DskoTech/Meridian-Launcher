@@ -25,6 +25,8 @@ const ICONS = {
   macros: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg>`,
   settings: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.56V21a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1-1.56 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.56-1H3a2 2 0 110-4h.09a1.7 1.7 0 001.56-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H9a1.7 1.7 0 001-1.56V3a2 2 0 114 0v.09a1.7 1.7 0 001 1.56 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V9a1.7 1.7 0 001.56 1H21a2 2 0 110 4h-.09a1.7 1.7 0 00-1.56 1z"/></svg>`,
   generic: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>`,
+  archive: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v3M12 9v2M12 14v2"/><circle cx="12" cy="17" r="1.4" fill="currentColor" stroke="none"/></svg>`,
+  document: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2h9l4 4v16H6z"/><path d="M15 2v4h4M8 12h8M8 16h8M8 8h3"/></svg>`,
   run: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 9l4 3-4 3z" fill="currentColor" stroke="none"/></svg>`,
   desktop: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>`,
   explorer: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 13l2 2 4-4"/></svg>`,
@@ -228,9 +230,6 @@ function buildCategories(settings) {
   const desktopCat = { id: "desktop", label: "Desktop", kind: "desktop_list", color: "var(--accent-desktop)" };
   const afterDesktop = [];
   if (pinStartAfterDesktop) afterDesktop.push(pluginToCategory(startEntry, 0));
-  if (settings.explorer_section_enabled) {
-    afterDesktop.push({ id: "explorer", label: "Explorer", kind: "explorer_section", color: "var(--accent-files)" });
-  }
   if (settings.browser_section_enabled) {
     afterDesktop.push({ id: "browser", label: "Browser", kind: "browser_section", color: "var(--accent-web)" });
   }
@@ -649,9 +648,6 @@ function applyIconSize() {
 // catIndex away from an active embedded section without ever unloading it.
 function unloadEmbeddedBoxIfLeaving(newIndex) {
   const prevCat = state.categories[state.catIndex];
-  if (prevCat && prevCat.kind === "explorer_section" && newIndex !== state.catIndex) {
-    api().unload_explorer_box();
-  }
   if (prevCat && prevCat.kind === "browser_section" && newIndex !== state.catIndex) {
     api().unload_browser_box();
   }
@@ -686,7 +682,7 @@ function selectCategory(i, openImmediately) {
   applyAccent();
   renderCategories();
   const newCat = state.categories[i];
-  const nowEmbedded = !!(newCat && (newCat.kind === "explorer_section" || newCat.kind === "browser_section" || newCat.kind === "plugin_webapp"));
+  const nowEmbedded = !!(newCat && (newCat.kind === "browser_section" || newCat.kind === "plugin_webapp"));
   document.body.classList.toggle("embedded-plugin-active", nowEmbedded);
   refreshItemPanel();
 }
@@ -744,9 +740,10 @@ function commitBrowsedSection() {
   el("item-panel").classList.remove("hidden");
   const targetCat = state.categories[state.sectionsBrowseIndex];
   const sameIndexButEmbedded = state.sectionsBrowseIndex === state.catIndex &&
-    targetCat && (targetCat.kind === "explorer_section" || targetCat.kind === "browser_section" || targetCat.kind === "plugin_webapp");
+    targetCat && (targetCat.kind === "browser_section" || targetCat.kind === "plugin_webapp");
   if (state.sectionsBrowseIndex !== state.catIndex || sameIndexButEmbedded || state.sectionManuallyClosed) {
     state.sectionManuallyClosed = false;
+    unloadEmbeddedBoxIfLeaving(state.sectionsBrowseIndex);
     state.catIndex = state.sectionsBrowseIndex;
     state.selected = 0;
     state.mediaFocus = "list";
@@ -1070,11 +1067,6 @@ async function refreshItemPanel() {
       state.items = items.length ? items : [{ __empty: true }];
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
-    } else if (cat.kind === "explorer_section") {
-      setSubfolderNavHidden(true);
-      el("preview-pane").classList.add("hidden");
-      el("item-panel").innerHTML = `<div class="explorer-box-placeholder empty-msg">Loading Meridian Explorer&hellip;</div>`;
-      await loadExplorerBox(state.explorerPendingPath || null);
     } else if (cat.kind === "browser_section") {
       setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
@@ -1233,7 +1225,7 @@ function _subfolderNavStaysReservedFor(cat) {
   if (!cat) return false;
   if (!document.body.classList.contains("layout-cyberradial")) return false;
   if (document.body.className.indexOf("layout-user-") !== -1) return false; // drop-in themes fully own their own layout
-  return !["explorer_section", "browser_section", "plugin_webapp"].includes(cat.kind);
+  return !["browser_section", "plugin_webapp"].includes(cat.kind);
 }
 
 // CyberRadial's box-size bug: #item-panel's grid column used to depend
@@ -1430,15 +1422,13 @@ function syncTaskbarSizeToLayout() {
   // as one continuous row - measured live (not a hardcoded px height)
   // so it's correct at any resolution/DPI/zoom instead of just whatever
   // one reference size it was tuned for.
-  if (bar.classList.contains("taskbar-pos-cyber") || bar.classList.contains("taskbar-pos-night")) {
-    const clock = el("clock-wrap");
-    if (!clock) return;
-    const clockRect = clock.getBoundingClientRect();
-    if (clockRect.height === 0) return;
-    const bottomOffset = Math.max(0, Math.round(window.innerHeight - clockRect.bottom));
-    bar.style.bottom = `${bottomOffset}px`;
-    bar.style.height = `${Math.round(clockRect.height)}px`;
-  }
+  // Radial-family themes (CyberRadial, NightHorizon): bottom/height are
+  // fixed, generous CSS values (see taskbar-pos-cyber/night's own rules)
+  // rather than computed live here - precisely matching the clock
+  // block's measured height turned out to be exactly what was clipping
+  // the icon row (the clock is shorter than a full row of task icons
+  // needs) across multiple attempts to fix this by adjusting the
+  // computed values instead of removing the live computation.
 }
 window.addEventListener("resize", () => syncTaskbarSizeToLayout());
 
@@ -1510,14 +1500,6 @@ async function activatePluginItem(cat, item) {
   // a plugin can never end up launching Explorer/CyberDeckBrowser as a
   // separate external window either - only the boxed section, in every
   // theme, same as any other entry point into those sections.
-  if (res && res.route === "explorer_section") {
-    const idx = state.categories.findIndex((c) => c.kind === "explorer_section");
-    if (idx !== -1) {
-      state.explorerPendingPath = res.path || "";
-      selectCategory(idx, true);
-    }
-    return;
-  }
   if (res && res.route === "browser_section") {
     const idx = state.categories.findIndex((c) => c.kind === "browser_section");
     if (idx !== -1) {
@@ -1672,32 +1654,6 @@ function embeddedBoxGeometry() {
   return { x, y, w, h };
 }
 
-let _explorerBoxLoadToken = 0;
-async function loadExplorerBox(path) {
-  const { x, y, w, h } = embeddedBoxGeometry();
-  // window.screenX/screenY is the OS position of this window's top-left;
-  // adding the panel's in-page rect gives the absolute screen box Meridian
-  // Explorer should be sized/positioned into. On HiDPI displays where the
-  // OS scale factor isn't 100%, these coordinates may need adjusting for
-  // your setup — verify on-device and scale x/y/w/h if it lands offset.
-  state.explorerPendingPath = path;
-  // Re-entrancy guard: if refreshItemPanel() somehow lands back on the
-  // Explorer section again (a re-render, theme switch, etc.) before this
-  // call's response has come back, only the LATEST call's result actually
-  // applies - an earlier in-flight call finishing after a newer one
-  // started would otherwise stomp on it, and more importantly, firing the
-  // backend call twice in close succession was exactly what let two
-  // Meridian FileBrowse.exe instances spawn at once (see
-  // unload_explorer_box's docstring in main.py for the backend half of
-  // this fix).
-  const myToken = ++_explorerBoxLoadToken;
-  const res = await api().load_explorer_box(path || "", x, y, w, h);
-  if (myToken !== _explorerBoxLoadToken) return; // a newer call has already superseded this one
-  if (res && res.ok === false) {
-    el("item-panel").innerHTML = `<div class="empty-msg">${escapeHtml(res.error || "Couldn't load Meridian Explorer.")}</div>`;
-  }
-}
-
 async function loadBrowserBox(url) {
   const { x, y, w, h } = embeddedBoxGeometry();
   state.browserPendingUrl = url;
@@ -1794,13 +1750,6 @@ async function loadPluginWebappBox(pluginId, addonLayout) {
 async function activateDesktopEntry(item) {
   const res = await api().open_desktop_entry(item.path, !!item.is_dir);
   if (res && res.ok === false) { showToast(`Couldn't open: ${res.error}`); return; }
-  if (res && res.route === "explorer_section") {
-    const idx = state.categories.findIndex((c) => c.kind === "explorer_section");
-    if (idx !== -1) {
-      state.explorerPendingPath = res.path;
-      selectCategory(idx, true);
-    }
-  }
 }
 
 async function activateWebItem(item) {
@@ -2823,7 +2772,14 @@ async function buildPluginsSettingsBlock() {
     toggle.className = "toggle-switch" + (p.visible ? " on" : "");
     toggle.innerHTML = `<div class="knob"></div>`;
     toggle.addEventListener("click", async () => {
-      await api().set_plugin_visible(p.id, !p.visible);
+      const turningOn = !p.visible;
+      await api().set_plugin_visible(p.id, turningOn);
+      if (turningOn && (p.id === "start" || p.id === "downloads")) {
+        // Fire-and-forget prefetch, same reasoning as the Desktop
+        // section toggle above - ready with icons on first visit
+        // instead of showing blank/loading then.
+        api().list_plugin_items(p.id).catch(() => {});
+      }
       await refreshAfterSettingsChange();
     });
     row.appendChild(toggle);
@@ -3171,7 +3127,15 @@ async function renderSettings(group) {
         toggle.className = "toggle-switch" + (isOn ? " on" : "");
         toggle.innerHTML = `<div class="knob"></div>`;
         toggle.addEventListener("click", async () => {
-          await api().set_builtin_section_visible(cat.id, !isOn);
+          const turningOn = !isOn;
+          await api().set_builtin_section_visible(cat.id, turningOn);
+          if (turningOn && cat.id === "desktop") {
+            // Fire-and-forget: warms up the icon extraction for every
+            // Desktop item right away, so the section is actually ready
+            // (icons and all) the moment it's first opened instead of
+            // showing blank/loading then.
+            api().list_desktop_items().catch(() => {});
+          }
           await refreshAfterSettingsChange();
         });
         row.appendChild(toggle);
@@ -3194,19 +3158,7 @@ async function renderSettings(group) {
 
       if (settings.desktop_section_enabled) c.appendChild(buildDisplayTypeBlock("desktop"));
 
-      // Explorer section — right after Desktop, off by default, no
-      // list/gallery display-type option (it hosts an embedded browser
-      // box, not a launchable list).
-      c.appendChild(buildToggleBlock(
-        "Explorer Section",
-        !!settings.explorer_section_enabled,
-        async () => { await api().set_explorer_section_enabled(!settings.explorer_section_enabled); await refreshAfterSettingsChange(); },
-        settings.explorer_section_enabled
-          ? "Enabled — appears right after Desktop. Desktop folders open here instead of in standalone Meridian Explorer."
-          : "Disabled — hidden from the section list. Desktop folders open in standalone Meridian Explorer (or Windows Explorer if that's missing).",
-      ));
-
-      // Browser section — right after Explorer, off by default, same
+      // Browser section — right after Desktop, off by default, same
       // no-list/gallery rule (it hosts an embedded browser box).
       c.appendChild(buildToggleBlock(
         "Browser Section",
@@ -4930,7 +4882,7 @@ function exitTaskbar() {
 
 function isEmbeddedPluginSectionActive() {
   const cat = state.categories[state.catIndex];
-  return !!(state.chatPluginActive || (cat && (cat.kind === "explorer_section" || cat.kind === "browser_section" || cat.kind === "plugin_webapp")));
+  return !!(state.chatPluginActive || (cat && (cat.kind === "browser_section" || cat.kind === "plugin_webapp")));
 }
 
 function toggleTaskbarFocus() {
@@ -5181,18 +5133,11 @@ window.onKioskDisabledExternally = function () { exitKioskModeAndNotify(); };
 // already restored on the Python side before this fires.
 // Called (via evaluate_js) by main.py's /internal/open-explorer endpoint —
 // the target of the "Make Meridian FileBrowse the default shell browser"
-// registration. Forces the Explorer section on if it was hidden (the user
-// explicitly asked for this routing by enabling the macro), switches to
-// it, and loads the requested path.
+// registration. Explorer is external-only now (no more boxed section to
+// route into) - just launches it standalone with the requested path.
 window.__meridianOpenPathInExplorer = async function (path) {
-  if (!state.settings || !state.settings.explorer_section_enabled) {
-    state.settings = await api().set_explorer_section_enabled(true);
-    state.categories = buildCategories(state.settings);
-  }
-  const idx = state.categories.findIndex((c) => c.kind === "explorer_section");
-  if (idx === -1) return;
-  state.explorerPendingPath = path;
-  selectCategory(idx, true);
+  const res = await api().open_meridian_explorer_path(path);
+  if (res && res.ok === false) showToast(`Couldn't open: ${res.error}`);
 };
 
 // Called (via evaluate_js) by main.py's /internal/open-browser endpoint —
@@ -5223,12 +5168,12 @@ window.onEmbeddedPluginExited = function (which) {
   state.radialFocus = "sections";
   document.body.dataset.radialFocus = "sections";
   document.body.classList.remove("embedded-plugin-active");
-  state.explorerPendingPath = null;
   if (state.activeAddonLayout) restoreAddonLayout();
   renderCategories();
-  // Don't call refreshItemPanel() here — for an explorer_section it would
-  // immediately relaunch the boxed app. Show an inert placeholder instead;
-  // navigating away and back in (selectCategory) reloads it fresh.
+  // Don't call refreshItemPanel() here — for a still-boxed section (Browser/
+  // a plugin webapp) it would immediately relaunch it. Show an inert
+  // placeholder instead; navigating away and back in (selectCategory)
+  // reloads it fresh.
   setSubfolderNavHidden(true);
   el("preview-pane").classList.add("hidden");
   el("item-panel").innerHTML = `<div class="empty-msg">Closed. Select this section again to reopen it.</div>`;

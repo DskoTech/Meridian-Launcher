@@ -183,8 +183,8 @@ def focus_process_window(exe_name: str) -> bool:
     foreground, by executable name (case-insensitive). Used for
     single-instance enforcement: rather than launching a second copy of
     something that only ever makes sense as one instance (Meridian
-    Explorer/FileBrowse - see main.py's launch_meridian_explorer /
-    open_desktop_entry / load_explorer_box), find and focus the existing
+    Explorer - see main.py's launch_meridian_explorer /
+    open_desktop_entry), find and focus the existing
     one instead. Returns False if no matching process/window was found,
     so the caller can fall back to actually launching it.
 

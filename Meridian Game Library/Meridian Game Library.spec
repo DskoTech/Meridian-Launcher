@@ -1,12 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
+import os
+
+# SPECPATH is a builtin PyInstaller injects into every .spec file's exec
+# namespace - the directory containing THIS .spec file, regardless of
+# where the repo actually lives on disk or what the current working
+# directory is when `pyinstaller` gets invoked. The two absolute
+# C:\Users\Administrator\... paths this file used to hardcode only ever
+# worked on the exact machine they were generated on - anyone else's
+# build failed immediately since that path simply doesn't exist for them.
+THIS_DIR = os.path.abspath(SPECPATH)
 
 hiddenimports = ['win32timezone']
 hiddenimports += collect_submodules('webview')
 
 
 a = Analysis(
-    ['C:\\Users\\Administrator\\Downloads\\Meridian_Launcher_NEW_STABLE_BUILD_718_updated (13)\\Meridian Game Library\\main.py'],
+    [os.path.join(THIS_DIR, 'main.py')],
     pathex=[],
     binaries=[],
     datas=[],
@@ -14,7 +24,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['gameinput_native'],  # see gameinput_api.py's sys.path fix / meridian.spec's own excludes comment
     noarchive=False,
     optimize=0,
 )
@@ -36,7 +46,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\Administrator\\Downloads\\Meridian_Launcher_NEW_STABLE_BUILD_718_updated (13)\\Meridian Game Library\\icon.ico'],
+    icon=[os.path.join(THIS_DIR, 'icon.ico')],
     contents_directory='MeridianGameLibrary_internal',
 )
 coll = COLLECT(

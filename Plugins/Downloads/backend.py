@@ -73,18 +73,18 @@ def _downloads_folder():
 
 def _icon_for(ext):
     if ext in _PHOTO_EXT:
-        return "photo"
+        return "photos"
     if ext in _VIDEO_EXT:
-        return "video"
+        return "videos"
     if ext in _MUSIC_EXT:
         return "music"
     if ext in _ARCHIVE_EXT:
         return "archive"
     if ext in _INSTALLER_EXT:
-        return "app"
+        return "apps"
     if ext in _DOC_EXT:
         return "document"
-    return "file"
+    return "generic"
 
 
 def _format_size(num_bytes):
@@ -100,7 +100,7 @@ def list_items():
     _item_cache = {}
     folder = _downloads_folder()
     if not folder:
-        return [{"id": "no_folder", "label": "Couldn't find the Downloads folder.", "icon": "file"}]
+        return [{"id": "no_folder", "label": "Couldn't find the Downloads folder.", "icon": "generic"}]
 
     entries = []
     try:
@@ -116,7 +116,7 @@ def list_items():
                     continue
                 entries.append((entry.path, entry.name, stat.st_mtime, stat.st_size))
     except OSError:
-        return [{"id": "no_folder", "label": "Couldn't read the Downloads folder.", "icon": "file"}]
+        return [{"id": "no_folder", "label": "Couldn't read the Downloads folder.", "icon": "generic"}]
 
     # Most recent downloads first - the natural way anyone actually wants
     # to browse this particular folder.
@@ -134,7 +134,7 @@ def list_items():
             "path": path,
         })
     if not items:
-        items.append({"id": "empty", "label": "Nothing in Downloads right now.", "icon": "file"})
+        items.append({"id": "empty", "label": "Nothing in Downloads right now.", "icon": "generic"})
     return items
 
 

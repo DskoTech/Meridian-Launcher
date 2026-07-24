@@ -1,3 +1,0 @@
-"""
-CyberDeck Input Package
-"""

@@ -7,6 +7,7 @@ keyboard, mouse, or game controller (XInput).
 """
 
 import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import mimetypes
@@ -190,12 +191,6 @@ def _run_first_boot_unblock_if_needed():
 
 _run_first_boot_unblock_if_needed()
 
-_explorer_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian FileBrowse instance, if any
-_explorer_box_lock = threading.RLock()  # serializes load_explorer_box/unload_explorer_box against each other -
-# without this, two near-simultaneous calls (e.g. a rapid re-render landing back
-# on the Explorer section before the previous load finished) could both pass the
-# "is anything running" check before either one's spawn/kill actually completed,
-# letting two Meridian FileBrowse.exe instances end up alive at once.
 _browser_box_proc = None  # Popen handle for the boxed (non-fullscreen) Meridian NetBrowse instance, if any
 _plugin_webapp_procs = {}  # plugin_id -> Popen handle, for "webapp"-type plugins (Telegram/Discord/etc)
 
@@ -206,14 +201,13 @@ def _is_builtin_section_visible(section_id):
     list_section_options). Two separate mechanisms exist for this across
     different built-in sections and both need checking:
 
-      - Desktop/Explorer/Browser: dedicated "*_section_enabled" settings,
+      - Desktop/Browser: dedicated "*_section_enabled" settings,
         off by default (opt-in sections).
       - Everything else (Music/Photos/.../Chat): on by default, hideable
         via the general "hidden_builtin_sections" list instead.
     """
     special_flags = {
         "desktop": "desktop_section_enabled",
-        "explorer": "explorer_section_enabled",
         "browser": "browser_section_enabled",
     }
     if section_id in special_flags:
@@ -1551,11 +1545,6 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
-    def set_explorer_section_enabled(self, enabled):
-        SETTINGS["explorer_section_enabled"] = bool(enabled)
-        store.save_settings(SETTINGS)
-        return SETTINGS
-
     def set_browser_section_enabled(self, enabled):
         SETTINGS["browser_section_enabled"] = bool(enabled)
         store.save_settings(SETTINGS)
@@ -2077,11 +2066,11 @@ class Api:
     # ---------------- Files section ----------------
     def launch_meridian_explorer(self):
         """Only ever one Explorer-family window at a time, across BOTH the
-        standalone Meridian Explorer.exe and the boxed Meridian
-        FileBrowse.exe (two separate compiled exes, but the same app from
-        the person's perspective - see load_explorer_box's docstring) -
-        if either is already running, focus it instead of launching a
-        second one."""
+        standalone Meridian Explorer.exe and Meridian FileBrowse.exe (a
+        separate compiled exe left over from the now-removed boxed/
+        internal mode - checked here too in case one happens to still be
+        running) - if either is already running, focus it instead of
+        launching a second one."""
         if system_actions.focus_process_window("Meridian Explorer.exe"):
             return {"ok": True, "error": None}
         if system_actions.focus_process_window("Meridian FileBrowse.exe"):
@@ -2094,105 +2083,38 @@ class Api:
 
     def open_desktop_entry(self, path, is_dir):
         """Called when the user activates a Desktop-section entry. Files
-        keep going through the normal launch path; folders are routed:
-        Explorer section visible -> tell the frontend to switch to it and
-        load Meridian Explorer boxed into that section's box; Explorer
-        section hidden -> open standalone Meridian Explorer (windowed, not
-        fullscreen); Meridian Explorer missing -> fall back to Windows
-        Explorer."""
+        keep going through the normal launch path; folders always open in
+        standalone Meridian Explorer (external-only, no boxed/embedded
+        mode anymore), falling back to Windows Explorer if it's missing."""
         if not is_dir:
             ok, err = system_actions.launch_path(path)
             return {"ok": ok, "error": err, "route": "launched"}
 
-        if SETTINGS.get("explorer_section_enabled", False):
-            return {"ok": True, "error": None, "route": "explorer_section", "path": path}
-
         exe = BASE_DIR / "Meridian Explorer.exe"
         if exe.exists():
-            # Same single-instance rule as launch_meridian_explorer(): focus
-            # whichever Explorer-family window (standalone or boxed)
-            # already exists instead of opening a second one - though a
-            # focused existing window can't be handed this specific new
-            # path, so it's still opened fresh only when nothing's running.
+            # Single instance: focus the existing window instead of
+            # opening a second one - though a focused existing window
+            # can't be handed this specific new path, so it's still
+            # opened fresh only when nothing's running.
             if system_actions.focus_process_window("Meridian Explorer.exe"):
-                return {"ok": True, "error": None, "route": "meridian_explorer"}
-            if system_actions.focus_process_window("Meridian FileBrowse.exe"):
                 return {"ok": True, "error": None, "route": "meridian_explorer"}
             ok, err = system_actions.launch_path(str(exe), args=[path])
             return {"ok": ok, "error": err, "route": "meridian_explorer"}
         ok, err = system_actions.open_folder(path)
         return {"ok": ok, "error": err, "route": "windows_explorer"}
 
-    def load_explorer_box(self, path, x, y, w, h):
-        """Launch (or relaunch, for a new path) Meridian FileBrowse — the
-        Explorer-section-embedded fork of Meridian Explorer, kept in its
-        own separate source files (Meridian_FileBrowse/) — sized/positioned
-        via its --box=X,Y,W,H arg to sit inside the Explorer section's
-        list-frame box. Never OS fullscreen. Meridian Launcher's own
-        controller bindings are suspended for the duration; a background
-        watcher notices when the user exits Meridian FileBrowse (its
-        Start/Escape "Exit Program" action) and hands focus + controls
-        back to Meridian Launcher automatically."""
-        global _explorer_box_proc
-        exe = BASE_DIR / "Meridian FileBrowse.exe"
+    def open_meridian_explorer_path(self, path):
+        """Target of the "Make Meridian Explorer the default shell
+        browser" registration (see explorer_shell.py) - opens a path in
+        standalone Meridian Explorer, external-only, same single-instance
+        rule as open_desktop_entry/launch_meridian_explorer."""
+        exe = BASE_DIR / "Meridian Explorer.exe"
         if not exe.exists():
-            return {"ok": False, "error": "Meridian FileBrowse.exe not found in the app folder."}
-        with _explorer_box_lock:
-            self.unload_explorer_box()
-            # Single-instance rule (see launch_meridian_explorer's docstring):
-            # a standalone Meridian Explorer.exe left running from some other
-            # entry point shouldn't coexist with this boxed one.
-            try:
-                if system_actions.is_process_running("Meridian Explorer.exe"):
-                    system_actions.kill_process("Meridian Explorer.exe")
-            except Exception:
-                pass
-            try:
-                args = [str(exe), path, f"--box={int(x)},{int(y)},{int(w)},{int(h)}"]
-                _explorer_box_proc = subprocess.Popen(
-                    args, cwd=str(BASE_DIR),
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                suspend_main_controls(True)
-                threading.Thread(target=_watch_explorer_box_exit, args=(_explorer_box_proc,), daemon=True).start()
-                return {"ok": True, "error": None}
-            except Exception as e:
-                return {"ok": False, "error": str(e)}
-
-    def unload_explorer_box(self):
-        """Terminate the boxed Meridian Explorer process, if any, so it
-        doesn't keep running in the background once the user leaves the
-        Explorer section, and hand Meridian Launcher's own controls back.
-
-        Actually WAITS (briefly) for the process to really exit before
-        returning, rather than firing terminate() and moving on - .Popen.
-        terminate() is not synchronous, and load_explorer_box() calls this
-        right before spawning a replacement; without waiting here, a
-        rapid re-entrant call (a re-render that lands on the Explorer
-        section again before the previous load finished, for instance)
-        could spawn a second Meridian FileBrowse.exe before the first one
-        had actually finished dying, leaving two instances alive at once
-        instead of one cleanly replacing the other."""
-        global _explorer_box_proc
-        with _explorer_box_lock:
-            if _explorer_box_proc is not None:
-                proc = _explorer_box_proc
-                try:
-                    if proc.poll() is None:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=3)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            try:
-                                proc.wait(timeout=2)
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-                _explorer_box_proc = None
-            suspend_main_controls(False)
+            return {"ok": False, "error": "Meridian Explorer.exe not found in the app folder."}
+        if system_actions.focus_process_window("Meridian Explorer.exe"):
             return {"ok": True, "error": None}
+        ok, err = system_actions.launch_path(str(exe), args=[path] if path else None)
+        return {"ok": ok, "error": err}
 
     # ---------------- Web section ----------------
     def open_picture_in_paint(self, path):
@@ -2750,7 +2672,20 @@ class Api:
         foreground: it's a controller overlay meant for use over other,
         external apps, and has nothing to do once you're back in Meridian
         Launcher itself — left running it would otherwise sit on top of
-        the Launcher UI, still capturing controller input alongside it."""
+        the Launcher UI, still capturing controller input alongside it.
+
+        And: unloads whatever's currently boxed (Meridian Explorer/
+        CyberDeckBrowser/a plugin webapp) the moment focus genuinely
+        leaves Meridian entirely - not just when THIS window stops being
+        foreground, since a boxed section is a real, separate top-level
+        process; giving it focus (completely normal, expected use of it)
+        ALSO makes GetForegroundWindow() report something other than
+        Launcher's own hwnd. The distinction that matters is "still
+        somewhere in Meridian" (this window, or whichever child it
+        currently has boxed) vs. "something else entirely took focus" -
+        only the second one means the section actually left the
+        foreground and should be torn down, which is what was leaving
+        Meridian Explorer running invisibly and causing errors."""
         try:
             import ctypes
             hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -2762,8 +2697,38 @@ class Api:
         global _WAS_FOREGROUND
         if now_foreground and not _WAS_FOREGROUND:
             _close_onscreenmenu_if_running()
+        elif not now_foreground:
+            self._unload_boxes_if_truly_backgrounded(hwnd)
         _WAS_FOREGROUND = now_foreground
         return now_foreground
+
+    def _unload_boxes_if_truly_backgrounded(self, foreground_hwnd):
+        """See is_foreground()'s docstring - only unloads if the current
+        foreground window belongs to neither this process nor whichever
+        child process is currently boxed."""
+        if not foreground_hwnd:
+            return
+        try:
+            fg_pid = wintypes.DWORD(0)
+            ctypes.windll.user32.GetWindowThreadProcessId(foreground_hwnd, ctypes.byref(fg_pid))
+            fg_pid = fg_pid.value
+        except Exception:
+            return
+        if fg_pid == os.getpid():
+            return  # some other window of our own (a dialog, etc.) - still us
+        boxed_pids = set()
+        if _browser_box_proc is not None and _browser_box_proc.poll() is None:
+            boxed_pids.add(_browser_box_proc.pid)
+        for proc in _plugin_webapp_procs.values():
+            if proc is not None and proc.poll() is None:
+                boxed_pids.add(proc.pid)
+        if fg_pid in boxed_pids:
+            return  # focus is on the boxed child itself - normal, expected use
+        # Focus is genuinely on something outside Meridian entirely.
+        if _browser_box_proc is not None:
+            self.unload_browser_box()
+        for plugin_id in list(_plugin_webapp_procs.keys()):
+            self.unload_plugin_webapp_box(plugin_id)
 
     def set_close_tasks_without_prompt(self, enabled):
         SETTINGS["close_tasks_without_prompt"] = bool(enabled)
@@ -3091,31 +3056,10 @@ def _controls_suspended():
     return _controller_suspended_for_plugin or _external_menu_open
 
 
-def _watch_explorer_box_exit(proc):
-    """Runs in a background thread for as long as a boxed Meridian
-    FileBrowse process lives. When the user picks its "Exit Program"
-    action (Start/Escape), the process simply exits; this notices and
-    tells the frontend to move the section selector back to the Sections
-    bar, then restores Meridian Launcher's own controls. If the user
-    instead navigates Meridian Launcher away from the Explorer section
-    first, unload_explorer_box() will already have replaced
-    _explorer_box_proc / cleared the suspend flag, so this becomes a
-    no-op once it notices proc is no longer the active one."""
-    proc.wait()
-    if _explorer_box_proc is not proc:
-        return  # already unloaded via normal navigation; nothing to do
-    suspend_main_controls(False)
-    try:
-        webview.windows[0].evaluate_js(
-            "window.onEmbeddedPluginExited && window.onEmbeddedPluginExited('explorer')"
-        )
-    except Exception:
-        pass
-
-
 def _watch_browser_box_exit(proc):
-    """Same as _watch_explorer_box_exit, for the boxed Meridian NetBrowse
-    process in the Browser section."""
+    """Same as the old boxed-Explorer watcher (now removed - Explorer is
+    external-only), for the boxed Meridian NetBrowse process in the
+    Browser section."""
     proc.wait()
     if _browser_box_proc is not proc:
         return

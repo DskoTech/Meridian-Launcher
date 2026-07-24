@@ -2719,13 +2719,13 @@ def _parse_box_arg():
 
 
 def _another_standalone_instance_running_and_focused(box):
-    """Only guards the STANDALONE launch path (no --box=) - a boxed
-    instance (spawned by Meridian Launcher's Explorer section) is
-    intentionally not single-instance-guarded here, since Meridian
-    Launcher's own load_explorer_box already serializes that (terminates
-    any previous boxed instance before starting a new one).
+    """Meridian Explorer is external-only now (Meridian Launcher's old
+    boxed/internal mode has been removed entirely) - the box parameter
+    and its early-exit below are kept only in case something still
+    passes --box= (there shouldn't be anything left that does), not
+    because boxed instances get any real support anymore.
 
-    If a standalone Meridian Explorer (or Meridian FileBrowse, its boxed
+    If a standalone Meridian Explorer (or Meridian FileBrowse, its
     sibling exe - see main.py's launch_meridian_explorer docstring for
     why these two count as "the same app") is already running, focus it
     instead of letting a second window open. Returns True (and has

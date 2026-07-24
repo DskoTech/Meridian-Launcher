@@ -143,7 +143,6 @@ def default_settings():
         "recent_games": [],  # [{"path": ..., "name": ...}], most-recent-first, capped at 5
         "display_type": {"games": "gallery"},  # per-section-id: "list" | "gallery"; any id not present defaults to "list"
         "desktop_section_enabled": False,  # Desktop: always first in the list when on, off by default
-        "explorer_section_enabled": False,  # Explorer: right after Desktop, off by default
         "browser_section_enabled": False,  # Browser: right after Explorer, off by default
         "load_subfolders": True,
         "video_fullscreen": False,

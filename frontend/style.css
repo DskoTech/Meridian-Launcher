@@ -1590,9 +1590,9 @@ body.layout-nighthorizon #item-panel {
    text — horizontal along the bottom, left edge to the left side of the
    bottom-right clock/battery block. ---- */
 body.layout-cyberradial #task-bar.taskbar-pos-cyber {
-  left: 0; bottom: 0; top: auto;
+  left: 0; bottom: -24px; top: auto;
   right: 160px;  /* stop before the bottom-right clock/battery block */
-  width: auto; height: 72px;
+  width: auto; height: 110px;
   flex-direction: row;
   border-left: none; border-bottom: none;
   border-bottom-left-radius: 0; border-bottom-right-radius: 0;
