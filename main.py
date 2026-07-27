@@ -14,6 +14,7 @@ import mimetypes
 import os
 import time
 import shutil
+import string
 import subprocess
 import sys
 import threading
@@ -125,6 +126,9 @@ WINDOW_MODE_REQUEST_FLAG = "--window-mode=borderless-fullscreen"
 MUSIC_EXT = {".mp3", ".flac", ".wav", ".m4a", ".ogg", ".wma", ".aac"}
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".m4v"}
+ARCHIVE_EXT = {".zip", ".rar", ".7z", ".tar", ".gz"}
+INSTALLER_EXT = {".exe", ".msi"}
+DOC_EXT = {".pdf", ".doc", ".docx", ".txt", ".xls", ".xlsx", ".ppt", ".pptx"}
 IMAGE_FILE_TYPES = ("Image Files (*.png;*.jpg;*.jpeg;*.bmp;*.webp)",)
 # Backgrounds also accept animated .gif (shown on a CSS layer that animates).
 BACKGROUND_FILE_TYPES = ("Image Files (*.png;*.jpg;*.jpeg;*.bmp;*.webp;*.gif)",)
@@ -721,13 +725,18 @@ def scan_dir(folder, extset):
 
 def _scan_flat(folder, extset):
     """Non-recursive: only files directly inside `folder`, used for manual
-    subfolder browsing when Load Subfolders is disabled."""
+    subfolder browsing when Load Subfolders is disabled. extset=None means
+    no extension filter at all (every file matches) - the Explorer
+    section's own general-file-browser mode."""
     found = []
     try:
         with os.scandir(folder) as it:
             for entry in it:
-                if entry.is_file() and Path(entry.name).suffix.lower() in extset:
-                    found.append(entry.path)
+                try:
+                    if entry.is_file() and (extset is None or Path(entry.name).suffix.lower() in extset):
+                        found.append(entry.path)
+                except OSError:
+                    continue  # this one entry couldn't be stat'd (broken reparse point, permission issue, etc.) - skip it, not the rest of the folder
     except OSError:
         pass
     return found
@@ -738,8 +747,11 @@ def _list_subfolders(folder):
     try:
         with os.scandir(folder) as it:
             for entry in it:
-                if entry.is_dir():
-                    subs.append(entry.name)
+                try:
+                    if entry.is_dir():
+                        subs.append(entry.name)
+                except OSError:
+                    continue  # same reasoning as _scan_flat above
     except OSError:
         pass
     return sorted(subs, key=str.lower)
@@ -781,6 +793,28 @@ def _save_index_cache(kind, cache):
         pass
 
 
+def _generic_icon_keyword_for(path):
+    """One of the frontend's ICONS dictionary keys, picked by extension
+    category - used by the Explorer section when NO real thumbnail or
+    extracted Windows icon was available at all, so different common
+    file types still look different from each other instead of every
+    "couldn't get a real icon" file rendering identically."""
+    ext = Path(path).suffix.lower()
+    if ext in PHOTO_EXT:
+        return "photos"
+    if ext in VIDEO_EXT:
+        return "videos"
+    if ext in MUSIC_EXT:
+        return "music"
+    if ext in ARCHIVE_EXT:
+        return "archive"
+    if ext in INSTALLER_EXT:
+        return "apps"
+    if ext in DOC_EXT:
+        return "document"
+    return "generic"
+
+
 def _build_entry(kind, path):
     """Build one library entry's metadata + thumbnail (expensive part)."""
     entry = {"path": path, "name": Path(path).name}
@@ -793,6 +827,28 @@ def _build_entry(kind, path):
         entry.update(read_video_meta(path))
         entry["durationLabel"] = fmt_duration(entry.get("duration", 0))
         thumb = get_video_thumb(path)
+    elif kind == "explorer":
+        # General file browser, not media-only: a real photo gets a real
+        # thumbnail (same as the Photos section); everything else gets
+        # its actual Windows-extracted icon (.exe/.docx/.zip/etc, same
+        # as the Desktop section) rather than silently failing to treat
+        # a non-image file as a photo. Full filename WITH extension -
+        # unlike Photos/Videos, which reasonably strip it for a cleaner
+        # look, a general file browser should show the real name the way
+        # Windows Explorer does.
+        entry["title"] = Path(path).name
+        if Path(path).suffix.lower() in PHOTO_EXT:
+            thumb = get_photo_thumb(path)
+        if not thumb:
+            thumb = get_file_icon(path)
+        if not thumb:
+            # Neither a real thumbnail nor a real extracted Windows icon
+            # was available at all (get_file_icon returns None for e.g.
+            # a file with no registered icon, or on a non-Windows/pywin32
+            # -less setup) - fall back to a category icon so at least
+            # common file types are still visually distinguishable from
+            # each other rather than all looking identical.
+            entry["iconKeyword"] = _generic_icon_keyword_for(path)
     else:
         entry["title"] = Path(path).stem
         thumb = get_photo_thumb(path)
@@ -1094,16 +1150,24 @@ def _scan_library_impl(kind):
 
 def _browse_folder_impl(kind, path, precache_subfolders=True):
     """Non-recursive single-directory listing, used by the subfolder
-    navigation sidebar when Load Subfolders is disabled. Also kicks off a
-    background thread to warm the thumbnail cache for every subfolder
-    underneath this one, so descending further is already fast by the
-    time the person gets there."""
-    extmap = {"music": MUSIC_EXT, "photos": PHOTO_EXT, "videos": VIDEO_EXT}
+    navigation sidebar when Load Subfolders is disabled (Photos/Videos/
+    Music), and always for the Explorer section (see extmap's "explorer":
+    None below - never any extension filter, and never treated as
+    recursive-capable at all, since Explorer always browses one real
+    folder at a time by design, not a small set of configured library
+    folders). Also kicks off a background thread to warm the thumbnail
+    cache for every subfolder underneath this one, so descending further
+    is already fast by the time the person gets there - except for
+    Explorer, where that would mean recursively walking an entire drive
+    in the background, which is a genuinely bad idea resource-wise for
+    a general-purpose file browser the way it isn't for a modest media
+    library folder."""
+    extmap = {"music": MUSIC_EXT, "photos": PHOTO_EXT, "videos": VIDEO_EXT, "explorer": None}
     if kind not in extmap or not path or not os.path.isdir(path):
         return {"path": path, "subfolders": [], "items": []}
     subfolders = _list_subfolders(path)
     entries = {p: _build_entry(kind, p) for p in _scan_flat(path, extmap[kind])}
-    if precache_subfolders and subfolders:
+    if precache_subfolders and subfolders and kind != "explorer":
         threading.Thread(target=_precache_folder_recursive, args=(kind, path), daemon=True).start()
     return {"path": path, "subfolders": subfolders, "items": _entries_to_response(kind, entries)}
 
@@ -1326,6 +1390,21 @@ class Api:
 
     def get_root_folders(self, kind):
         return SETTINGS["folders"].get(kind, [])
+
+    def list_drives(self):
+        """The Explorer section's "This PC"-style drive list - shown in
+        the subfolder rail specifically when browsing a drive's own root
+        (C:\\, D:\\, etc.), in place of that drive's real subfolders (see
+        app.js's buildFolderEntries for where this gets used and why).
+        Checking each letter's existence directly (rather than something
+        like GetLogicalDrives) is simple, needs no extra Windows API
+        binding, and is plenty fast for 26 possible letters."""
+        drives = []
+        for letter in string.ascii_uppercase:
+            root = f"{letter}:\\"
+            if os.path.exists(root):
+                drives.append(root)
+        return drives
 
     # ---------------- exe-list sections (apps/games/emulators/chat/streaming/custom) ----------------
     def list_section_items(self, section_id):
@@ -2866,7 +2945,12 @@ class Api:
         exe = BASE_DIR / "Meridian Game Library.exe"
         if not exe.exists():
             return {"ok": False, "error": "Meridian Game Library.exe not found in the app folder."}
-        ok, err = system_actions.launch_path(str(exe), args=[WINDOW_MODE_REQUEST_FLAG])
+        # No WINDOW_MODE_REQUEST_FLAG here (unlike CyberDeckBrowser/etc
+        # below) - Game Library should default to exclusive fullscreen
+        # (its own store.py default), not get forced into windowed
+        # fullscreen every single time it's opened the normal way, which
+        # is what passing that flag unconditionally was doing.
+        ok, err = system_actions.launch_path(str(exe))
         if ok:
             # launch_path only requests a maximized window, not foreground
             # focus - Windows' own foreground-lock behavior for a freshly

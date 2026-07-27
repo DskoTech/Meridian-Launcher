@@ -4,6 +4,11 @@ A theme is either:
   - a folder with a theme.css inside (plus optional theme.json), or
   - a single .css file (e.g. MyTheme.css).
 
+See examples/Example - Minimal Grey.css for a real, working reference
+theme showing this in practice - it's kept in examples/ specifically so
+it doesn't show up as a real selectable theme here (anything sitting
+loose in THIS folder is picked up and offered in the theme picker).
+
 theme.json (optional) can set:
   { "name": "My Cool Theme", "base": "cyber_radial" }
 

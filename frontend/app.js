@@ -70,6 +70,7 @@ const FIXED_CATEGORIES = [
   { id: "music", label: "Music", kind: "media", color: "var(--accent-music)" },
   { id: "photos", label: "Photos", kind: "media", color: "var(--accent-photos)" },
   { id: "videos", label: "Videos", kind: "media", color: "var(--accent-videos)" },
+  { id: "explorer", label: "Explorer", kind: "media", color: "var(--accent-files)" },
   { id: "apps", label: "Apps", kind: "exe_list", color: "var(--accent-apps)" },
   { id: "games", label: "Games", kind: "exe_list", color: "var(--accent-games)" },
   { id: "emulators", label: "Emulators", kind: "exe_list", color: "var(--accent-emulators)" },
@@ -411,6 +412,7 @@ function applyAccent() {
 // else defaults to list. Purely a rendering concern: same items, same
 // state, just a different CSS shape driven by body[data-display-type].
 function getDisplayType(catId) {
+  if (catId === "explorer") return "gallery"; // always gallery, never list - see the settings loop, which skips offering a toggle for it too
   const map = (state.settings && state.settings.display_type) || {};
   return map[catId] || "list";
 }
@@ -699,7 +701,9 @@ function moveCategory(delta) {
 // the section to the left. Right mirrors this back out to the file list.
 function isSubfolderModeActive() {
   const cat = state.categories[state.catIndex];
-  return !!(cat && cat.kind === "media" && state.settings && state.settings.load_subfolders === false);
+  if (!cat || cat.kind !== "media") return false;
+  if (cat.id === "explorer") return true; // always browse-mode, never the recursive scan
+  return !!(state.settings && state.settings.load_subfolders === false);
 }
 
 // ---------------- sections / options / subfolder focus cycle ----------------
@@ -1022,7 +1026,7 @@ async function refreshItemPanel() {
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderItemList(cat);
     } else if (cat.kind === "media") {
-      if (state.settings && state.settings.load_subfolders === false) {
+      if (cat.id === "explorer" || (state.settings && state.settings.load_subfolders === false)) {
         await refreshMediaBrowseView(cat.id);
       } else {
         setSubfolderNavHidden(true);
@@ -1113,10 +1117,19 @@ async function refreshMediaBrowseView(kind) {
   await loadCurrentBrowsePath(kind);
 }
 
+function _isDriveRoot(path) {
+  return /^[A-Za-z]:\\?$/.test((path || "").trim());
+}
+
 async function loadCurrentBrowsePath(kind) {
   const stack = state.folderStack[kind];
   const path = stack[stack.length - 1];
-  const [result, roots] = await Promise.all([api().browse_folder(kind, path), api().get_root_folders(kind)]);
+  const wantDrives = kind === "explorer" && _isDriveRoot(path);
+  const [result, roots, drives] = await Promise.all([
+    api().browse_folder(kind, path),
+    api().get_root_folders(kind),
+    wantDrives ? api().list_drives() : Promise.resolve(null),
+  ]);
   state.subfoldersCurrent = result.subfolders;
   let items = result.items;
   if (kind === "music") items = sortMusicItems(items);
@@ -1125,14 +1138,25 @@ async function loadCurrentBrowsePath(kind) {
   const combined = [...items, ...addonItems];
   state.items = combined.length ? combined : [{ __empty: true, __browsingEmpty: true }];
   state.selected = 0;
-  state.folderEntries = buildFolderEntries(kind, roots);
+  state.folderEntries = buildFolderEntries(kind, roots, drives);
   state.folderCursor = Math.max(0, Math.min(state.folderCursor, state.folderEntries.length - 1));
   renderSubfolderSidebar(kind);
   renderItemList(state.categories[state.catIndex]);
 }
 
-function buildFolderEntries(kind, roots) {
+function buildFolderEntries(kind, roots, drives) {
   const stack = state.folderStack[kind] || [];
+  const currentPath = stack[stack.length - 1];
+  if (kind === "explorer" && drives && _isDriveRoot(currentPath)) {
+    // At a drive's own root (C:\, D:\, etc.) - show the "This PC"-style
+    // drive list (in place of the single configured "C:\" root, which
+    // would be redundant with the drive list anyway), followed by this
+    // drive's own real subfolders underneath - same as the normal case
+    // below, just with drives standing in for "roots" at the top.
+    const entries = drives.map((d) => ({ type: "root", path: d }));
+    (state.subfoldersCurrent || []).forEach((name) => entries.push({ type: "subfolder", name }));
+    return entries;
+  }
   const entries = roots.map((r) => ({ type: "root", path: r }));
   if (stack.length > 1) entries.push({ type: "up" });
   (state.subfoldersCurrent || []).forEach((name) => entries.push({ type: "subfolder", name }));
@@ -1322,9 +1346,9 @@ function rowContentFor(cat, item, i) {
       <div class="meta"><div class="title">${escapeHtml(item.title)}</div><div class="subtitle">${escapeHtml(item.artist)} &middot; ${escapeHtml(item.album)}</div></div>
       <span class="dur">${item.durationLabel || ""}</span>`;
   }
-  if (cat.kind === "media") { // photos / videos
+  if (cat.kind === "media") { // photos / videos / explorer
     return `
-      <div class="row-visual">${item.thumbUrl ? `<img src="${item.thumbUrl}" alt="">` : ICONS[cat.id]}</div>
+      <div class="row-visual">${item.thumbUrl ? `<img src="${item.thumbUrl}" alt="">` : (ICONS[item.iconKeyword] || ICONS[cat.id])}</div>
       <div class="meta"><div class="title">${escapeHtml(item.title)}</div></div>
       ${cat.id === "videos" && item.durationLabel ? `<span class="dur">${item.durationLabel}</span>` : ""}`;
   }
@@ -1474,6 +1498,7 @@ async function activateCurrentSelection() {
   if (cat.id === "music") playMusicAt(state.selected);
   else if (cat.id === "photos") openPhoto(state.selected);
   else if (cat.id === "videos") openVideo(state.selected);
+  else if (cat.id === "explorer") launchAndNotify(item.path, cat.id);
   else if (item.__playnite) launchRecentPlayniteGame(item);
   else if (cat.kind === "exe_list") launchAndNotify(item.path, cat.id);
   else if (cat.kind === "desktop_list") {
@@ -2502,6 +2527,15 @@ function openStartMenu() {
   } else {
     paintBtn.classList.add("hidden");
   }
+  const closeSectionBtn = el("start-menu-close-section");
+  if (state.radialFocus === "sections") {
+    // Nothing is actually open yet (still browsing the sections bar,
+    // nothing committed) - "Close Section" has nothing to do here.
+    closeSectionBtn.classList.add("hidden");
+    startMenuItems = startMenuItems.filter((id) => id !== "start-menu-close-section");
+  } else {
+    closeSectionBtn.classList.remove("hidden");
+  }
   el("start-menu-overlay").classList.remove("hidden");
   highlightStartMenuCursor();
 }
@@ -3086,7 +3120,7 @@ async function renderSettings(group) {
 
   // media folders — Desktop Section is inserted after the first one
   // (Music) rather than being the very first settings control
-  ["music", "photos", "videos"].forEach((kind) => {
+  ["music", "photos", "videos", "explorer"].forEach((kind) => {
     const block = document.createElement("div");
     block.className = "settings-block";
     block.id = `settings-block-${kind}`;
@@ -3107,7 +3141,7 @@ async function renderSettings(group) {
     });
     block.appendChild(addBtn);
     c.appendChild(block);
-    c.appendChild(buildDisplayTypeBlock(kind));
+    if (kind !== "explorer") c.appendChild(buildDisplayTypeBlock(kind));
 
     if (kind === "music") {
       // Built-in fixed sections: show/hide each one individually. All on

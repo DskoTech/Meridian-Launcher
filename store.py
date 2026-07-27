@@ -77,7 +77,7 @@ def default_settings():
     sections["macros"] = {"items": []}  # each item: {"type": "bat", "path": ..., "name": ...}
 
     return {
-        "folders": {"music": [], "photos": [], "videos": []},
+        "folders": {"music": [], "photos": [], "videos": [], "explorer": ["C:\\"]},
         "sections": sections,
         "custom_sections": [],  # [{"id": "...", "label": "..."}]
         # Built-in fixed sections (Music/Photos/Videos/Apps/Games/

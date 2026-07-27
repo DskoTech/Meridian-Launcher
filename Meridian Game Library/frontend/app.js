@@ -695,7 +695,17 @@ function handleJumpToSubfolder() {
 
 function moveSelection(delta) {
   const cat = state.categories[state.catIndex];
-  if (cat.kind === "settings" || cat.kind === "direct") return; // no linear list to browse there
+  if (cat.kind === "direct") return;
+  if (cat.kind === "settings") {
+    // Settings is a scrollable panel, not a cursor-based list (see
+    // renderSettings) - previously up/down did nothing at all here,
+    // which meant a controller genuinely couldn't move through it past
+    // whatever fit on screen already. Scrolls the panel itself instead
+    // of trying to move a selection that doesn't exist.
+    const panel = el("item-panel");
+    if (panel) panel.scrollBy({ top: delta * 140, behavior: "smooth" });
+    return;
+  }
   if (!state.items.length) return;
   state.selected = Math.max(0, Math.min(state.items.length - 1, state.selected + delta));
   renderItemList(cat);

@@ -169,7 +169,29 @@ def _focused_text_field_hwnd():
     checked), else None. Returns the CONTROL's hwnd specifically (not
     just a bool) so callers can tell one focused field apart from
     another - see ForeignFocusWatcher.tick() for why that distinction
-    matters for not undoing a manual close."""
+    matters for not undoing a manual close.
+
+    A THIRD signal covers Chromium-based UIs (CyberDeckBrowser, and
+    Meridian Launcher/Game Library's own WebView2-hosted UI) - these
+    render everything, including HTML5 <input> fields, inside one
+    unified compositor surface. There's no separate native "Edit"
+    control per text field the way a classic Win32 app has, and
+    Chromium draws its own text cursor via GPU compositing rather than
+    the legacy OS caret API, so BOTH signals above are structurally
+    blind to a focused HTML5 input - this was "the on-screen keyboard
+    never comes up for typing into a web page" (auto-invoke correctly
+    stayed silent, just for the wrong reason - it genuinely couldn't
+    tell). Precisely identifying WHICH element is focused within a
+    Chromium page would need UI Automation (COM, IUIAutomation) - real
+    but substantially more complex and riskier to get right without a
+    way to test it live, so this takes the pragmatic middle ground
+    instead: if the focused control's window class is a known Chromium/
+    CEF/WebView2 rendering surface at all, treat that as "probably
+    typeable" and let OSK auto-invoke for it. Less precise than the
+    caret/edit-class checks (a Chromium page that's just showing static
+    text, no inputs, would also qualify), but web UIs overwhelmingly
+    involve some kind of text entry, and that's a far better trade than
+    auto-invoke being silently unable to help with HTML5 forms at all."""
     if not IS_WINDOWS:
         return None
     try:
@@ -188,7 +210,10 @@ def _focused_text_field_hwnd():
         if gti.hwndFocus:
             buf = ctypes.create_unicode_buffer(64)
             user32.GetClassNameW(gti.hwndFocus, buf, 64)
-            if (buf.value or "").strip().lower() in _EDIT_CONTROL_CLASSES:
+            class_name = (buf.value or "").strip().lower()
+            if class_name in _EDIT_CONTROL_CLASSES:
+                return gti.hwndFocus
+            if "chrome" in class_name:
                 return gti.hwndFocus
         return None
     except Exception:
