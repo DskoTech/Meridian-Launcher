@@ -697,28 +697,89 @@ def bluetooth_set_enabled(device_id: str, enabled: bool):
 
 
 def close_all_except(whitelist_names):
-    """Kill every process except those named in whitelist_names (case-insensitive)
-    and the always-protected core OS processes."""
+    """Close every app that owns a visible top-level window, except those
+    named in whitelist_names and the always-protected OS processes.
+
+    Strategy (avoids the black-screen problem caused by killing GPU/driver
+    processes that don't own any window):
+      1. EnumWindows: collect only PIDs that own a visible, non-minimised
+         top-level window.  Background services, audio daemons, GPU drivers,
+         etc. own no such window and are therefore never touched.
+      2. Send WM_CLOSE to each window gracefully first.
+      3. After a short wait, force-kill any process that is still alive.
+    """
     if psutil is None:
         return {"ok": False, "error": "psutil not installed", "closed": []}
 
+    import ctypes as _ct
+    import time as _t
+
+    user32 = _ct.windll.user32
+
     keep = {n.strip().lower() for n in whitelist_names if n.strip()}
     keep |= PROTECTED_PROCESSES
-
-    closed = []
     my_pid = os.getpid()
-    for proc in psutil.process_iter(["pid", "name"]):
+
+    # 1. Collect visible top-level windows and their owning PIDs.
+    target_hwnds = {}   # pid -> [hwnd, ...]
+    _pid_buf = _ct.c_ulong(0)
+
+    def _enum_cb(hwnd, _lp):
+        # Skip invisible, iconic (minimised-to-nothing), or child windows.
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        if not user32.GetWindow(hwnd, 4):   # GW_OWNER==4: skip owned popups
+            pass                             # top-level — keep going
+        title_len = user32.GetWindowTextLengthW(hwnd)
+        if title_len == 0:
+            return True                      # skip untitled chrome / tray icons
+        user32.GetWindowThreadProcessId(hwnd, _ct.byref(_pid_buf))
+        pid = _pid_buf.value
+        if pid and pid != my_pid:
+            target_hwnds.setdefault(pid, []).append(hwnd)
+        return True
+
+    _EnumWindowsProc = _ct.WINFUNCTYPE(_ct.c_bool, _ct.c_int, _ct.c_int)
+    user32.EnumWindows(_EnumWindowsProc(_enum_cb), 0)
+
+    # 2. Filter by name whitelist and collect psutil handles for force-kill.
+    targets = []   # (proc, [hwnds])
+    for pid, hwnds in target_hwnds.items():
         try:
-            if proc.pid == my_pid:
-                continue
-            name = (proc.info["name"] or "").lower()
+            proc = psutil.Process(pid)
+            name = (proc.name() or "").lower()
             if name in keep:
                 continue
-            proc.terminate()
-            closed.append(name)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            targets.append((proc, hwnds))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    return {"ok": True, "error": None, "closed": closed}
+
+    if not targets:
+        return {"ok": True, "error": None, "closed": []}
+
+    closed_names = []
+    WM_CLOSE = 0x0010
+
+    # 3a. Send WM_CLOSE gracefully to every target window.
+    for proc, hwnds in targets:
+        closed_names.append((proc.name() or "?").lower())
+        for hwnd in hwnds:
+            try:
+                user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+            except Exception:
+                pass
+
+    # 3b. Give apps up to 2 s to handle WM_CLOSE before force-kill.
+    _t.sleep(2.0)
+
+    for proc, _ in targets:
+        try:
+            if proc.is_running():
+                proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+            pass
+
+    return {"ok": True, "error": None, "closed": closed_names}
 
 
 def register_netbrowse_default_browser(trampoline_exe_path):

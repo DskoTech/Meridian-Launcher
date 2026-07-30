@@ -3149,6 +3149,23 @@ async function renderSettings(group) {
   ibBlock.appendChild(ibBtn);
   c.appendChild(ibBlock);
 
+  // Swap A / B buttons
+  const swapBlock = document.createElement('div');
+  swapBlock.className = 'settings-block';
+  swapBlock.innerHTML = '<h3>Swap A and B buttons</h3>'
+    + '<p class="settings-note">When on, A triggers Back and B triggers Confirm. '
+    + 'Useful for Nintendo-layout controllers where B is the bottom button. '
+    + 'Takes effect immediately without restarting the app.</p>';
+  const swapBtn = document.createElement('button');
+  swapBtn.className = 'settings-toggle' + (settings.swap_ab ? ' active' : '');
+  swapBtn.textContent = settings.swap_ab ? 'On (A=Back, B=Confirm)' : 'Off (A=Confirm, B=Back)';
+  swapBtn.addEventListener('click', async () => {
+    state.settings = await api().set_swap_ab(!settings.swap_ab);
+    renderSettings();
+  });
+  swapBlock.appendChild(swapBtn);
+  c.appendChild(swapBlock);
+
   // Controller debugger — live diagnostics, refreshed while it's on screen.
   const dbgBlock = document.createElement("div");
   dbgBlock.className = "settings-block";

@@ -2736,6 +2736,14 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    def set_swap_ab(self, enabled):
+        """Persist the swap-A/B setting and restart the controller listener
+        so the new button mapping takes effect immediately."""
+        SETTINGS["swap_ab"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        restart_controller()
+        return SETTINGS
+
     def controller_debug(self):
         """Deep diagnostics for the Settings controller debugger: which
         backend is live, what GameInput is doing poll-by-poll, and the raw
@@ -3435,6 +3443,8 @@ def start_controller():
     )
     if "input_backend" in _cl_params:
         _kwargs["input_backend"] = SETTINGS.get("input_backend", "browser_gamepad")
+    if "swap_ab" in _cl_params:
+        _kwargs["swap_ab"] = bool(SETTINGS.get("swap_ab", False))
     listener = ControllerListener(controls, **_kwargs)
     _CONTROLLER_LISTENER = listener
     listener.start()

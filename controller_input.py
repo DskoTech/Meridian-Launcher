@@ -52,7 +52,7 @@ class ControllerListener:
     def __init__(self, controls, on_action, on_any, on_quit_combo, on_foreground_combo,
                  on_raw_button=None, on_y_hold_complete=None, foreground_trigger_getter=None,
                  cooldown_scale_getter=None,
-                 prefer_xinput=False, input_backend=None):
+                 prefer_xinput=False, input_backend=None, swap_ab=False):
         """
         controls: dict following DEFAULT_CONTROLS shape (from controller_controls.json)
         on_action(action_name): called for confirm/back/up/down/left/right
@@ -79,7 +79,16 @@ class ControllerListener:
         self.gamepad = open_gamepad(prefer=prefer)
         self.input_backend = input_backend or "xinput"
         self.prefer_xinput = bool(prefer_xinput)
-        self.controls = controls
+        self.controls = dict(controls)  # local copy so we can mutate safely
+        # Swap A/B if the user requested it. Works by swapping the confirm and
+        # back bindings in the local copy — every downstream check just reads
+        # self.controls["confirm"] and self.controls["back"], so the whole
+        # input pipeline picks it up with no other changes needed.
+        if swap_ab:
+            confirm = self.controls.get("confirm", "A")
+            back    = self.controls.get("back",    "B")
+            self.controls["confirm"] = back
+            self.controls["back"]    = confirm
         self.on_action = on_action
         self.on_any = on_any
         self.on_quit_combo = on_quit_combo

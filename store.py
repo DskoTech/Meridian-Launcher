@@ -111,6 +111,7 @@ def default_settings():
         "window_mode": "exclusive_fullscreen",  # exclusive_fullscreen | windowed_fullscreen | windowed | kiosk
         "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
         "cyberradial_hue": "green",  # CyberRadial primary hue: green|orange|blue|red|purple|yellow|pink|chartreuse
+        "swap_ab": False,  # swap A (confirm) and B (back) buttons
         # Dawning Horizon background hue: "original", or "<palette>:<hue>"
         # where palette is light|dark|neon|primary|pastel|bubblegum and hue
         # is red|orange|yellow|green|blue|indigo|violet. Purely a frontend

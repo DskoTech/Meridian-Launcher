@@ -1050,6 +1050,13 @@ class Api:
         store.save_settings(SETTINGS)
         return SETTINGS
 
+    def set_swap_ab(self, enabled):
+        """Persist the swap-A/B setting and restart the controller listener."""
+        SETTINGS["swap_ab"] = bool(enabled)
+        store.save_settings(SETTINGS)
+        restart_controller()
+        return SETTINGS
+
     def is_suite_active(self):
         """Whether any Meridian-suite window is the foreground window.
         The frontend polls this to pause heavy canvas/CSS animations
@@ -1685,6 +1692,8 @@ def start_controller():
     # (new main.py, old controller_input.py) doesn't crash on startup.
     if "input_backend" in _cl_params:
         _kwargs["input_backend"] = SETTINGS.get("input_backend", "browser_gamepad")
+    if "swap_ab" in _cl_params:
+        _kwargs["swap_ab"] = bool(SETTINGS.get("swap_ab", False))
     listener = ControllerListener(controls, **_kwargs)
     _CONTROLLER_LISTENER = listener
     listener.start()

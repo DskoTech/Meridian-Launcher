@@ -108,6 +108,7 @@ def default_settings():
         "controller_bridge_mapping_path": None,
         "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
         "cyberradial_hue": "green",
+        "swap_ab": False,
         # Dawning Horizon background hue: "original", or "<palette>:<hue>"
         # where palette is light|dark|neon|primary|pastel|bubblegum and hue
         # is red|orange|yellow|green|blue|indigo|violet. Purely a frontend
