@@ -1670,16 +1670,22 @@ _CONTROLLER_LISTENER = None  # kept for the settings screen's controller_status(
 def start_controller():
     global _CONTROLLER_LISTENER
     controls = store.load_controller_controls()
-    listener = ControllerListener(
-        controls,
+    import inspect as _inspect
+    _cl_params = set(_inspect.signature(ControllerListener.__init__).parameters)
+    _kwargs = dict(
         on_action=_controller_action,
         on_any=_controller_any,
         on_quit_combo=_quit_via_combo,
         on_foreground_combo=_bring_to_foreground,
         foreground_trigger_getter=lambda: SETTINGS.get("foreground_trigger", "start_select"),
-        input_backend=SETTINGS.get("input_backend", "browser_gamepad"),
         prefer_xinput=bool(SETTINGS.get("prefer_xinput", False)),
     )
+    # input_backend was added in a later version of controller_input.py;
+    # only pass it if the installed copy accepts it so a partial update
+    # (new main.py, old controller_input.py) doesn't crash on startup.
+    if "input_backend" in _cl_params:
+        _kwargs["input_backend"] = SETTINGS.get("input_backend", "browser_gamepad")
+    listener = ControllerListener(controls, **_kwargs)
     _CONTROLLER_LISTENER = listener
     listener.start()
     return listener

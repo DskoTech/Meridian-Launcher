@@ -3421,18 +3421,21 @@ _CONTROLLER_LISTENER = None  # kept for the settings screen's controller_status(
 def start_controller():
     global _CONTROLLER_LISTENER
     controls = store.load_controller_controls()
-    listener = ControllerListener(
-        controls,
+    import inspect as _inspect
+    _cl_params = set(_inspect.signature(ControllerListener.__init__).parameters)
+    _kwargs = dict(
         on_action=_controller_action,
         on_any=_controller_any,
         on_quit_combo=_quit_via_combo,
         on_foreground_combo=_bring_to_foreground,
         foreground_trigger_getter=lambda: SETTINGS.get("foreground_trigger", "start_select"),
-        input_backend=SETTINGS.get("input_backend", "auto"),
         cooldown_scale_getter=lambda: _NAV_COOLDOWN_SCALE[0],
         on_raw_button=_controller_raw_button,
         on_y_hold_complete=_on_y_hold_complete,
     )
+    if "input_backend" in _cl_params:
+        _kwargs["input_backend"] = SETTINGS.get("input_backend", "browser_gamepad")
+    listener = ControllerListener(controls, **_kwargs)
     _CONTROLLER_LISTENER = listener
     listener.start()
     return listener
