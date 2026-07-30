@@ -3432,12 +3432,13 @@ async function renderSettings(group) {
   // Only rendered when CyberRadial (or a theme based on it) is active.
   if ((settings.layout || '').toLowerCase().includes('cyber')
       || (settings.layout || '').includes('radial')
-      || (settings.layout || '').includes('factory')) {
+      || (settings.layout || '').includes('factory')
+      || (settings.layout || '').includes('night')) {
     const crHues = ['green','orange','blue','red','purple','yellow','pink','chartreuse','rainbow-shift','rainbow-alt'];
     const crHueLabels = {green:'Green',orange:'Orange',blue:'Blue',red:'Red',purple:'Purple',yellow:'Yellow',pink:'Pink',chartreuse:'Chartreuse','rainbow-shift':'⬡ Shifting Rainbow','rainbow-alt':'⬡ Alternating Rainbow'};
     const crBlock = document.createElement('div');
     crBlock.className = 'settings-block';
-    crBlock.innerHTML = '<h3>CyberRadial accent hue</h3><p class="settings-note">Primary hue for the CyberRadial and Factory Central themes. Changes the orbital glow, active accent, and selected-row highlight. "Shifting Rainbow" cycles through all hues over time. "Alternating Rainbow" changes hue on every section change.</p>';
+    crBlock.innerHTML = '<h3>Theme accent hue</h3><p class="settings-note">Primary hue for the CyberRadial, Verticular Blobs, and Factory Central themes. Changes the orbital glow, active accent, and selected-row highlight. "Shifting Rainbow" cycles through all hues over time. "Alternating Rainbow" changes hue on every section change.</p>';
     const crRadio = document.createElement('div');
     crRadio.className = 'radio-group';
     const curHue = settings.cyberradial_hue || 'green';

@@ -1601,9 +1601,18 @@ body.layout-nighthorizon #task-bar.taskbar-pos-night #task-bar-list {
   flex-direction: row; flex-wrap: nowrap; overflow-x: auto; align-items: center;
 }
 /* Options box: lift its bottom above the taskbar strip (72px) plus the
-   now-playing bar it already cleared, so nothing collides. */
+   now-playing bar it already cleared, so nothing collides. Also
+   explicitly re-assert overflow-y:auto here: the second rule in a cascade
+   only overrides the properties it declares, but NOT declaring overflow-y
+   doesn't mean it inherits the first rule's value — it does, since both
+   rules target the same element, but some browsers recompute the shorthand
+   and clear it. Being explicit here is the safe path and makes
+   scrollSelectedIntoView() find a real scroll container instead of
+   scrolling the viewport. */
 body.layout-nighthorizon #item-panel {
   max-height: calc(100vh - 126px - 72px);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* ---- CyberRadial: open-programs bar in place of the removed control
@@ -1713,6 +1722,7 @@ body.app-idle *::after {
 /* When CyberRadial is active, --active-accent follows --cr-primary so
    every accent-reading rule (glow, borders, selected states) picks up
    the chosen hue automatically, without touching section-specific colours. */
-body.layout-cyberradial {
+body.layout-cyberradial,
+body.layout-nighthorizon {
   --active-accent: var(--cr-primary);
 }

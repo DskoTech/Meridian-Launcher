@@ -3193,5 +3193,153 @@ async function boot() {
   await playIntroIfConfigured();
 }
 
+const BROWSER_GAMEPAD_DEADZONE = 0.25;
+const BROWSER_GAMEPAD_COOLDOWN_MS = 200;
+const BROWSER_GAMEPAD_B_HOLD_MS = 2000;
+const BROWSER_GAMEPAD_X_HOLD_MS = 2000;
+
+// Standard W3C Gamepad API button/axis indices (the "standard" gamepad
+// mapping - what every Xbox-shaped controller, and Chromium's own
+// mapping for a DualShock/DualSense, normalizes to).
+const BG_BUTTON = {
+  A: 0, B: 1, X: 2, Y: 3,
+  LEFT_SHOULDER: 4, RIGHT_SHOULDER: 5,
+  LEFT_TRIGGER: 6, RIGHT_TRIGGER: 7,
+  BACK: 8, START: 9,
+  LEFT_THUMB: 10, RIGHT_THUMB: 11,
+  DPAD_UP: 12, DPAD_DOWN: 13, DPAD_LEFT: 14, DPAD_RIGHT: 15,
+  GUIDE: 16,
+};
+
+let _bgState = {
+  lastFireAt: {},      // action -> timestamp, for the directional-repeat cooldown
+  prevDpadHeld: {},    // up/down/left/right -> bool, for edge-triggered nav
+  prevButtonHeld: {},  // confirm/back/menu_start/etc -> bool
+  bHoldStart: null, bHoldFired: false,
+  xHoldStart: null, xHoldFired: false,
+  rstickSeekLatched: false,
+  shouldersLatched: false,
+};
+
+function _bgCanFire(action) {
+  const now = performance.now();
+  const last = _bgState.lastFireAt[action] || 0;
+  if (now - last >= BROWSER_GAMEPAD_COOLDOWN_MS) {
+    _bgState.lastFireAt[action] = now;
+    return true;
+  }
+  return false;
+}
+
+function _bgDeadzone(v) {
+  return Math.abs(v) < BROWSER_GAMEPAD_DEADZONE ? 0 : v;
+}
+
+function _bgEdge(key, heldNow, fn) {
+  const wasHeld = !!_bgState.prevButtonHeld[key];
+  if (heldNow && !wasHeld) fn();
+  _bgState.prevButtonHeld[key] = heldNow;
+}
+
+function _pollBrowserGamepad() {
+  // Always reschedules itself, even when this isn't the active backend
+  // right now - this used to return here WITHOUT calling
+  // requestAnimationFrame again, which permanently killed the loop the
+  // first time it ran before state.settings was populated (a real race
+  // with boot()'s own async settings fetch, or gamepadconnected firing
+  // very early) - once dead, it never resumed even after switching to
+  // this backend later, since nothing else ever restarts it except the
+  // few explicit call sites. Checking fresh every frame and no-op'ing
+  // instead of dying is what actually makes this robust.
+  if (!state.settings || state.settings.input_backend !== "browser_gamepad") {
+    requestAnimationFrame(_pollBrowserGamepad);
+    return;
+  }
+  const pads = (navigator.getGamepads && navigator.getGamepads()) || [];
+  // Multi-controller: aggregate all connected pads so any connected
+  // controller can navigate — first one to press a button wins per action.
+  const activePads = Array.prototype.filter.call(pads, (p) => p && p.connected);
+  if (!activePads.length) return requestAnimationFrame(_pollBrowserGamepad);
+  // Helper: true if ANY connected pad has button i pressed
+  const btn = (i) => activePads.some((gp) => gp.buttons[i] && gp.buttons[i].pressed);
+  // Aggregate axes: use the pad with the largest deflection on each axis
+  const axis = (idx) => activePads.reduce((best, gp) => {
+    const v = gp.axes[idx] || 0;
+    return Math.abs(v) > Math.abs(best) ? v : best;
+  }, 0);
+
+  // D-pad + left stick, both drive navigation
+  const dpadUp = btn(BG_BUTTON.DPAD_UP) || _bgDeadzone(axis(1)) < 0;
+  const dpadDown = btn(BG_BUTTON.DPAD_DOWN) || _bgDeadzone(axis(1)) > 0;
+  const dpadLeft = btn(BG_BUTTON.DPAD_LEFT) || _bgDeadzone(axis(0)) < 0;
+  const dpadRight = btn(BG_BUTTON.DPAD_RIGHT) || _bgDeadzone(axis(0)) > 0;
+  if (dpadUp && _bgCanFire("up")) window.handleControllerInput("up");
+  if (dpadDown && _bgCanFire("down")) window.handleControllerInput("down");
+  if (dpadLeft && _bgCanFire("left")) window.handleControllerInput("left");
+  if (dpadRight && _bgCanFire("right")) window.handleControllerInput("right");
+
+  _bgEdge("confirm", btn(BG_BUTTON.A), () => window.handleControllerInput("confirm"));
+  _bgEdge("back", btn(BG_BUTTON.B), () => window.handleControllerInput("back"));
+  _bgEdge("menu_start", btn(BG_BUTTON.START), () => window.handleControllerInput("menu_start"));
+  _bgEdge("y_subfolder", btn(BG_BUTTON.Y), () => window.handleControllerInput("y_subfolder"));
+  _bgEdge("x_taskbar", btn(BG_BUTTON.X), () => window.handleControllerInput("x_taskbar"));
+  _bgEdge("stop_music", btn(BG_BUTTON.RIGHT_THUMB), () => window.handleControllerInput("stop_music"));
+
+  // B held 2s -> back_hold_system (same as controller_input.py's B_HOLD_SECONDS)
+  if (btn(BG_BUTTON.B)) {
+    if (_bgState.bHoldStart === null) { _bgState.bHoldStart = performance.now(); _bgState.bHoldFired = false; }
+    else if (!_bgState.bHoldFired && performance.now() - _bgState.bHoldStart >= BROWSER_GAMEPAD_B_HOLD_MS) {
+      _bgState.bHoldFired = true;
+      window.handleControllerInput("back_hold_system");
+    }
+  } else {
+    _bgState.bHoldStart = null; _bgState.bHoldFired = false;
+  }
+
+  // X held 2s -> x_taskbar_hold (close the highlighted task)
+  if (btn(BG_BUTTON.X)) {
+    if (_bgState.xHoldStart === null) { _bgState.xHoldStart = performance.now(); _bgState.xHoldFired = false; }
+    else if (!_bgState.xHoldFired && performance.now() - _bgState.xHoldStart >= BROWSER_GAMEPAD_X_HOLD_MS) {
+      _bgState.xHoldFired = true;
+      window.handleControllerInput("x_taskbar_hold");
+    }
+  } else {
+    _bgState.xHoldStart = null; _bgState.xHoldFired = false;
+  }
+
+  // Shoulders: single = prev/next track, both = random track
+  const lb = btn(BG_BUTTON.LEFT_SHOULDER), rb = btn(BG_BUTTON.RIGHT_SHOULDER);
+  if (lb && rb) {
+    if (!_bgState.shouldersLatched) { _bgState.shouldersLatched = true; window.handleControllerInput("random_track"); }
+  } else {
+    _bgState.shouldersLatched = false;
+    _bgEdge("prev_track", lb, () => window.handleControllerInput("prev_track"));
+    _bgEdge("next_track", rb, () => window.handleControllerInput("next_track"));
+  }
+
+  // Right stick left/right: rewind/fast-forward 10s, edge-triggered on
+  // crossing the deadzone (not repeat-fired while held over)
+  const rx = _bgDeadzone(axis(2));
+  if (rx !== 0) {
+    if (!_bgState.rstickSeekLatched) {
+      _bgState.rstickSeekLatched = true;
+      window.handleControllerInput(rx < 0 ? "seek_back_10" : "seek_fwd_10");
+    }
+  } else {
+    _bgState.rstickSeekLatched = false;
+  }
+
+  requestAnimationFrame(_pollBrowserGamepad);
+}
+
+window.addEventListener("gamepadconnected", () => {
+  // Always schedule the poll loop on connection — it self-gates on
+  // the active backend, so calling it here is safe regardless of mode.
+  // This means switching TO browser_gamepad live always finds the loop
+  // running, rather than depending on the loop having already been
+  // started earlier.
+  requestAnimationFrame(_pollBrowserGamepad);
+});
+
 if (window.pywebview) boot();
 else window.addEventListener("pywebviewready", boot);
