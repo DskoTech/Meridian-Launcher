@@ -90,7 +90,11 @@ class BrowserController:
 
             browser.page().runJavaScript(
 
-                f"window.scrollBy(0,{int(state.right_y*-500)});"
+                # state.right_y is already in SDL convention (up = negative)
+                # from _sample_gameinput's -snap.ry. A positive multiplier
+                # means up-stick → negative scrollBy → scroll up. The
+                # previous *-500 was a double-negation that inverted the axis.
+                f"window.scrollBy(0,{int(state.right_y*500)});"
 
             )
 

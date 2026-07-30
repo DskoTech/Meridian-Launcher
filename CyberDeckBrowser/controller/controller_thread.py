@@ -165,7 +165,14 @@ class ControllerThread(QThread):
         # that predates the DirectInput/SDL3 backends now available).
         if GAMEINPUT_AVAILABLE and self.pad is None:
             try:
-                self.pad = open_gamepad()
+                # Explicit prefer: CyberDeckBrowser uses its own controller
+                # stack and must never read or change the Launcher's shared
+                # input_backend setting. browser_gamepad is a pywebview
+                # frontend concept and has no meaning here; xinput is the
+                # correct stable default for a Qt/native app.
+                self.pad = open_gamepad(
+                    prefer=("xinput", "gameinput", "directinput", "sdl3")
+                )
             except Exception:
                 self.pad = None
         if self.pad is not None:

@@ -69,7 +69,9 @@ class ControllerThread(QThread):
         try:
 
             # GameInput first, XInput fallback (see module docstring)
-            self.pad = open_gamepad()
+            self.pad = open_gamepad(
+            prefer=("xinput", "gameinput", "directinput", "sdl3")
+        )  # explicit: OSM never touches the Launcher's input_backend setting
 
         except Exception:
 

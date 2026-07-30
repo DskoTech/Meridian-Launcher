@@ -803,7 +803,12 @@ class MeridianExplorer:
         # with sticks/triggers on real hardware).
         self.joysticks = []
         if open_gamepad is not None:
-            pad = open_gamepad()
+            # Explicit prefer: Explorer manages its own controller
+            # polling and must not change the Launcher's input_backend
+            # setting. browser_gamepad has no meaning in a native app.
+            pad = open_gamepad(
+                prefer=("xinput", "gameinput", "directinput", "sdl3")
+            )
             if pad is not None:
                 self.joysticks = [SDLJoystickShim(pad)]
         if not self.joysticks:
