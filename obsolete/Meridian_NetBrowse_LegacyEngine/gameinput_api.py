@@ -151,11 +151,8 @@ controller_input.py for how that's threaded through.
 """
 
 import ctypes
-import datetime
-import json
 import os
 import sys
-import threading
 import time
 
 IS_WINDOWS = sys.platform == "win32"
@@ -307,9 +304,6 @@ DIAG = {
     "trigger_moved": False,
     "nonzero_states": 0,  # states where any button was down
     "native_status": "not checked yet",  # see the gameinput_native import block below
-    "native_raw_buttons": None,        # untranslated GameInput bitmask, native backend only
-    "native_last_timestamp_us": None,  # last GameInputReading timestamp seen, native backend only
-    "native_timestamp_changing": None, # False here across many polls = frozen/stale reading bug
 }
 
 
@@ -320,8 +314,6 @@ def reset_diag():
         "slot_probe": {}, "stage": "not started", "last_state": None,
         "buttons_seen": 0, "stick_moved": False, "trigger_moved": False,
         "nonzero_states": 0,
-        "native_raw_buttons": None, "native_last_timestamp_us": None,
-        "native_timestamp_changing": None,
     })
 
 
@@ -344,29 +336,6 @@ def _record_state(state):
     if state.leftTrigger > 0.2 or state.rightTrigger > 0.2:
         DIAG["trigger_moved"] = True
     if state.buttons:
-        DIAG["nonzero_states"] += 1
-
-
-def _record_snapshot(snap):
-    """Same DIAG bookkeeping as _record_state above, but for a
-    GamepadSnapshot (buttons/lt/rt/lx/ly/rx/ry field names, already
-    translated to XI_BUTTONS convention) instead of the raw ctypes
-    GameInput struct - used by _NativeGameInputGamepad and any other
-    backend that returns a GamepadSnapshot directly rather than the raw
-    struct _record_state expects."""
-    DIAG["last_state"] = {
-        "buttons": "0x%08X" % snap.buttons,
-        "lt": round(snap.lt, 3), "rt": round(snap.rt, 3),
-        "lx": round(snap.lx, 3), "ly": round(snap.ly, 3),
-        "rx": round(snap.rx, 3), "ry": round(snap.ry, 3),
-    }
-    DIAG["buttons_seen"] |= snap.buttons
-    if (abs(snap.lx) > 0.3 or abs(snap.ly) > 0.3 or
-            abs(snap.rx) > 0.3 or abs(snap.ry) > 0.3):
-        DIAG["stick_moved"] = True
-    if snap.lt > 0.2 or snap.rt > 0.2:
-        DIAG["trigger_moved"] = True
-    if snap.buttons:
         DIAG["nonzero_states"] += 1
 
 
@@ -800,40 +769,11 @@ class _NativeGameInputGamepad:
         self._pad = _gameinput_native.GameInputPad()  # raises if GameInputCreate fails
 
     def poll(self):
-        # Previously this backend updated NONE of DIAG's counters (polls/
-        # readings/no_reading/states/stage/last_state/...) - they were
-        # only ever written by the ctypes fallback below, so the
-        # Settings > Controls diagnostic readout stayed permanently at
-        # "stage: not started, polls: 0" for anyone actually using the
-        # real native backend, even while it was working perfectly fine
-        # (or, just as unhelpfully, while it was silently broken) - no
-        # way to tell which from that readout alone. Instrumented the
-        # same way the ctypes path always was.
-        DIAG["polls"] += 1
         result = self._pad.poll()
         if result is None:
-            DIAG["no_reading"] += 1
-            DIAG["stage"] = "native poll() returned None (no reading available)"
             return None
-        DIAG["readings"] += 1
-        # 7-tuple from an older-built .pyd (before raw_buttons/timestamp
-        # were added to help diagnose "reads successfully but everything
-        # is always zero"), or the current 9-tuple - handle both so an
-        # unrebuilt .pyd doesn't crash on unpack, it just won't have the
-        # two extra diagnostic fields.
-        if len(result) >= 9:
-            buttons, lt, rt, lx, ly, rx, ry, raw_buttons, timestamp_us = result[:9]
-            DIAG["native_raw_buttons"] = "0x%08X" % raw_buttons
-            prev_ts = DIAG.get("native_last_timestamp_us")
-            DIAG["native_timestamp_changing"] = (prev_ts is None or timestamp_us != prev_ts)
-            DIAG["native_last_timestamp_us"] = timestamp_us
-        else:
-            buttons, lt, rt, lx, ly, rx, ry = result[:7]
-        snap = GamepadSnapshot(buttons=buttons, lt=lt, rt=rt, lx=lx, ly=ly, rx=rx, ry=ry)
-        DIAG["states"] += 1
-        DIAG["stage"] = "ok"
-        _record_snapshot(snap)
-        return snap
+        buttons, lt, rt, lx, ly, rx, ry = result
+        return GamepadSnapshot(buttons=buttons, lt=lt, rt=rt, lx=lx, ly=ly, rx=rx, ry=ry)
 
     def close(self):
         self._pad = None
@@ -1165,15 +1105,10 @@ class DirectInputGamepad:
         ]
         DirectInput8Create.restype = ctypes.c_long
 
-        # Pass NULL (0) as hInstance — using GetModuleHandleW(None) returns
-        # the Python interpreter EXE handle, which causes DirectInput8Create
-        # to fail with HR=0x80070005 (E_ACCESSDENIED) on some Windows builds
-        # (Joy-Con / non-Xbox DirectInput devices are the most common trigger).
-        # Passing 0 tells DInput8 to use its own module handle, which is the
-        # documented correct approach for non-Win32 hosts.
+        hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
         di_ptr = ctypes.c_void_p()
-        hr = DirectInput8Create(0, 0x0800, ctypes.byref(self.IID_IDirectInput8W),
-                                ctypes.byref(di_ptr), None)
+        hr = DirectInput8Create(hinst, 0x0800, ctypes.byref(self.IID_IDirectInput8W),
+                                 ctypes.byref(di_ptr), None)
         if hr != 0 or not di_ptr:
             raise OSError("DirectInput8Create failed (hr=0x%08X)" % (hr & 0xFFFFFFFF))
         self._di = di_ptr
@@ -1511,15 +1446,10 @@ class JoyConPairGamepad:
             ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
         ]
         DirectInput8Create.restype = ctypes.c_long
-        # Pass NULL (0) as hInstance — using GetModuleHandleW(None) returns
-        # the Python interpreter EXE handle, which causes DirectInput8Create
-        # to fail with HR=0x80070005 (E_ACCESSDENIED) on some Windows builds
-        # (Joy-Con / non-Xbox DirectInput devices are the most common trigger).
-        # Passing 0 tells DInput8 to use its own module handle, which is the
-        # documented correct approach for non-Win32 hosts.
+        hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
         di_ptr = ctypes.c_void_p()
-        hr = DirectInput8Create(0, 0x0800, ctypes.byref(self.IID_IDirectInput8W),
-                                ctypes.byref(di_ptr), None)
+        hr = DirectInput8Create(hinst, 0x0800, ctypes.byref(self.IID_IDirectInput8W),
+                                 ctypes.byref(di_ptr), None)
         if hr != 0 or not di_ptr:
             raise OSError("DirectInput8Create failed (hr=0x%08X)" % (hr & 0xFFFFFFFF))
         self._di = di_ptr
@@ -1732,83 +1662,11 @@ class SDL3Gamepad:
 # Factory
 # ---------------------------------------------------------------------------
 
-_DIAG_DUMP_DELAY_SECONDS = 180  # "a few minutes" - long enough to move
-# sticks/press buttons a bunch first, short enough not to need the app
-# left running forever to get a useful dump.
-_diag_dump_scheduled = False
-
-
-def _diag_dump_path():
-    """Same writable-regardless-of-install-location folder store.py's
-    DATA_DIR uses (computed independently here rather than importing
-    store, since not every app folder this file gets copied into
-    necessarily has a store.py) - a Program Files install usually isn't
-    writable by a non-elevated process, %LOCALAPPDATA% always is.
-    Named per-app (from the running exe/script's own basename) so
-    multiple apps' dumps don't overwrite each other if more than one is
-    running at once."""
-    local_appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
-    data_dir = os.path.join(local_appdata, "Meridian Launcher")
-    try:
-        os.makedirs(data_dir, exist_ok=True)
-    except Exception:
-        pass
-    app_name = os.path.splitext(os.path.basename(
-        sys.executable if getattr(sys, "frozen", False) else (sys.argv[0] or "app")
-    ))[0]
-    return os.path.join(data_dir, "gameinput_diag_dump_%s.txt" % app_name)
-
-
-def _write_diag_dump(backend_name):
-    lines = []
-    lines.append("Meridian GameInput diagnostic dump")
-    lines.append("=" * 70)
-    lines.append("Time       : %s" % datetime.datetime.now().isoformat())
-    lines.append("Backend    : %s" % backend_name)
-    lines.append("Dumped     : %ds after open_gamepad() returned this backend" % _DIAG_DUMP_DELAY_SECONDS)
-    lines.append("")
-    lines.append("DIAG:")
-    try:
-        lines.append(json.dumps(DIAG, indent=2, default=str))
-    except Exception as e:
-        lines.append("(couldn't serialize DIAG: %s) raw repr:\n%r" % (e, DIAG))
-    lines.append("")
-    lines.append("LAST_BACKEND_ERRORS:")
-    try:
-        lines.append(json.dumps(LAST_BACKEND_ERRORS, indent=2, default=str))
-    except Exception:
-        lines.append(repr(LAST_BACKEND_ERRORS))
-    text = "\n".join(lines) + "\n"
-
-    path = _diag_dump_path()
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text)
-    except Exception:
-        pass  # best-effort - a failed diagnostic dump shouldn't be its own bug report
-
-
-def _schedule_diag_dump(backend_name):
-    """Fires _write_diag_dump exactly once, _DIAG_DUMP_DELAY_SECONDS
-    after a backend was successfully opened - see open_gamepad()'s
-    wrapper below for where this gets called. Global flag guards against
-    scheduling more than one timer if open_gamepad() somehow gets called
-    more than once in the same process (Settings > Controls backend
-    switches do exactly this)."""
-    global _diag_dump_scheduled
-    if _diag_dump_scheduled:
-        return
-    _diag_dump_scheduled = True
-    timer = threading.Timer(_DIAG_DUMP_DELAY_SECONDS, _write_diag_dump, args=(backend_name,))
-    timer.daemon = True
-    timer.start()
-
-
 def open_gamepad(prefer=None, log=None):
     """Return the best available gamepad backend, or None.
 
     prefer: optional iterable of backend names to try, in order.
-            Defaults to ("browser_gamepad", "xinput", "gameinput", "directinput", "sdl3") -
+            Defaults to ("xinput", "gameinput", "directinput", "sdl3") -
             XInput first, since it's the plain stable public API and
             correctly reports every button/trigger/stick; the others are
             alternates for edge cases XInput doesn't cover, including
@@ -1826,13 +1684,9 @@ def open_gamepad(prefer=None, log=None):
     if env in ("xinput", "gameinput", "directinput", "sdl3", "joycon_pair"):
         prefer = (env,)
     elif prefer is None:
-        # browser_gamepad is the default auto mode — it uses the browser's
-        # own Gamepad API (HTML5) which works reliably across all controller
-        # types including Joy-Cons, PS5, and Xbox without needing native
-        # drivers or special permissions. XInput is the secondary fallback
-        # for when the page isn't focused or the user needs native polling.
-        # joycon_pair excluded from auto chain — see JoyConPairGamepad docstring.
-        prefer = ("browser_gamepad", "xinput", "gameinput", "directinput", "sdl3")
+        # joycon_pair deliberately excluded from this default chain - see
+        # JoyConPairGamepad's docstring for why it's explicit-selection-only.
+        prefer = ("xinput", "gameinput", "directinput", "sdl3")
     prefer = tuple(prefer)
 
     # Record why each backend was rejected, so the settings screen can show
@@ -1863,13 +1717,6 @@ def open_gamepad(prefer=None, log=None):
                 pad = SDL3Gamepad()
             elif name == "joycon_pair":
                 pad = JoyConPairGamepad()
-            elif name == "browser_gamepad":
-                # browser_gamepad is handled entirely in the frontend JS
-                # (see _pollBrowserGamepad in app.js). When it's the
-                # selected backend, open_gamepad returns None so the Python
-                # controller listener sits idle. Signal this cleanly.
-                if log: log("gamepad backend: browser_gamepad (handled in frontend)")
-                return None
             else:
                 continue
 
@@ -1897,7 +1744,6 @@ def open_gamepad(prefer=None, log=None):
                     fallback_pad.close()
                 except Exception:
                     pass
-            _schedule_diag_dump(pad.backend)
             return pad
         except Exception as e:
             LAST_BACKEND_ERRORS[name] = "%s: %s" % (type(e).__name__, e)
@@ -1911,7 +1757,6 @@ def open_gamepad(prefer=None, log=None):
     if fallback_pad is not None:
         if log:
             log("gamepad backend: %s (no device detected yet)" % fallback_pad.backend)
-        _schedule_diag_dump(fallback_pad.backend)
         return fallback_pad
     return None
 
