@@ -39,6 +39,20 @@ echo Running pywin32 post-install fixups (registers COM helpers pywin32 needs)..
 python -m pywin32_postinstall -install >nul 2>nul
 
 echo.
+echo Checking for the Rust toolchain (for the native meridian_core backend)...
+where cargo >nul 2>nul
+if errorlevel 1 (
+    echo   [optional] Rust ^(cargo^) not found. The Launcher and Game Library
+    echo   run fine without it - they fall back to pure Python - but building
+    echo   the native backend gives faster library scanning and startup.
+    echo   To enable it, install Rust once from https://rustup.rs, then run
+    echo   BuildMeridianCore.bat ^(or just re-run your normal build script^).
+) else (
+    echo   OK - Rust found. BuildMeridianCore.bat will compile the native
+    echo   backend during the build.
+)
+
+echo.
 echo === Done. ===
 echo   - Run "python main.py" to launch Meridian Launcher from source.
 echo   - Run "compile.bat" to build Meridian Launcher.exe with PyInstaller.

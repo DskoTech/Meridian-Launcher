@@ -12,6 +12,7 @@ it always had.
 """
 
 import threading
+import time as _time_module  # aliased so the module-level name 'time' stays unambiguous
 import time
 
 from gameinput_api import XI_BUTTONS as BUTTONS, open_gamepad
@@ -85,6 +86,19 @@ class ControllerListener:
         self.on_foreground_combo = on_foreground_combo
         self.on_raw_button = on_raw_button
         self.on_y_hold_complete = on_y_hold_complete
+        # ---- zero-input watchdog (Bug 3 / GameInput-BT fix) ----
+        # If the active backend returns sustained all-zero / None for longer
+        # than _ZERO_WATCHDOG_SECS we probe XInput directly. When XInput NOW
+        # has a device the watchdog tears down the current backend and
+        # re-opens with XInput — this covers:
+        #   a) Xbox One BT connecting a few seconds after open_gamepad() ran
+        #      (so the initial probe found nothing and fell through to GameInput)
+        #   b) The GameInput Bluetooth silent-input bug (reading that looks ok
+        #      but all fields are permanently zero).
+        # 3 s is long enough that normal menu navigation pauses don't trigger
+        # it, short enough that a BT pairing delay (~2-3 s) trips it reliably.
+        self._zero_since = None
+        self._ZERO_WATCHDOG_SECS = 3.0
         self._stop = threading.Event()
         self.last_connected = False  # did the most recent poll see a controller?
         self._last_fire = {}
@@ -154,6 +168,45 @@ class ControllerListener:
                 snap = self.gamepad.poll()
             except Exception:
                 snap = None
+
+            # ---- zero-input watchdog ----
+            # If this backend has returned nothing but None / all-zeros for
+            # _ZERO_WATCHDOG_SECS seconds, check whether XInput NOW has a
+            # device. If it does, the current backend is silently broken
+            # (GameInput Bluetooth bug, or the controller connected after the
+            # initial open_gamepad() probe) — swap to XInput immediately.
+            snap_is_empty = (snap is None or (
+                snap.buttons == 0 and snap.lt < 0.05 and snap.rt < 0.05
+                and abs(snap.lx) < 0.05 and abs(snap.ly) < 0.05
+                and abs(snap.rx) < 0.05 and abs(snap.ry) < 0.05
+            ))
+            if snap_is_empty:
+                if self._zero_since is None:
+                    self._zero_since = _time_module.monotonic()
+                elif (_time_module.monotonic() - self._zero_since >= self._ZERO_WATCHDOG_SECS
+                        and getattr(self.gamepad, 'backend', '') != 'XInput'):
+                    # Probe XInput; if it sees a device, switch.
+                    try:
+                        from gameinput_api import XInputGamepad
+                        xi = XInputGamepad()
+                        xi_snap = xi.poll()
+                        if xi_snap is not None:
+                            try:
+                                self.gamepad.close()
+                            except Exception:
+                                pass
+                            self.gamepad = xi
+                            self._zero_since = None
+                            snap = xi_snap
+                            snap_is_empty = False
+                        else:
+                            xi.close()
+                            self._zero_since = _time_module.monotonic()  # reset window
+                    except Exception:
+                        self._zero_since = _time_module.monotonic()
+            else:
+                self._zero_since = None
+
             self.last_connected = snap is not None
             if snap is not None:  # controller connected
                 pressed = self._button_names(snap.buttons)

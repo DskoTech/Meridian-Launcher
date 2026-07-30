@@ -26,6 +26,21 @@ echo  Meridian Ecosystem - Compile All ^& Package
 echo ============================================================
 echo.
 
+REM Build the native Rust backend once, up front. Best-effort: the
+REM per-app build scripts also call this, but doing it here first
+REM means it is built a single time and simply reused. A failure
+REM here is non-fatal - the apps fall back to pure Python.
+echo [0] Building native core (meridian_core)...
+call "%ROOT%BuildMeridianCore.bat"
+echo.
+
+REM Build gameinput_native.pyd (real GameInput SDK - fixes Xbox One
+REM Bluetooth silent-input bug). Best-effort: skipped automatically if
+REM already built or if the MSVC toolchain isn't present.
+echo [0b] Building gameinput_native ^(real GameInput SDK backend^)...
+call "%ROOT%BuildGameInputNative.bat"
+echo.
+
 echo [1/6] Building Meridian Launcher...
 call "%ROOT%buildMeridianLauncher.bat" < NUL
 if not exist "%ROOT%dist\MeridianLauncher.exe" (
@@ -164,10 +179,14 @@ if exist "%ROOT%DskoTech" rmdir /s /q "%ROOT%DskoTech"
 mkdir "%ROOT%DskoTech"
 
 REM onefile apps - single exes straight in
-copy /y "%ROOT%dist\MeridianLauncher.exe"                    "%ROOT%DskoTech\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe"  "%ROOT%DskoTech\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%ROOT%DskoTech\" >nul || set "FAILED=1"
-copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"            "%ROOT%DskoTech\" >nul || set "FAILED=1"
+copy /y "%ROOT%dist\MeridianLauncher.exe"                    "%ROOT%DskoTech\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe"  "%ROOT%DskoTech\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%ROOT%DskoTech\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"            "%ROOT%DskoTech\" >nul
+if errorlevel 1 set "FAILED=1"
 
 REM default-shell-browser trampolines - best-effort only
 if exist "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse Shell Handler.exe" (

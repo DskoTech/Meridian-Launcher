@@ -168,6 +168,40 @@ const state = {
 
 const el = (id) => document.getElementById(id);
 const api = () => window.pywebview.api;
+function _crHueColor(hue) {
+  return {green:'#a6e83f',orange:'#ff8c00',blue:'#00bfff',red:'#ff3040',
+          purple:'#bf5fff',yellow:'#ffe600',pink:'#ff69b4',chartreuse:'#7fff00'}[hue] || '#a6e83f';
+}
+
+
+// ---------------- idle / background animation gating ----------------
+const _idleAnim = { paused: false, suiteActive: true };
+function _pauseIdleAnimations() {
+  if (_idleAnim.paused) return;
+  _idleAnim.paused = true;
+  try { document.body.classList.add('app-idle'); } catch (e) {}
+}
+function _resumeIdleAnimations() {
+  if (!_idleAnim.paused) return;
+  _idleAnim.paused = false;
+  try { document.body.classList.remove('app-idle'); } catch (e) {}
+  try { if (typeof blobState !== 'undefined' && blobState && !blobState.raf && blobState.step) blobState.step(); } catch (e) {}
+  try { if (typeof threadState !== 'undefined' && threadState && !threadState.raf && threadState.step) threadState.step(); } catch (e) {}
+}
+
+// ---------------- HTML5 Gamepad API gesture unlock ----------------
+window._unlockHtml5Gamepad = function() {
+  try {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < pads.length; i++) {
+      if (pads[i]) {
+        window.dispatchEvent(new GamepadEvent('gamepadconnected', { gamepad: pads[i] }));
+        return;
+      }
+    }
+    setTimeout(window._unlockHtml5Gamepad, 200);
+  } catch(e) {}
+};
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -579,6 +613,8 @@ function applyLayoutClass() {
   applyDawningThemeColor(state.settings);
   if (state.settings) { applyBackground(state.settings); applyOverlay(state.settings); }
   applyTaskbarPlacement();
+  const crHue = (state.settings && state.settings.cyberradial_hue) || 'green';
+  document.body.setAttribute('data-cr-hue', crHue);
 }
 
 // ---------------- category selection (always live, no separate "enter" step) ----------------
@@ -1391,6 +1427,7 @@ function buildToggleBlock(title, isOn, onChange, note) {
 }
 
 async function renderSettings() {
+  const _prevScroll = (() => { const ip = el('item-panel'); return ip ? ip.scrollTop : 0; })();
   const settings = await api().get_settings();
   state.settings = settings;
   applyLayoutClass();
@@ -1407,6 +1444,47 @@ async function renderSettings() {
     <div class="controls-grid"><div class="controls-row"><span class="controls-btn">A</span><span class="controls-desc">Confirm / launch the selected game</span></div><div class="controls-row"><span class="controls-btn">B</span><span class="controls-desc">Back / close menus and overlays</span></div><div class="controls-row"><span class="controls-btn">D-pad / Left stick</span><span class="controls-desc">Navigate — up/down through games, left/right across sections</span></div><div class="controls-row"><span class="controls-btn">Y (tap)</span><span class="controls-desc">Jump to the Show filter side panel (All / Installed / Not Installed)</span></div><div class="controls-row"><span class="controls-btn">Start</span><span class="controls-desc">Open the Start menu — hide/unhide games, rename titles, show hidden games, close the program</span></div><div class="controls-row"><span class="controls-btn">Start + Back (together)</span><span class="controls-desc">Bring Meridian Game Library to the foreground</span></div></div>`;
   c.appendChild(controlsBlock);
   setTimeout(updateControllerStatusLine, 0);
+
+  // Input backend selector
+  const GL_BACKEND_ORDER = ['browser_gamepad','xinput','gameinput','directinput','sdl3','auto'];
+  const GL_BACKEND_LABELS = {browser_gamepad:'Browser Gamepad API',xinput:'XInput',gameinput:'GameInput',directinput:'DirectInput',sdl3:'SDL3',auto:'Auto'};
+  const ibBlock2 = document.createElement('div');
+  ibBlock2.className = 'settings-block';
+  ibBlock2.innerHTML = '<h3>Input backend</h3><p class="settings-note">browser_gamepad (default) supports all controller types. xinput is the secondary fallback.</p>';
+  const ibBtn2 = document.createElement('button');
+  const curIB2 = settings.input_backend || 'browser_gamepad';
+  ibBtn2.className = 'settings-toggle';
+  ibBtn2.textContent = GL_BACKEND_LABELS[curIB2] || curIB2;
+  ibBtn2.addEventListener('click', async () => {
+    const cur = (await api().get_settings()).input_backend || 'browser_gamepad';
+    const next = GL_BACKEND_ORDER[(GL_BACKEND_ORDER.indexOf(cur) + 1) % GL_BACKEND_ORDER.length];
+    await api().set_input_backend(next);
+    renderSettings();
+  });
+  ibBlock2.appendChild(ibBtn2);
+  c.appendChild(ibBlock2);
+
+  if ((settings.layout || '').toLowerCase().includes('cyber') || (settings.layout || '').includes('radial')) {
+    const crHues = ['green','orange','blue','red','purple','yellow','pink','chartreuse'];
+    const crBlock2 = document.createElement('div');
+    crBlock2.className = 'settings-block';
+    crBlock2.innerHTML = '<h3>CyberRadial Accent Hue</h3>';
+    const crR2 = document.createElement('div'); crR2.className = 'radio-group';
+    const curH2 = settings.cyberradial_hue || 'green';
+    crHues.forEach((hue) => {
+      const pill = document.createElement('div');
+      pill.className = 'radio-pill' + (curH2 === hue ? ' active' : '');
+      pill.textContent = hue.charAt(0).toUpperCase() + hue.slice(1);
+      pill.addEventListener('click', async () => {
+        await api().set_cyberradial_hue(hue);
+        document.body.setAttribute('data-cr-hue', hue);
+        renderSettings();
+      });
+      crR2.appendChild(pill);
+    });
+    crBlock2.appendChild(crR2);
+    c.appendChild(crBlock2);
+  }
 
   // Prefer XInput: force the proven backend when GameInput misbehaves.
   c.appendChild(buildToggleBlock(
@@ -1846,6 +1924,7 @@ async function renderSettings() {
   c.appendChild(creditBlock);
 
   panel.appendChild(c);
+  if (panel) panel.scrollTop = _prevScroll || 0;
   alignCategoryRowToList();
 }
 
@@ -2873,6 +2952,13 @@ function handleTaskbarInput(action) {
 let _isForeground = true;
 async function _pollForeground() {
   try { _isForeground = await api().is_foreground(); } catch (e) { _isForeground = true; }
+  try {
+    const active = await api().is_suite_active();
+    if (active !== _idleAnim.suiteActive) {
+      _idleAnim.suiteActive = active;
+      if (active) _resumeIdleAnimations(); else _pauseIdleAnimations();
+    }
+  } catch (e) { /* backend unavailable: leave animations running */ }
 }
 setInterval(_pollForeground, 400);
 _pollForeground();
@@ -2952,6 +3038,7 @@ function initBlobBackground() {
   resize();
 
   function step() {
+    if (_idleAnim.paused) { blobState.raf = null; return; }
     const w = canvas.width, h = canvas.height;
     ctx.clearRect(0, 0, w, h);
 
@@ -2988,6 +3075,7 @@ function initBlobBackground() {
   }
 
   blobState = { canvas, blobs, raf: null };
+  blobState.step = step;
   step();
 }
 
@@ -3030,6 +3118,7 @@ function initSilkThreads() {
   }
 
   function step() {
+    if (_idleAnim.paused) { threadState.raf = null; return; }
     const w = canvas.width, h = canvas.height;
     ctx.clearRect(0, 0, w, h);
     const accentRgb = hexToRgbString(getComputedStyle(document.documentElement).getPropertyValue("--active-accent") || "#fbbf24");
@@ -3074,6 +3163,7 @@ function initSilkThreads() {
   }
 
   threadState = { canvas, threads, raf: null };
+  threadState.step = step;
   step();
 }
 async function boot() {

@@ -24,6 +24,10 @@ if errorlevel 1 (
     goto :end
 )
 
+REM Build the native Rust backend (meridian_core.pyd) first. Best-effort:
+REM if this fails the app still builds and runs on the pure-Python fallback.
+call "%~dp0BuildMeridianCore.bat"
+
 echo Cleaning previous build output...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist

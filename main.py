@@ -54,6 +54,7 @@ import task_manager_server
 import display_audio_server
 import network_pairing_server
 import desktop_refocus_watcher
+import idle_optimizer
 import system_actions
 import tasks_win
 import explorer_shell
@@ -63,6 +64,15 @@ import updater
 import plugin_manager
 import addon_settings
 from controller_input import ControllerListener
+
+# Native Rust backend (meridian_core.pyd / .so). Best-effort: every function
+# that delegates to it keeps its original pure-Python implementation as a
+# fallback, so the app still runs unchanged if the compiled module is absent
+# (e.g. a source checkout that hasn't been built yet). See meridian_core/.
+try:
+    import meridian_core as _mc
+except Exception:
+    _mc = None
 
 # Recently-played games are sourced from Game Library's own Playnite
 # integration (real, comprehensive play history) rather than Launcher
@@ -368,6 +378,7 @@ def _ensure_plugon_server_started(plugin_id):
 _rescan_plugins()
 
 desktop_refocus_watcher.start()
+idle_optimizer.start()
 
 
 # --------------------------------------------------------------------------
@@ -378,7 +389,13 @@ TOKEN_MAP = {}
 
 
 def token_for(path: str) -> str:
-    h = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
+    if _mc is not None:
+        try:
+            h = _mc.sha1_hex(str(path))
+        except Exception:
+            h = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
+    else:
+        h = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
     TOKEN_MAP[h] = path
     return h
 
@@ -542,10 +559,27 @@ def start_media_server():
 
 MEDIA_PORT = start_media_server()
 
+# Native media server (meridian_core): serves the /media file route with
+# Range support from Rust. The Python server above stays up for the
+# pywebview-coupled /internal/* routes (and as a media fallback). When the
+# native server is running, media_url points at it and registers tokens in
+# its map; otherwise everything falls back to the Python path unchanged.
+_NATIVE_MEDIA_PORT = 0
+if _mc is not None:
+    try:
+        _NATIVE_MEDIA_PORT = _mc.media_start() or 0
+    except Exception:
+        _NATIVE_MEDIA_PORT = 0
+
 
 def media_url(path):
     if not path:
         return None
+    if _NATIVE_MEDIA_PORT and _mc is not None:
+        try:
+            return f"http://127.0.0.1:{_NATIVE_MEDIA_PORT}/media?t={_mc.media_register(str(path))}"
+        except Exception:
+            pass
     return f"http://127.0.0.1:{MEDIA_PORT}/media?t={token_for(str(path))}"
 
 
@@ -558,6 +592,11 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 
 def _cache_path(key):
+    if _mc is not None:
+        try:
+            return CACHE_DIR / (_mc.sha1_hex(key) + ".jpg")
+        except Exception:
+            pass
     return CACHE_DIR / (hashlib.sha1(key.encode("utf-8")).hexdigest() + ".jpg")
 
 
@@ -715,6 +754,11 @@ def read_video_meta(path):
 
 
 def scan_dir(folder, extset):
+    if _mc is not None:
+        try:
+            return _mc.scan_dir(str(folder), list(extset))
+        except Exception:
+            pass
     found = []
     for root, _dirs, files in os.walk(folder):
         for name in files:
@@ -728,6 +772,11 @@ def _scan_flat(folder, extset):
     subfolder browsing when Load Subfolders is disabled. extset=None means
     no extension filter at all (every file matches) - the Explorer
     section's own general-file-browser mode."""
+    if _mc is not None:
+        try:
+            return _mc.scan_flat(str(folder), None if extset is None else list(extset))
+        except Exception:
+            pass
     found = []
     try:
         with os.scandir(folder) as it:
@@ -743,6 +792,11 @@ def _scan_flat(folder, extset):
 
 
 def _list_subfolders(folder):
+    if _mc is not None:
+        try:
+            return _mc.list_subfolders(str(folder))
+        except Exception:
+            pass
     subs = []
     try:
         with os.scandir(folder) as it:
@@ -759,6 +813,11 @@ def _list_subfolders(folder):
 
 def fmt_duration(seconds):
     seconds = int(seconds or 0)
+    if _mc is not None:
+        try:
+            return _mc.fmt_duration(seconds)
+        except Exception:
+            pass
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
@@ -799,6 +858,11 @@ def _generic_icon_keyword_for(path):
     extracted Windows icon was available at all, so different common
     file types still look different from each other instead of every
     "couldn't get a real icon" file rendering identically."""
+    if _mc is not None:
+        try:
+            return _mc.generic_icon_keyword(path)
+        except Exception:
+            pass
     ext = Path(path).suffix.lower()
     if ext in PHOTO_EXT:
         return "photos"
@@ -1123,21 +1187,55 @@ def _scan_library_impl(kind):
     if kind not in extmap:
         return []
 
+    current_mtimes = {}
+    folders = SETTINGS["folders"].get(kind, [])
+    _scanned = False
+    if _mc is not None:
+        try:
+            # One native call does the recursive walk + ext filter + mtime
+            # read for every configured folder at once (the cold-scan hot
+            # path for large libraries).
+            current_mtimes = dict(
+                _mc.scan_with_mtimes([str(f) for f in folders], list(extmap[kind]))
+            )
+            _scanned = True
+        except Exception:
+            _scanned = False
+    if not _scanned:
+        for folder in folders:
+            if not os.path.isdir(folder):
+                continue
+            for path in scan_dir(folder, extmap[kind]):
+                try:
+                    current_mtimes[path] = os.path.getmtime(path)
+                except OSError:
+                    continue
+
+    fresh_items = {}
+    # Native fast path: prepare (load cache + partition) in Rust, build only
+    # the stale entries in Python, then finalize (merge + save + assemble the
+    # response with media tokens) in Rust. Requires the native media server so
+    # the tokens it registers are actually servable. Any failure falls through
+    # to the identical pure-Python path below.
+    if _mc is not None and _NATIVE_MEDIA_PORT:
+        try:
+            stale = _mc.index_prepare(
+                kind, str(_index_cache_path(kind)), list(current_mtimes.items())
+            )
+            new_entries = {p: _build_entry(kind, p) for p in stale}
+            resp = _mc.index_finalize(kind, json.dumps(new_entries))
+            if resp is not None:
+                return json.loads(resp)
+        except Exception:
+            try:
+                _mc.index_discard(kind)
+            except Exception:
+                pass
+            # fall through to the pure-Python path
+
     cache = _load_index_cache(kind)
     cached_mtimes = cache.get("files", {})
     cached_items = cache.get("items", {})
-
-    current_mtimes = {}
-    for folder in SETTINGS["folders"].get(kind, []):
-        if not os.path.isdir(folder):
-            continue
-        for path in scan_dir(folder, extmap[kind]):
-            try:
-                current_mtimes[path] = os.path.getmtime(path)
-            except OSError:
-                continue
-
-    fresh_items = {}
     for path, mtime in current_mtimes.items():
         if path in cached_items and cached_mtimes.get(path) == mtime:
             fresh_items[path] = cached_items[path]  # unchanged: skip re-reading tags/thumbnail entirely
@@ -2626,6 +2724,18 @@ class Api:
         restart_controller()
         return SETTINGS
 
+    def set_cyberradial_hue(self, hue):
+        """Persist the CyberRadial primary hue choice. The frontend applies
+        the CSS variable immediately; this just saves it so it survives
+        relaunches."""
+        valid = {"green", "orange", "blue", "red", "purple", "yellow", "pink", "chartreuse",
+                 "rainbow-shift", "rainbow-alt"}
+        if hue not in valid:
+            return
+        SETTINGS["cyberradial_hue"] = hue
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
     def controller_debug(self):
         """Deep diagnostics for the Settings controller debugger: which
         backend is live, what GameInput is doing poll-by-poll, and the raw
@@ -2780,6 +2890,17 @@ class Api:
             self._unload_boxes_if_truly_backgrounded(hwnd)
         _WAS_FOREGROUND = now_foreground
         return now_foreground
+
+    def is_suite_active(self):
+        """Whether any Meridian-suite window (this one or a child like
+        CyberDeckBrowser / onscreenmenu / a boxed section) is the foreground
+        window. The frontend polls this to pause its heavy canvas/CSS
+        animations while a genuinely external app (a game, etc.) is in front,
+        and resume them the moment focus returns to the suite. Distinct from
+        is_foreground(), which is this-window-only and gates controller
+        navigation; here a focused Meridian child still counts as active so
+        the backdrop keeps animating behind an overlay."""
+        return idle_optimizer.is_suite_active()
 
     def _unload_boxes_if_truly_backgrounded(self, foreground_hwnd):
         """See is_foreground()'s docstring - only unloads if the current
@@ -3082,6 +3203,9 @@ def _quit_via_combo():
 # [action_name, timestamp] of the most recent controller action to reach the
 # app — the settings debugger uses it to prove input is (or isn't) arriving.
 _LAST_CONTROLLER_ACTION = [None, 0.0]
+# One-shot flag: set to True after the first native controller action so
+# the HTML5 Gamepad API gesture-unlock evaluate_js fires exactly once.
+_html5_gamepad_unlocked = False
 
 # True while a boxed sub-app (Meridian FileBrowse / Meridian NetBrowse) has
 # its own window focused and its own controller polling active — Meridian
@@ -3198,6 +3322,25 @@ def _controller_action(action_name):
     # record it for the settings debugger before dispatching
     _LAST_CONTROLLER_ACTION[0] = action_name
     _LAST_CONTROLLER_ACTION[1] = time.time()
+    # Bug 2b fix: the W3C Gamepad API spec requires a "gamepad user gesture"
+    # (button press while the page is focused) before navigator.getGamepads()
+    # returns data. For the browser_gamepad backend the page loop handles this
+    # itself, but when a NATIVE backend has the controller, the frontend never
+    # receives that gesture. We synthesize it here on the first controller
+    # action so the browser_gamepad backend is immediately usable if the user
+    # switches to it later, and so any page embed that polls getGamepads()
+    # (e.g. a game inside a boxed section) works without a manual button press.
+    # One-shot: once the flag is set we skip the evaluate_js on every subsequent
+    # action so there's zero overhead at steady state.
+    global _html5_gamepad_unlocked
+    if not _html5_gamepad_unlocked:
+        _html5_gamepad_unlocked = True
+        try:
+            webview.windows[0].evaluate_js(
+                "window._unlockHtml5Gamepad && window._unlockHtml5Gamepad();"
+            )
+        except Exception:
+            pass
     try:
         webview.windows[0].evaluate_js(f"window.handleControllerInput && window.handleControllerInput('{action_name}')")
     except Exception:

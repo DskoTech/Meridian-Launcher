@@ -157,6 +157,21 @@ echo   OK - all Python packages installed.
 echo.
 
 REM ---------------------------------------------------------
+REM  2b. Build toolchains, UP FRONT (before compiling). Both the
+REM      native Rust backend (meridian_core) and gameinput_native
+REM      need the MSVC C++ toolchain, and meridian_core is built
+REM      during the app-compile step below, so MSVC + Rust must be
+REM      ready first. EnsureMSVCBuildTools is idempotent, so the
+REM      gameinput_native step later just detects it and moves on.
+REM ---------------------------------------------------------
+echo [2b/6] Setting up build toolchains ^(MSVC + Rust^)...
+echo   - Microsoft C++ Build Tools...
+call "%ROOT%EnsureMSVCBuildTools.bat"
+echo   - Rust ^(for the native meridian_core backend^)...
+call "%ROOT%EnsureRustToolchain.bat"
+echo.
+
+REM ---------------------------------------------------------
 REM  3. Compile all five apps using their own build scripts,
 REM     exactly like CompileAndPackage.bat does.
 REM ---------------------------------------------------------
@@ -286,49 +301,12 @@ REM actually detecting "already installed" up front and skipping the
 REM whole thing, rather than relying on the bootstrapper's own
 REM no-op-if-present behavior the way the smaller installers below do.
 echo   - Microsoft C++ Build Tools ^(needed to build gameinput_native^)...
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-set "VCTOOLS_FOUND="
-if exist "%VSWHERE%" (
-    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
-        if not "%%i"=="" set "VCTOOLS_FOUND=1"
-    )
-)
-if defined VCTOOLS_FOUND (
-    echo     OK - already installed, skipping ^(found via vswhere^).
-) else (
-    echo     Not found - installing ^(this step alone can take a while on a
-    echo     fresh machine, several GB^)...
-    if exist "%ROOT%Dependencies\vs_buildtools.exe" (
-        copy /y "%ROOT%Dependencies\vs_buildtools.exe" "%TEMPDL%\vs_buildtools.exe" >nul
-    ) else (
-        powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile '%TEMPDL%\vs_buildtools.exe'"
-    )
-    if exist "%TEMPDL%\vs_buildtools.exe" (
-        "%TEMPDL%\vs_buildtools.exe" --quiet --wait --norestart --nocache ^
-            --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended
-        echo     OK - installed.
-    ) else (
-        echo     [WARN] Couldn't download the C++ Build Tools - gameinput_native
-        echo            will fail to build below and fall back to the older ctypes
-        echo            implementation ^(everything else still works^). Install the
-        echo            "Desktop development with C++" workload manually from
-        echo            https://visualstudio.microsoft.com/visual-cpp-build-tools/
-        echo            and re-run this installer to try again.
-    )
-)
+call "%ROOT%EnsureMSVCBuildTools.bat"
 echo.
 
-echo   - gameinput_native ^(optional - real GameInput SDK backend^)...
-%PY% "%ROOT%gameinput_native\build_and_deploy.py" < NUL
-if not exist "%ROOT%gameinput_native\gameinput_native*.pyd" (
-    echo     [WARN] Not built - controller input will use the older ctypes
-    echo            fallback in this install ^(everything else still works^).
-    echo            Usually means the C++ Build Tools step above didn't
-    echo            complete successfully - see gameinput_native\README.md
-    echo            to build it manually, or just re-run this installer.
-) else (
-    echo     OK - built ^(staged into %%INSTALL_DIR%% below^).
-)
+echo   - gameinput_native ^(real GameInput SDK backend — fixes Xbox One
+echo     Bluetooth controller support, see gameinput_native/README.md^)...
+call "%ROOT%BuildGameInputNative.bat"
 echo.
 
 REM ---------------------------------------------------------
@@ -346,10 +324,14 @@ if exist "%STAGE%" rmdir /s /q "%STAGE%"
 mkdir "%STAGE%"
 
 REM onefile apps - single exes straight in
-copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
 
 REM default-shell-browser trampolines - best-effort, not required for the
 REM apps themselves to work, only for the "make default" settings
@@ -390,9 +372,12 @@ robocopy "%ROOT%Meridian Game Library\dist\Meridian Game Library" "%STAGE%" /E /
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 
 REM companion scripts, docs, and the Playnite exporter extension
-copy /y "%ROOT%README.md"            "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%README.md"            "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
 robocopy "%ROOT%Meridian_Exporter" "%STAGE%\Meridian_Exporter" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%themes" "%STAGE%\themes" /E /NFL /NDL /NJH /NJS >nul
 REM Plugins/ (auto-scanned custom sections) and examples/ (the blank

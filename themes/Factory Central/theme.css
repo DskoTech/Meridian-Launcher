@@ -142,28 +142,26 @@ body.layout-user-factory-central #horizon-glow::after {
    #preview-pane; both elements otherwise unused for ::before/::after in
    this theme). Fixed positioning means these ignore their host's own box
    and lay out purely against the viewport. */
-body.layout-user-factory-central #subfolder-nav::before,
-body.layout-user-factory-central #preview-pane::before,
-body.layout-user-factory-central #preview-pane::after {
+/* multicolor checkerboard frame: reassigned to always-present elements
+   so it never disappears when #preview-pane or #subfolder-nav are
+   hidden (display:none removes pseudo-elements from render entirely).
+     body::before        → top + bottom bars
+     body::after         → left bar
+     #clock-wrap::before → right bar (#clock-wrap::after is the dot ring)
+   All use position:fixed so they cover the full viewport regardless of
+   which element hosts them. z-index:-3 keeps them behind all panels. */
+body.layout-user-factory-central::before,
+body.layout-user-factory-central::after,
+body.layout-user-factory-central #clock-wrap::before {
   content: "";
   position: fixed;
-  /* z-index: 0 (positioned, fixed) still paints ABOVE normal-flow
-     content like the plain list rows inside #subfolder-nav - which is
-     why this frame was showing up over that box's real content instead
-     of staying strictly in the background. Negative puts it behind
-     everything, matching the intent ("selector layer" background decor
-     only). */
   z-index: -3;
   pointer-events: none;
-  --sq: 46px; /* checkerboard square size */
+  --sq: 46px;
 }
-/* top+bottom edges, both painted from this one element instead of a
-   separate ::before/::after each — frees up #subfolder-nav::after for the
-   dot ring below (its pseudo-elements are otherwise unused and, unlike
-   #task-bar, nothing here sets a transform/filter/backdrop-filter that
-   would break position:fixed's normal "relative to the viewport"
-   behavior for its children). */
-body.layout-user-factory-central #subfolder-nav::before {
+/* top + bottom checker bars — body::before covers full viewport,
+   paints one stripe at top and one at bottom via two bg-positions. */
+body.layout-user-factory-central::before {
   top: 0; left: 0; width: 100vw; height: 100vh;
   background-image:
     repeating-linear-gradient(90deg,
@@ -178,7 +176,10 @@ body.layout-user-factory-central #subfolder-nav::before {
   background-repeat: repeat-x, repeat-x;
   background-size: 100% var(--sq), 100% var(--sq);
 }
-body.layout-user-factory-central #preview-pane::before {
+/* left checker bar — body::after, always present, always painted.
+   Subfolder-nav sits at z-index:4, left:24px — it renders above this
+   bar (z-index:-3) naturally, so the bar peeks out left of the panel. */
+body.layout-user-factory-central::after {
   top: 0; left: 0; width: var(--sq); height: 100vh;
   background: repeating-linear-gradient(0deg,
     var(--pomo-magenta) 0 var(--sq),
@@ -189,7 +190,9 @@ body.layout-user-factory-central #preview-pane::before {
     var(--pomo-green) calc(var(--sq) * 5) calc(var(--sq) * 6));
   border-left: 3px solid #000; border-right: 3px solid #000;
 }
-body.layout-user-factory-central #preview-pane::after {
+/* right checker bar — #clock-wrap::before. clock-wrap::after is the
+   dot ring (already used); clock-wrap itself is always present chrome. */
+body.layout-user-factory-central #clock-wrap::before {
   top: 0; right: 0; left: auto; width: var(--sq); height: 100vh;
   background: repeating-linear-gradient(0deg,
     var(--pomo-green) 0 var(--sq),
@@ -567,13 +570,21 @@ body.layout-user-factory-central #preview-pane {
   z-index: 4;
 }
 
-/* ---- subfolder bar: top-left, immediately right of the thumbnail ---- */
+/* ---- subfolder bar: below the thumbnail, above the music player bar ----
+   Matches the thumbnail's width (300px) and sits flush below it.
+   Height is content-aware: shrinks to fit, capped so it never overlaps
+   the now-playing bar (bottom: 96px + ~80px player height + 12px gap). */
 body.layout-user-factory-central #subfolder-nav {
   position: fixed;
-  top: 24px; left: 340px;
-  width: 260px;
-  max-height: 300px;
+  /* Below the 300px thumbnail (top 24px + 300px height + 12px gap) */
+  top: 336px; left: 24px;
+  /* Match thumbnail width exactly */
+  width: 300px;
+  /* Fill available space between thumbnail bottom and music player,
+     never exceeding half the viewport height. */
+  max-height: min(300px, calc(100vh - 336px - 96px - 80px - 12px));
   overflow-y: auto;
+  overflow-x: hidden;
   margin: 0;
   z-index: 4;
 }

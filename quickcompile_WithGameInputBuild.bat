@@ -227,10 +227,14 @@ if exist "%STAGE%" rmdir /s /q "%STAGE%"
 mkdir "%STAGE%"
 
 REM onefile apps - single exes straight in
-copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
 
 REM default-shell-browser trampolines - best-effort, not required for the
 REM apps themselves to work, only for the "make default" settings
@@ -268,9 +272,12 @@ robocopy "%ROOT%Meridian Game Library\dist\Meridian Game Library" "%STAGE%" /E /
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 
 REM companion scripts, docs, and the Playnite exporter extension
-copy /y "%ROOT%README.md"            "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%README.md"            "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
 robocopy "%ROOT%Meridian_Exporter" "%STAGE%\Meridian_Exporter" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%themes" "%STAGE%\themes" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%Plugins" "%STAGE%\Plugins" /E /NFL /NDL /NJH /NJS >nul

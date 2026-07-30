@@ -35,6 +35,15 @@ from pathlib import Path
 
 import store
 
+# Native Rust backend (best-effort; pure-Python fallbacks retained below).
+# _load_raw_export stays in Python so the "is the export file even present"
+# None-vs-[] distinction is decided here; only the parse/filter/sort work is
+# delegated to the native module.
+try:
+    import meridian_core as _mc
+except Exception:
+    _mc = None
+
 # Store-section id -> substrings to match against Playnite's Source field
 # (case-insensitive). Playnite's own Source names vary a bit by version
 # and by exactly how a library was imported, so this matches loosely
@@ -112,6 +121,11 @@ def get_recently_played(playnite_settings, limit=5):
     raw = _load_raw_export(playnite_settings)
     if not raw:
         return []
+    if _mc is not None:
+        try:
+            return json.loads(_mc.playnite_recently_played(json.dumps(raw), limit))
+        except Exception:
+            pass
     played = [g for g in raw if g.get("LastActivity")]
     played.sort(key=lambda g: g.get("LastActivity"), reverse=True)
     return [_entry_from_game(g) for g in played[:limit]]
@@ -129,6 +143,11 @@ def get_library(store_key, playnite_settings):
     if raw is None:
         return None
 
+    if _mc is not None:
+        try:
+            return json.loads(_mc.playnite_library(json.dumps(raw), store_key))
+        except Exception:
+            pass
     entries = [_entry_from_game(g) for g in raw if _matches_store(g.get("Source"), store_key)]
     entries.sort(key=lambda e: (not e["installed"], e["title"].lower()))
     return entries
@@ -161,6 +180,11 @@ def get_other_sources(playnite_settings):
     if raw is None:
         return []
     buckets = {}  # slug -> {"id", "name", "count"}
+    if _mc is not None:
+        try:
+            return json.loads(_mc.playnite_other_sources(json.dumps(raw)))
+        except Exception:
+            pass
     for game in raw:
         if _is_big_five(game.get("Source") or ""):
             continue
@@ -177,6 +201,11 @@ def get_other_source_library(source_id, playnite_settings):
     if raw is None:
         return []
     out = []
+    if _mc is not None:
+        try:
+            return json.loads(_mc.playnite_other_source_library(json.dumps(raw), source_id))
+        except Exception:
+            pass
     for game in raw:
         if _is_big_five(game.get("Source") or ""):
             continue
@@ -196,6 +225,11 @@ def export_summary(playnite_settings):
     if raw is None:
         return None
     counts = {key: 0 for key in SOURCE_ALIASES}
+    if _mc is not None:
+        try:
+            return json.loads(_mc.playnite_export_summary(json.dumps(raw)))
+        except Exception:
+            pass
     counts["other"] = 0
     for game in raw:
         source = (game.get("Source") or "").lower()

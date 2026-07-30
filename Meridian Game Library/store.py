@@ -15,6 +15,12 @@ from pathlib import Path
 
 from controller_input import DEFAULT_CONTROLS
 
+# Native Rust backend (best-effort; pure-Python fallbacks retained below).
+try:
+    import meridian_core as _mc
+except Exception:
+    _mc = None
+
 # sys.frozen is set by PyInstaller. Path(__file__) resolves into a
 # bundled/temporary location once compiled (not the folder the .exe
 # actually lives in) — using sys.executable's folder instead keeps BASE_DIR
@@ -101,6 +107,7 @@ def default_settings():
         "controller_bridge_games": [],
         "controller_bridge_mapping_path": None,
         "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
+        "cyberradial_hue": "green",
         # Dawning Horizon background hue: "original", or "<palette>:<hue>"
         # where palette is light|dark|neon|primary|pastel|bubblegum and hue
         # is red|orange|yellow|green|blue|indigo|violet. Purely a frontend
@@ -161,6 +168,12 @@ def load_settings():
 
 
 def _migrate_theme_media(m):
+    if _mc is not None:
+        try:
+            migrated = json.loads(_mc.migrate_theme_media_json(json.dumps(m)))
+            m.clear(); m.update(migrated); return
+        except Exception:
+            pass
     if m.get("background_image") and not m.get("background_by_theme"):
         m["background_by_theme"] = {"dawning_horizon": m["background_image"]}
     if m.get("overlay_image") and not m.get("overlay_by_theme"):
@@ -169,6 +182,12 @@ def _migrate_theme_media(m):
 
 
 def _deep_merge(base, override):
+    if _mc is not None:
+        try:
+            merged = json.loads(_mc.deep_merge_json(json.dumps(base), json.dumps(override)))
+            base.clear(); base.update(merged); return
+        except Exception:
+            pass
     for k, v in override.items():
         if isinstance(v, dict) and isinstance(base.get(k), dict):
             _deep_merge(base[k], v)
@@ -217,10 +236,20 @@ def load_controller_controls():
 
 def display_name(path: str) -> str:
     """Strip directory and extension: C:/chrome.exe -> chrome"""
+    if _mc is not None:
+        try:
+            return _mc.display_name(path)
+        except Exception:
+            pass
     return Path(path).stem
 
 
 def slugify(name: str) -> str:
+    if _mc is not None:
+        try:
+            return _mc.slugify(name)
+        except Exception:
+            pass
     slug = "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
     while "--" in slug:
         slug = slug.replace("--", "-")

@@ -51,11 +51,38 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Build the native Rust backend (meridian_core.pyd). BuildMeridianCore.bat
+REM lives in the repo root (one level up) and stages the module into THIS
+REM folder too. Best-effort: on failure the app falls back to pure Python.
+set "CORE_PYD="
+if exist "%SCRIPT_DIR%..\BuildMeridianCore.bat" (
+    call "%SCRIPT_DIR%..\BuildMeridianCore.bat"
+)
+if exist "%SCRIPT_DIR%meridian_core.pyd" (
+    set "CORE_PYD=1"
+    echo Native core present - it will be bundled into the app.
+) else (
+    echo [WARN] meridian_core.pyd not present - building with pure-Python fallback.
+)
+
+REM Stage idle_optimizer.py from repo root (it lives there and is shared
+REM by both apps; the GL folder gets its own copy for PyInstaller bundling).
+if exist "%SCRIPT_DIR%..\idle_optimizer.py" (
+    copy /y "%SCRIPT_DIR%..\idle_optimizer.py" "%SCRIPT_DIR%idle_optimizer.py" >nul
+    echo idle_optimizer.py staged.
+)
+
 echo.
 echo Cleaning previous build output...
 if exist "%SCRIPT_DIR%build" rmdir /s /q "%SCRIPT_DIR%build"
 if exist "%SCRIPT_DIR%dist" rmdir /s /q "%SCRIPT_DIR%dist"
 if exist "%SCRIPT_DIR%%APP_NAME%.spec" del /q "%SCRIPT_DIR%%APP_NAME%.spec"
+
+REM Extra PyInstaller args to bundle the native module, only when it exists.
+set "EXTRA_ARGS="
+if defined CORE_PYD (
+    set EXTRA_ARGS=--add-binary "%SCRIPT_DIR%meridian_core.pyd;." --hidden-import meridian_core
+)
 
 echo.
 echo Running PyInstaller...
@@ -75,6 +102,13 @@ python -m PyInstaller ^
     --noconfirm ^
     --hidden-import win32timezone ^
     --collect-submodules webview ^
+    --add-data "%SCRIPT_DIR%idle_optimizer.py;." ^
+    --exclude-module PySide6 --exclude-module PyQt5 --exclude-module PyQt6 ^
+    --exclude-module shiboken6 --exclude-module pygame ^
+    --exclude-module numpy --exclude-module matplotlib ^
+    --exclude-module scipy --exclude-module pandas ^
+    --exclude-module tkinter --exclude-module _tkinter --exclude-module test ^
+    !EXTRA_ARGS! ^
     --icon "%SCRIPT_DIR%icon.ico" ^
     "%SCRIPT_DIR%main.py"
 

@@ -255,6 +255,9 @@ html, body {
   display: flex; flex-direction: column; gap: 2px;
   border: 1px solid transparent; border-radius: 4px; padding: 6px;
   transition: border-color 150ms ease;
+  max-height: 50vh;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 #subfolder-nav.hidden { display: none; }
 #subfolder-nav .sf-header {
@@ -1349,3 +1352,27 @@ body.layout-dawninghorizon #task-bar.taskbar-pos-dawning #task-bar-bubble {
   padding: 12px; margin-top: 8px; color: var(--text-lo);
   max-height: 320px; overflow-y: auto;
 }
+
+
+/* ---------------- idle / background gating ----------------
+   While a non-Meridian app is in the foreground, freeze all CSS animation
+   and transition work. Canvas loops are paused separately in app.js.
+   Audio keeps playing; everything resumes on focus return. */
+body.app-idle *,
+body.app-idle *::before,
+body.app-idle *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
+
+/* CyberRadial primary hue */
+:root { --cr-primary: #a6e83f; }
+[data-cr-hue="green"]      { --cr-primary: #a6e83f; }
+[data-cr-hue="orange"]     { --cr-primary: #ff8c00; }
+[data-cr-hue="blue"]       { --cr-primary: #00bfff; }
+[data-cr-hue="red"]        { --cr-primary: #ff3040; }
+[data-cr-hue="purple"]     { --cr-primary: #bf5fff; }
+[data-cr-hue="yellow"]     { --cr-primary: #ffe600; }
+[data-cr-hue="pink"]       { --cr-primary: #ff69b4; }
+[data-cr-hue="chartreuse"] { --cr-primary: #7fff00; }
+body.layout-cyberradial { --active-accent: var(--cr-primary); }

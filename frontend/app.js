@@ -153,6 +153,83 @@ const state = {
 
 const el = (id) => document.getElementById(id);
 const api = () => window.pywebview.api;
+// CyberRadial hue -> CSS color value
+// Alternating rainbow: steps through this sequence each section change.
+const _crAltRainbowColors = [
+  '#ff0040','#ff8c00','#ffe600','#7fff00','#00bfff','#bf5fff','#ff69b4','#ff0040'
+];
+let _crAltRainbowIdx = 0;
+
+function _crHueColor(hue) {
+  // rainbow variants return a gradient string for the swatch pill;
+  // actual runtime colour is driven by CSS animation or --cr-alt-color.
+  if (hue === 'rainbow-shift') return 'linear-gradient(90deg,#ff0040,#ff8c00,#ffe600,#7fff00,#00bfff,#bf5fff,#ff69b4)';
+  if (hue === 'rainbow-alt')   return 'linear-gradient(90deg,#ff0040,#00bfff,#7fff00,#bf5fff)';
+  return {green:'#a6e83f',orange:'#ff8c00',blue:'#00bfff',red:'#ff3040',
+          purple:'#bf5fff',yellow:'#ffe600',pink:'#ff69b4',chartreuse:'#7fff00'}[hue] || '#a6e83f';
+}
+
+// Called each time a section is activated; advances the alternating hue.
+function _advanceCrAltRainbow() {
+  const hue = (state.settings && state.settings.cyberradial_hue) || 'green';
+  if (hue !== 'rainbow-alt') return;
+  _crAltRainbowIdx = (_crAltRainbowIdx + 1) % _crAltRainbowColors.length;
+  document.body.style.setProperty('--cr-alt-color', _crAltRainbowColors[_crAltRainbowIdx]);
+}
+
+
+// ---- HTML5 Gamepad API gesture unlock (Bug 2 fix) ----
+// The W3C Gamepad API spec requires a 'gamepad user gesture' (a button
+// press while the page is focused) before navigator.getGamepads() returns
+// data. In a controller-first launcher the page never receives that gesture
+// naturally because the Python backend intercepts the input first.
+// main.py calls window._unlockHtml5Gamepad() via evaluate_js on the first
+// native controller action, which synthesizes the gesture event so that:
+//   a) browser_gamepad backend works immediately without a manual press;
+//   b) any embedded page (boxed section games, etc.) polling getGamepads()
+//      gets real data without a separate gesture on each load.
+window._unlockHtml5Gamepad = function() {
+  try {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < pads.length; i++) {
+      if (pads[i]) {
+        // Fire gamepadconnected with the already-enumerated gamepad.
+        // This is enough for the spec to consider the gesture done.
+        window.dispatchEvent(new GamepadEvent('gamepadconnected', { gamepad: pads[i] }));
+        return;
+      }
+    }
+    // Controller is connected at the OS level but getGamepads() still
+    // returns null slots (spec allows this until the gesture). Schedule
+    // a retry — by this point the next rAF cycle will usually have it.
+    setTimeout(window._unlockHtml5Gamepad, 200);
+  } catch(e) { /* non-fatal */ }
+};
+
+// ---------------- idle / background animation gating ----------------
+// While a genuinely external app (a game, etc.) is in the foreground, the
+// launcher is invisible, so its heavy canvas loops (blobs/threads) and CSS
+// animations are pure wasted CPU/GPU. We pause them then and resume the
+// instant focus returns to the suite. Music (<audio>) and the Python-side
+// controller poll are untouched, so a button press still pops us back.
+// The backend (idle_optimizer) independently drops process priority and
+// trims RAM over the same window; this half handles the render cost.
+const _idleAnim = { paused: false, suiteActive: true };
+function _pauseIdleAnimations() {
+  if (_idleAnim.paused) return;
+  _idleAnim.paused = true;
+  try { document.body.classList.add("app-idle"); } catch (e) {}
+  // The canvas rAF loops self-terminate on their next frame (they check
+  // _idleAnim.paused at the top of step()).
+}
+function _resumeIdleAnimations() {
+  if (!_idleAnim.paused) return;
+  _idleAnim.paused = false;
+  try { document.body.classList.remove("app-idle"); } catch (e) {}
+  // Kick each canvas loop back to life only if it isn't already scheduled.
+  try { if (typeof blobState !== "undefined" && blobState && !blobState.raf && blobState.step) blobState.step(); } catch (e) {}
+  try { if (typeof threadState !== "undefined" && threadState && !threadState.raf && threadState.step) threadState.step(); } catch (e) {}
+}
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -626,6 +703,9 @@ function applyLayoutClass() {
   if (state.categories && state.categories.length) renderCategories();
   // theme changed -> its own background & overlay apply
   if (state.settings) { applyBackground(state.settings); applyOverlay(state.settings); }
+  // Apply CyberRadial hue
+  const crHue = (state.settings && state.settings.cyberradial_hue) || 'green';
+  document.body.setAttribute('data-cr-hue', crHue);
 }
 
 // List icon size (small = classic, then medium/large/xl at 2x each): a
@@ -741,6 +821,7 @@ function setRadialFocusRaw(next) {
 // (they just navigated back into the section that's already showing) skip
 // straight to options without reloading anything.
 function commitBrowsedSection() {
+  _advanceCrAltRainbow();
   el("item-panel").classList.remove("hidden");
   const targetCat = state.categories[state.sectionsBrowseIndex];
   const sameIndexButEmbedded = state.sectionsBrowseIndex === state.catIndex &&
@@ -3330,6 +3411,46 @@ async function renderSettings(group) {
   layoutBlock.appendChild(rescan);
   c.appendChild(layoutBlock);
 
+  // CyberRadial accent hue picker — Themes section, above Dawning Horizon colour
+  // Only rendered when CyberRadial (or a theme based on it) is active.
+  if ((settings.layout || '').toLowerCase().includes('cyber')
+      || (settings.layout || '').includes('radial')
+      || (settings.layout || '').includes('factory')) {
+    const crHues = ['green','orange','blue','red','purple','yellow','pink','chartreuse','rainbow-shift','rainbow-alt'];
+    const crHueLabels = {green:'Green',orange:'Orange',blue:'Blue',red:'Red',purple:'Purple',yellow:'Yellow',pink:'Pink',chartreuse:'Chartreuse','rainbow-shift':'⬡ Shifting Rainbow','rainbow-alt':'⬡ Alternating Rainbow'};
+    const crBlock = document.createElement('div');
+    crBlock.className = 'settings-block';
+    crBlock.innerHTML = '<h3>CyberRadial accent hue</h3><p class="settings-note">Primary hue for the CyberRadial and Factory Central themes. Changes the orbital glow, active accent, and selected-row highlight. "Shifting Rainbow" cycles through all hues over time. "Alternating Rainbow" changes hue on every section change.</p>';
+    const crRadio = document.createElement('div');
+    crRadio.className = 'radio-group';
+    const curHue = settings.cyberradial_hue || 'green';
+    crHues.forEach((hue) => {
+      const pill = document.createElement('div');
+      pill.className = 'radio-pill' + (curHue === hue ? ' active' : '');
+      pill.textContent = crHueLabels[hue];
+      const hueVal = _crHueColor(hue);
+      if (hueVal.startsWith('linear-gradient')) {
+        pill.style.backgroundImage = hueVal;
+        pill.style.color = '#fff';
+        pill.style.textShadow = '0 1px 3px #000';
+        pill.style.setProperty('--pill-accent', 'transparent');
+      } else {
+        pill.style.setProperty('--pill-accent', hueVal);
+      }
+      pill.addEventListener('click', async () => {
+        await api().set_cyberradial_hue(hue);
+        document.body.setAttribute('data-cr-hue', hue);
+        if (!hue.startsWith('rainbow')) {
+          document.documentElement.style.setProperty('--cr-primary', hueVal);
+        }
+        renderSettings();
+      });
+      crRadio.appendChild(pill);
+    });
+    crBlock.appendChild(crRadio);
+    c.appendChild(crBlock);
+  }
+
   // Dawning Horizon primary theme color
   const themeBlock = document.createElement("div");
   themeBlock.className = "settings-block";
@@ -3893,7 +4014,10 @@ async function renderSettings(group) {
 
   panel.appendChild(_realC);
   // restore the pre-render scroll position (see top of renderSettings)
-  if (panel && _prevScroll) panel.scrollTop = _prevScroll;
+  // Restore scroll unconditionally — even if _prevScroll is 0 we want
+  // to stay at top, not have the browser choose its own position after
+  // the DOM rebuild. This prevents the page jumping on toggle clicks.
+  if (panel) panel.scrollTop = _prevScroll || 0;
   alignCategoryRowToList();
   const focusCount = settingsFocusableElements().length;
   state.settingsCursor = focusCount ? Math.max(0, Math.min(focusCount - 1, state.settingsCursor)) : 0;
@@ -4674,6 +4798,13 @@ document.addEventListener("keydown", (e) => {
 let _isForeground = true;
 async function _pollForeground() {
   try { _isForeground = await api().is_foreground(); } catch (e) { _isForeground = true; }
+  try {
+    const active = await api().is_suite_active();
+    if (active !== _idleAnim.suiteActive) {
+      _idleAnim.suiteActive = active;
+      if (active) _resumeIdleAnimations(); else _pauseIdleAnimations();
+    }
+  } catch (e) { /* backend unavailable: leave animations running */ }
 }
 setInterval(_pollForeground, 400);
 _pollForeground();
@@ -5324,6 +5455,7 @@ function initBlobBackground() {
   resize();
 
   function step() {
+    if (_idleAnim.paused) { blobState.raf = null; return; }
     const w = canvas.width, h = canvas.height;
     ctx.clearRect(0, 0, w, h);
 
@@ -5360,6 +5492,7 @@ function initBlobBackground() {
   }
 
   blobState = { canvas, blobs, raf: null };
+  blobState.step = step;
   step();
 }
 
@@ -5402,6 +5535,7 @@ function initSilkThreads() {
   }
 
   function step() {
+    if (_idleAnim.paused) { threadState.raf = null; return; }
     const w = canvas.width, h = canvas.height;
     ctx.clearRect(0, 0, w, h);
     const accentRgb = hexToRgbString(getComputedStyle(document.documentElement).getPropertyValue("--active-accent") || "#fbbf24");
@@ -5446,6 +5580,7 @@ function initSilkThreads() {
   }
 
   threadState = { canvas, threads, raf: null };
+  threadState.step = step;
   step();
 }
 
@@ -5615,18 +5750,23 @@ function _pollBrowserGamepad() {
     return;
   }
   const pads = (navigator.getGamepads && navigator.getGamepads()) || [];
-  const gp = Array.prototype.find.call(pads, (p) => p && p.connected);
-  if (!gp) return requestAnimationFrame(_pollBrowserGamepad);
+  // Multi-controller: aggregate all connected pads so any connected
+  // controller can navigate — first one to press a button wins per action.
+  const activePads = Array.prototype.filter.call(pads, (p) => p && p.connected);
+  if (!activePads.length) return requestAnimationFrame(_pollBrowserGamepad);
+  // Helper: true if ANY connected pad has button i pressed
+  const btn = (i) => activePads.some((gp) => gp.buttons[i] && gp.buttons[i].pressed);
+  // Aggregate axes: use the pad with the largest deflection on each axis
+  const axis = (idx) => activePads.reduce((best, gp) => {
+    const v = gp.axes[idx] || 0;
+    return Math.abs(v) > Math.abs(best) ? v : best;
+  }, 0);
 
-  const btn = (i) => gp.buttons[i] && gp.buttons[i].pressed;
-
-  // D-pad + left stick, both drive navigation - edge-triggered with the
-  // same repeat cooldown controller_input.py's own _can_fire gives
-  // real hardware, so holding a direction repeats at the same rate.
-  const dpadUp = btn(BG_BUTTON.DPAD_UP) || _bgDeadzone(gp.axes[1] || 0) < 0;
-  const dpadDown = btn(BG_BUTTON.DPAD_DOWN) || _bgDeadzone(gp.axes[1] || 0) > 0;
-  const dpadLeft = btn(BG_BUTTON.DPAD_LEFT) || _bgDeadzone(gp.axes[0] || 0) < 0;
-  const dpadRight = btn(BG_BUTTON.DPAD_RIGHT) || _bgDeadzone(gp.axes[0] || 0) > 0;
+  // D-pad + left stick, both drive navigation
+  const dpadUp = btn(BG_BUTTON.DPAD_UP) || _bgDeadzone(axis(1)) < 0;
+  const dpadDown = btn(BG_BUTTON.DPAD_DOWN) || _bgDeadzone(axis(1)) > 0;
+  const dpadLeft = btn(BG_BUTTON.DPAD_LEFT) || _bgDeadzone(axis(0)) < 0;
+  const dpadRight = btn(BG_BUTTON.DPAD_RIGHT) || _bgDeadzone(axis(0)) > 0;
   if (dpadUp && _bgCanFire("up")) window.handleControllerInput("up");
   if (dpadDown && _bgCanFire("down")) window.handleControllerInput("down");
   if (dpadLeft && _bgCanFire("left")) window.handleControllerInput("left");
@@ -5673,7 +5813,7 @@ function _pollBrowserGamepad() {
 
   // Right stick left/right: rewind/fast-forward 10s, edge-triggered on
   // crossing the deadzone (not repeat-fired while held over)
-  const rx = _bgDeadzone(gp.axes[2] || 0);
+  const rx = _bgDeadzone(axis(2));
   if (rx !== 0) {
     if (!_bgState.rstickSeekLatched) {
       _bgState.rstickSeekLatched = true;
@@ -5687,9 +5827,12 @@ function _pollBrowserGamepad() {
 }
 
 window.addEventListener("gamepadconnected", () => {
-  if (state.settings && state.settings.input_backend === "browser_gamepad") {
-    requestAnimationFrame(_pollBrowserGamepad);
-  }
+  // Always schedule the poll loop on connection — it self-gates on
+  // the active backend, so calling it here is safe regardless of mode.
+  // This means switching TO browser_gamepad live always finds the loop
+  // running, rather than depending on the loop having already been
+  // started earlier.
+  requestAnimationFrame(_pollBrowserGamepad);
 });
 
 if (window.pywebview) boot();

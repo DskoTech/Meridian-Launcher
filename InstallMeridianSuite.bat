@@ -4,10 +4,12 @@ setlocal enabledelayedexpansion
 REM ============================================================
 REM  Meridian Suite - One-Shot Installer
 REM
-REM  NOTE: gameinput_native/ (an optional compiled C++ extension for
-REM  more reliable GameInput controller support - see
-REM  gameinput_native/README.md) is NOT built by this installer. It
-REM  needs the MSVC toolchain and is built separately; everything
+REM  NOTE: gameinput_native/ (the real GameInput SDK backend — fixes Xbox
+REM  One Bluetooth controller support) IS built automatically when the MSVC
+REM  C++ toolchain is already present. On a fresh machine without MSVC it is
+REM  skipped gracefully and controller input falls back to XInput (fully
+REM  works). Use InstallMeridianSuite_WithGameInputBuild.bat to have MSVC
+REM  installed automatically on a fresh machine.
 REM  else works fine without it (falls back automatically to a less
 REM  reliable method). See InstallMeridianSuite_WithGameInputBuild.bat
 REM  for a variant of this same installer that DOES build and stage it
@@ -146,6 +148,37 @@ echo   OK - all Python packages installed.
 echo.
 
 REM ---------------------------------------------------------
+REM  2b. Optional native backend (meridian_core, Rust). This
+REM      lightweight installer deliberately does NOT pull the
+REM      multi-GB MSVC toolchain, so we only set Rust up when a
+REM      C++ toolchain is ALREADY present. Otherwise we skip and
+REM      the apps use their pure-Python fallback (still fully
+REM      functional). For the native speedups on a fresh machine,
+REM      use InstallMeridianSuite_WithGameInputBuild.bat.
+REM ---------------------------------------------------------
+echo [2b/6] Optional native backend ^(meridian_core, Rust^)...
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VCTOOLS_FOUND="
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
+        if not "%%i"=="" set "VCTOOLS_FOUND=1"
+    )
+)
+if not defined VCTOOLS_FOUND (
+    echo   [skip] No MSVC C++ toolchain found - the native Rust backend needs
+    echo          it. Building with the pure-Python fallback ^(fully works^).
+    echo          Run InstallMeridianSuite_WithGameInputBuild.bat, or install
+    echo          the "Desktop development with C++" workload, for the native
+    echo          backend.
+) else (
+    call "%ROOT%EnsureRustToolchain.bat"
+    if defined CARGO_OK (
+        echo   OK - Rust ready; meridian_core will build during compile.
+    )
+)
+echo.
+
+REM ---------------------------------------------------------
 REM  3. Compile all five apps using their own build scripts,
 REM     exactly like CompileAndPackage.bat does.
 REM ---------------------------------------------------------
@@ -252,11 +285,31 @@ if not exist "%ROOT%dist\MeridianPaint.exe" (
 )
 echo.
 
-REM gameinput_native.pyd (optional - real GameInput SDK backend for
-REM controller input) is deliberately NOT built by this installer - see
-REM InstallMeridianSuite_WithGameInputBuild.bat for the variant that
-REM does. Controller input works fine without it, on the older ctypes
-REM fallback.
+REM gameinput_native.pyd -- real GameInput SDK backend that fixes the Xbox
+REM One Bluetooth silent-input bug. This lightweight installer does NOT pull
+REM the multi-GB MSVC Build Tools, so it only builds when the C++ toolchain
+REM is ALREADY present ^(same rule as the Rust step above^). If MSVC is absent,
+REM controller input uses the XInput fallback as before.
+REM For a guaranteed full build on a fresh machine, use:
+REM   InstallMeridianSuite_WithGameInputBuild.bat
+set "VCTOOLS_FOUND="
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%i in (
+        `"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`
+    ) do (
+        if not "%%i"=="" set "VCTOOLS_FOUND=1"
+    )
+)
+if defined VCTOOLS_FOUND (
+    echo   - gameinput_native ^(real GameInput SDK -- Xbox BT fix^)...
+    call "%ROOT%BuildGameInputNative.bat"
+) else (
+    echo   [skip] gameinput_native: no MSVC toolchain found. Controller input uses
+    echo          the XInput fallback ^(fully works^). Run WithGameInputBuild for
+    echo          the real SDK backend, or install the "Desktop development with
+    echo          C++" workload and re-run.
+)
+echo.
 
 REM ---------------------------------------------------------
 REM  4. Stage everything into one flat folder, then install it
@@ -273,10 +326,14 @@ if exist "%STAGE%" rmdir /s /q "%STAGE%"
 mkdir "%STAGE%"
 
 REM onefile apps - single exes straight in
-copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
 
 REM default-shell-browser trampolines - best-effort, not required for the
 REM apps themselves to work, only for the "make default" settings
@@ -308,9 +365,12 @@ robocopy "%ROOT%Meridian Game Library\dist\Meridian Game Library" "%STAGE%" /E /
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 
 REM companion scripts, docs, and the Playnite exporter extension
-copy /y "%ROOT%README.md"            "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%README.md"            "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
 robocopy "%ROOT%Meridian_Exporter" "%STAGE%\Meridian_Exporter" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%themes" "%STAGE%\themes" /E /NFL /NDL /NJH /NJS >nul
 REM Plugins/ (auto-scanned custom sections) and examples/ (the blank

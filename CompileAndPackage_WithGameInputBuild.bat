@@ -222,10 +222,14 @@ if exist "%ROOT%DskoTech" rmdir /s /q "%ROOT%DskoTech"
 mkdir "%ROOT%DskoTech"
 
 REM onefile apps - single exes straight in
-copy /y "%ROOT%dist\MeridianLauncher.exe"                    "%ROOT%DskoTech\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe"  "%ROOT%DskoTech\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%ROOT%DskoTech\" >nul || set "FAILED=1"
-copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"            "%ROOT%DskoTech\" >nul || set "FAILED=1"
+copy /y "%ROOT%dist\MeridianLauncher.exe"                    "%ROOT%DskoTech\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe"  "%ROOT%DskoTech\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%ROOT%DskoTech\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"            "%ROOT%DskoTech\" >nul
+if errorlevel 1 set "FAILED=1"
 
 REM default-shell-browser trampolines - best-effort only
 if exist "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse Shell Handler.exe" (

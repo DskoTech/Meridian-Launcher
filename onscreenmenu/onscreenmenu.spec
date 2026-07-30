@@ -6,11 +6,11 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['psutil'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['gameinput_native'],  # see gameinput_api.py's sys.path fix / meridian.spec's own excludes comment
     noarchive=False,
     optimize=0,
 )

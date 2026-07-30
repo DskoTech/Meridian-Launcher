@@ -15,6 +15,12 @@ from pathlib import Path
 
 from controller_input import DEFAULT_CONTROLS
 
+# Native Rust backend (best-effort; pure-Python fallbacks retained below).
+try:
+    import meridian_core as _mc
+except Exception:
+    _mc = None
+
 BASE_DIR = Path(__file__).resolve().parent
 
 # All persistent user data (settings, controls, cached thumbnails) lives
@@ -104,6 +110,7 @@ def default_settings():
         "opening_video": None,
         "window_mode": "exclusive_fullscreen",  # exclusive_fullscreen | windowed_fullscreen | windowed | kiosk
         "layout": "dawning_horizon",  # dawning_horizon | night_horizon | cyber_radial
+        "cyberradial_hue": "green",  # CyberRadial primary hue: green|orange|blue|red|purple|yellow|pink|chartreuse
         # Dawning Horizon background hue: "original", or "<palette>:<hue>"
         # where palette is light|dark|neon|primary|pastel|bubblegum and hue
         # is red|orange|yellow|green|blue|indigo|violet. Purely a frontend
@@ -132,7 +139,7 @@ def default_settings():
         # other app in the suite already called open_gamepad() with no
         # forced backend (equivalent to "auto"); this just brings the
         # Launcher's default in line with them.
-        "input_backend": "auto",
+        "input_backend": "browser_gamepad",
         # Open folder paths in Meridian Explorer instead of Windows
         # Explorer (suite-internal routing; system-wide handling is the
         # separate MeridianExplorerShellIntegration.bat)
@@ -201,6 +208,14 @@ def _migrate_theme_media(m):
     """Fold the old single background/overlay values into the per-theme
     dicts under the dawning_horizon slot, once, so existing users keep
     their chosen image on their current theme."""
+    if _mc is not None:
+        try:
+            migrated = json.loads(_mc.migrate_theme_media_json(json.dumps(m)))
+            m.clear()
+            m.update(migrated)
+            return
+        except Exception:
+            pass
     if m.get("background_image") and not m.get("background_by_theme"):
         m["background_by_theme"] = {"dawning_horizon": m["background_image"]}
     if m.get("overlay_image") and not m.get("overlay_by_theme"):
@@ -209,6 +224,14 @@ def _migrate_theme_media(m):
 
 
 def _deep_merge(base, override):
+    if _mc is not None:
+        try:
+            merged = json.loads(_mc.deep_merge_json(json.dumps(base), json.dumps(override)))
+            base.clear()
+            base.update(merged)
+            return
+        except Exception:
+            pass
     for k, v in override.items():
         if isinstance(v, dict) and isinstance(base.get(k), dict):
             _deep_merge(base[k], v)
@@ -257,10 +280,20 @@ def load_controller_controls():
 
 def display_name(path: str) -> str:
     """Strip directory and extension: C:/chrome.exe -> chrome"""
+    if _mc is not None:
+        try:
+            return _mc.display_name(path)
+        except Exception:
+            pass
     return Path(path).stem
 
 
 def slugify(name: str) -> str:
+    if _mc is not None:
+        try:
+            return _mc.slugify(name)
+        except Exception:
+            pass
     slug = "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
     while "--" in slug:
         slug = slug.replace("--", "-")

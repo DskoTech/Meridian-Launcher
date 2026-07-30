@@ -1165,10 +1165,15 @@ class DirectInputGamepad:
         ]
         DirectInput8Create.restype = ctypes.c_long
 
-        hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
+        # Pass NULL (0) as hInstance — using GetModuleHandleW(None) returns
+        # the Python interpreter EXE handle, which causes DirectInput8Create
+        # to fail with HR=0x80070005 (E_ACCESSDENIED) on some Windows builds
+        # (Joy-Con / non-Xbox DirectInput devices are the most common trigger).
+        # Passing 0 tells DInput8 to use its own module handle, which is the
+        # documented correct approach for non-Win32 hosts.
         di_ptr = ctypes.c_void_p()
-        hr = DirectInput8Create(hinst, 0x0800, ctypes.byref(self.IID_IDirectInput8W),
-                                 ctypes.byref(di_ptr), None)
+        hr = DirectInput8Create(0, 0x0800, ctypes.byref(self.IID_IDirectInput8W),
+                                ctypes.byref(di_ptr), None)
         if hr != 0 or not di_ptr:
             raise OSError("DirectInput8Create failed (hr=0x%08X)" % (hr & 0xFFFFFFFF))
         self._di = di_ptr
@@ -1506,10 +1511,15 @@ class JoyConPairGamepad:
             ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
         ]
         DirectInput8Create.restype = ctypes.c_long
-        hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
+        # Pass NULL (0) as hInstance — using GetModuleHandleW(None) returns
+        # the Python interpreter EXE handle, which causes DirectInput8Create
+        # to fail with HR=0x80070005 (E_ACCESSDENIED) on some Windows builds
+        # (Joy-Con / non-Xbox DirectInput devices are the most common trigger).
+        # Passing 0 tells DInput8 to use its own module handle, which is the
+        # documented correct approach for non-Win32 hosts.
         di_ptr = ctypes.c_void_p()
-        hr = DirectInput8Create(hinst, 0x0800, ctypes.byref(self.IID_IDirectInput8W),
-                                 ctypes.byref(di_ptr), None)
+        hr = DirectInput8Create(0, 0x0800, ctypes.byref(self.IID_IDirectInput8W),
+                                ctypes.byref(di_ptr), None)
         if hr != 0 or not di_ptr:
             raise OSError("DirectInput8Create failed (hr=0x%08X)" % (hr & 0xFFFFFFFF))
         self._di = di_ptr
@@ -1798,7 +1808,7 @@ def open_gamepad(prefer=None, log=None):
     """Return the best available gamepad backend, or None.
 
     prefer: optional iterable of backend names to try, in order.
-            Defaults to ("xinput", "gameinput", "directinput", "sdl3") -
+            Defaults to ("browser_gamepad", "xinput", "gameinput", "directinput", "sdl3") -
             XInput first, since it's the plain stable public API and
             correctly reports every button/trigger/stick; the others are
             alternates for edge cases XInput doesn't cover, including
@@ -1816,9 +1826,13 @@ def open_gamepad(prefer=None, log=None):
     if env in ("xinput", "gameinput", "directinput", "sdl3", "joycon_pair"):
         prefer = (env,)
     elif prefer is None:
-        # joycon_pair deliberately excluded from this default chain - see
-        # JoyConPairGamepad's docstring for why it's explicit-selection-only.
-        prefer = ("xinput", "gameinput", "directinput", "sdl3")
+        # browser_gamepad is the default auto mode — it uses the browser's
+        # own Gamepad API (HTML5) which works reliably across all controller
+        # types including Joy-Cons, PS5, and Xbox without needing native
+        # drivers or special permissions. XInput is the secondary fallback
+        # for when the page isn't focused or the user needs native polling.
+        # joycon_pair excluded from auto chain — see JoyConPairGamepad docstring.
+        prefer = ("browser_gamepad", "xinput", "gameinput", "directinput", "sdl3")
     prefer = tuple(prefer)
 
     # Record why each backend was rejected, so the settings screen can show
@@ -1849,6 +1863,13 @@ def open_gamepad(prefer=None, log=None):
                 pad = SDL3Gamepad()
             elif name == "joycon_pair":
                 pad = JoyConPairGamepad()
+            elif name == "browser_gamepad":
+                # browser_gamepad is handled entirely in the frontend JS
+                # (see _pollBrowserGamepad in app.js). When it's the
+                # selected backend, open_gamepad returns None so the Python
+                # controller listener sits idle. Signal this cleanly.
+                if log: log("gamepad backend: browser_gamepad (handled in frontend)")
+                return None
             else:
                 continue
 

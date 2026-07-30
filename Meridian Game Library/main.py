@@ -62,6 +62,16 @@ import playnite_sync
 import heroic_import
 from controller_input import ControllerListener
 
+# Native Rust backend (meridian_core.pyd). Best-effort: every function
+# that delegates to it keeps its original pure-Python implementation as a
+# fallback. See meridian_core/README.md.
+try:
+    import meridian_core as _mc
+except Exception:
+    _mc = None
+
+import idle_optimizer
+
 try:
     import win32gui
     import win32con
@@ -98,7 +108,13 @@ TOKEN_MAP = {}
 
 
 def token_for(path: str) -> str:
-    h = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
+    if _mc is not None:
+        try:
+            h = _mc.sha1_hex(str(path))
+        except Exception:
+            h = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
+    else:
+        h = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
     TOKEN_MAP[h] = path
     return h
 
@@ -175,10 +191,25 @@ def start_media_server():
 
 MEDIA_PORT = start_media_server()
 
+# Native Rust media server: serves /media with HTTP Range support from a
+# native worker pool. The Python server above stays up for the
+# pywebview-coupled /internal/* routes and as a fallback.
+_NATIVE_MEDIA_PORT = 0
+if _mc is not None:
+    try:
+        _NATIVE_MEDIA_PORT = _mc.media_start() or 0
+    except Exception:
+        _NATIVE_MEDIA_PORT = 0
+
 
 def media_url(path):
     if not path:
         return None
+    if _NATIVE_MEDIA_PORT and _mc is not None:
+        try:
+            return f"http://127.0.0.1:{_NATIVE_MEDIA_PORT}/media?t={_mc.media_register(str(path))}"
+        except Exception:
+            pass
     return f"http://127.0.0.1:{MEDIA_PORT}/media?t={token_for(str(path))}"
 
 
@@ -269,6 +300,11 @@ def _watch_and_focus_game(exe_name, game_id=None, exe_dir=None):
 
 
 def _cache_path(key):
+    if _mc is not None:
+        try:
+            return CACHE_DIR / (_mc.sha1_hex(key) + ".jpg")
+        except Exception:
+            pass
     return CACHE_DIR / (hashlib.sha1(key.encode("utf-8")).hexdigest() + ".jpg")
 
 
@@ -424,6 +460,11 @@ def read_video_meta(path):
 
 
 def scan_dir(folder, extset):
+    if _mc is not None:
+        try:
+            return _mc.scan_dir(str(folder), list(extset))
+        except Exception:
+            pass
     found = []
     for root, _dirs, files in os.walk(folder):
         for name in files:
@@ -435,6 +476,11 @@ def scan_dir(folder, extset):
 def _scan_flat(folder, extset):
     """Non-recursive: only files directly inside `folder`, used for manual
     subfolder browsing when Load Subfolders is disabled."""
+    if _mc is not None:
+        try:
+            return _mc.scan_flat(str(folder), list(extset))
+        except Exception:
+            pass
     found = []
     try:
         with os.scandir(folder) as it:
@@ -447,6 +493,11 @@ def _scan_flat(folder, extset):
 
 
 def _list_subfolders(folder):
+    if _mc is not None:
+        try:
+            return _mc.list_subfolders(str(folder))
+        except Exception:
+            pass
     subs = []
     try:
         with os.scandir(folder) as it:
@@ -460,6 +511,11 @@ def _list_subfolders(folder):
 
 def fmt_duration(seconds):
     seconds = int(seconds or 0)
+    if _mc is not None:
+        try:
+            return _mc.fmt_duration(seconds)
+        except Exception:
+            pass
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
@@ -974,26 +1030,82 @@ class Api:
     def has_ffmpeg(self):
         return ffmpeg_available()
 
+    def set_input_backend(self, backend):
+        """Persist the selected input backend and restart the controller listener."""
+        if backend not in ("xinput", "gameinput", "directinput", "sdl3", "joycon_pair", "browser_gamepad", "auto"):
+            return SETTINGS
+        SETTINGS["input_backend"] = backend
+        SETTINGS["prefer_xinput"] = (backend == "xinput")
+        store.save_settings(SETTINGS)
+        restart_controller()
+        return SETTINGS
+
+    def set_cyberradial_hue(self, hue):
+        """Persist the CyberRadial primary hue choice."""
+        valid = {"green", "orange", "blue", "red", "purple", "yellow", "pink", "chartreuse",
+                 "rainbow-shift", "rainbow-alt"}
+        if hue not in valid:
+            return
+        SETTINGS["cyberradial_hue"] = hue
+        store.save_settings(SETTINGS)
+        return SETTINGS
+
+    def is_suite_active(self):
+        """Whether any Meridian-suite window is the foreground window.
+        The frontend polls this to pause heavy canvas/CSS animations
+        while an external app (a game, etc.) is in front, and resume
+        them the moment focus returns. See idle_optimizer.py."""
+        return idle_optimizer.is_suite_active()
+
+
     def scan_library(self, kind):
         extmap = {"music": MUSIC_EXT, "photos": PHOTO_EXT, "videos": VIDEO_EXT}
         if kind not in extmap:
             return []
 
+        # Native fast path: prepare (load cache + partition) in Rust,
+        # build only the stale entries in Python, finalize in Rust.
+        # Falls through to the identical pure-Python path on any failure.
+        current_mtimes = {}
+        folders = SETTINGS["folders"].get(kind, [])
+        _scanned = False
+        if _mc is not None:
+            try:
+                current_mtimes = dict(
+                    _mc.scan_with_mtimes([str(f) for f in folders], list(extmap[kind]))
+                )
+                _scanned = True
+            except Exception:
+                _scanned = False
+        if not _scanned:
+            for folder in folders:
+                if not os.path.isdir(folder):
+                    continue
+                for path in scan_dir(folder, extmap[kind]):
+                    try:
+                        current_mtimes[path] = os.path.getmtime(path)
+                    except OSError:
+                        continue
+
+        fresh_items = {}
+        if _mc is not None and _NATIVE_MEDIA_PORT:
+            try:
+                stale = _mc.index_prepare(
+                    kind, str(_index_cache_path(kind)), list(current_mtimes.items())
+                )
+                new_entries = {p: _build_entry(kind, p) for p in stale}
+                resp = _mc.index_finalize(kind, json.dumps(new_entries))
+                if resp is not None:
+                    return json.loads(resp)
+            except Exception:
+                try:
+                    _mc.index_discard(kind)
+                except Exception:
+                    pass
+
         cache = _load_index_cache(kind)
         cached_mtimes = cache.get("files", {})
         cached_items = cache.get("items", {})
-
-        current_mtimes = {}
-        for folder in SETTINGS["folders"].get(kind, []):
-            if not os.path.isdir(folder):
-                continue
-            for path in scan_dir(folder, extmap[kind]):
-                try:
-                    current_mtimes[path] = os.path.getmtime(path)
-                except OSError:
-                    continue
-
-        fresh_items = {}
         for path, mtime in current_mtimes.items():
             if path in cached_items and cached_mtimes.get(path) == mtime:
                 fresh_items[path] = cached_items[path]  # unchanged: skip re-reading tags/thumbnail entirely
@@ -1505,6 +1617,7 @@ def _quit_via_combo():
 # [action_name, timestamp] of the most recent controller action to reach the
 # app — the settings debugger uses it to prove input is (or isn't) arriving.
 _LAST_CONTROLLER_ACTION = [None, 0.0]
+_html5_gamepad_unlocked = False
 
 
 def restart_controller():
@@ -1529,6 +1642,15 @@ def _controller_action(action_name):
     # record it for the settings debugger before dispatching
     _LAST_CONTROLLER_ACTION[0] = action_name
     _LAST_CONTROLLER_ACTION[1] = time.time()
+    global _html5_gamepad_unlocked
+    if not _html5_gamepad_unlocked:
+        _html5_gamepad_unlocked = True
+        try:
+            webview.windows[0].evaluate_js(
+                "window._unlockHtml5Gamepad && window._unlockHtml5Gamepad();"
+            )
+        except Exception:
+            pass
     try:
         webview.windows[0].evaluate_js(f"window.handleControllerInput && window.handleControllerInput('{action_name}')")
     except Exception:
@@ -1555,6 +1677,7 @@ def start_controller():
         on_quit_combo=_quit_via_combo,
         on_foreground_combo=_bring_to_foreground,
         foreground_trigger_getter=lambda: SETTINGS.get("foreground_trigger", "start_select"),
+        input_backend=SETTINGS.get("input_backend", "browser_gamepad"),
         prefer_xinput=bool(SETTINGS.get("prefer_xinput", False)),
     )
     _CONTROLLER_LISTENER = listener
@@ -1646,6 +1769,7 @@ def main():
     SETTINGS.setdefault("playnite", {"export_path": None, "executable_path": None})
 
     start_controller()
+    idle_optimizer.start()
     webview.start(
         _apply_exclusive_fullscreen_at_boot, window,
         debug=False, gui="edgechromium",

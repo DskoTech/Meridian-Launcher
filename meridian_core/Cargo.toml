@@ -1,0 +1,30 @@
+[package]
+name = "meridian_core"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust backend for Meridian Launcher and Meridian Game Library"
+license = "MIT"
+
+[lib]
+# cdylib -> a Python extension module. On Windows the resulting
+# meridian_core.dll is renamed to meridian_core.pyd; on Linux/macOS the
+# .so is used directly. See build batches.
+name = "meridian_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha1 = "0.10"
+walkdir = "2"
+# Pinned for reproducible builds across toolchains (2.14 needs edition2024/Cargo 1.85+).
+indexmap = "=2.2.6"
+tiny_http = "0.12"
+mime_guess = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -341,6 +341,12 @@ body.addon-hide-music-player #now-playing { display: none !important; }
   display: flex; flex-direction: column; gap: 2px;
   border: 1px solid transparent; border-radius: 4px; padding: 6px;
   transition: border-color 150ms ease;
+  /* Content-aware height: shrinks to fit content, never exceeds half the
+     screen height, and scrolls internally if it would. This applies to
+     every theme; per-theme overrides below can tighten the cap further. */
+  max-height: 50vh;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 #subfolder-nav.focused { border-color: var(--active-accent); }
 #subfolder-nav.hidden { display: none; }
@@ -878,14 +884,17 @@ body.layout-cyberradial .category.active .label::after {
    stops short of the reserved control-bar strip. */
 body.layout-cyberradial #content-area {
   display: grid;
-  grid-template-columns: 220px 1fr auto;
+  /* Column order: options (1fr) | thumbnail (auto) | subfolder (220px)
+     Subfolder is rightmost — to the right of both content and thumbnail. */
+  grid-template-columns: 1fr auto 220px;
   grid-template-rows: 1fr;
   column-gap: 20px;
-  padding: 24px 60px 106px 320px;
+  /* Right padding reduced: the 220px subfolder column lives here now. */
+  padding: 24px 20px 106px 320px;
   align-items: start;
 }
 body.layout-cyberradial #item-panel {
-  grid-column: 2; grid-row: 1;
+  grid-column: 1; grid-row: 1;
   max-width: none; width: 100%; margin: 0;
   border-width: 3px;
   /* now-playing lives top-left in this theme (see #now-playing override
@@ -916,20 +925,30 @@ body.layout-cyberradial #item-panel {
    sections, which show neither) - most visible as the boxed Meridian
    FileBrowse/NetBrowse appearing too narrow. Collapse those columns to
    zero in that case so item-panel's column claims the full width. */
+/* Both hidden → item-panel takes the full width */
 body.layout-cyberradial #content-area:has(#subfolder-nav.hidden):has(#preview-pane.hidden) {
   grid-template-columns: 1fr !important;
 }
+/* Only thumbnail hidden → keep subfolder column on the right */
+body.layout-cyberradial #content-area:has(#preview-pane.hidden):not(:has(#subfolder-nav.hidden)) {
+  grid-template-columns: 1fr 0 220px !important;
+}
+/* Only subfolder hidden → keep thumbnail column */
+body.layout-cyberradial #content-area:has(#subfolder-nav.hidden):not(:has(#preview-pane.hidden)) {
+  grid-template-columns: 1fr auto 0 !important;
+}
 
-/* subfolder bar: same row as the options bar, to its LEFT, between the
-   section hub and the options bar, in both Gallery and List style. Its
-   width can be shrunk from JS (syncSubfolderNavWidth in app.js) when the
-   active section's glow would otherwise collide with it — see that
-   function for details; the margin-left/width set there are inline
-   styles that outrank this 100% default. */
+/* subfolder bar: rightmost column, to the RIGHT of both the options bar
+   and the large thumbnail. Width/max-height match the thumbnail (50vh
+   cap, same as #preview-pane) and scroll internally. */
 body.layout-cyberradial #subfolder-nav {
   position: static;
-  grid-column: 1; grid-row: 1;
+  grid-column: 3; grid-row: 1;
   width: 100%;
+  max-height: 50vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-self: start;
 }
 #subfolder-nav.subfolder-filler {
   display: flex; align-items: center; justify-content: center;
@@ -952,7 +971,7 @@ body.layout-cyberradial #subfolder-nav {
    rule now, shared with NightHorizon) */
 body.layout-cyberradial #preview-pane {
   position: relative;
-  grid-column: 3; grid-row: 1;
+  grid-column: 2; grid-row: 1;
   transform: none; width: 260px; max-height: 50vh;
 }
 body.layout-cyberradial #preview-img {
@@ -1097,8 +1116,9 @@ body[data-display-type="gallery"] #preview-pane { display: none !important; }
    completely normal at the same window size. Explicitly scoped to
    CyberRadial now instead of every theme, since this only ever made
    sense for its own column semantics in the first place. */
+/* Gallery hides the thumbnail; subfolder stays rightmost in the remaining two columns. */
 body.layout-cyberradial[data-display-type="gallery"] #content-area {
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 1fr 220px;
 }
 
 /* Night Horizon uses the base (unthemed) #content-area column order -
@@ -1626,4 +1646,73 @@ body.layout-cyberradial #task-bar.taskbar-pos-cyber #task-bar-list {
   background: var(--bg-0); border: 1px solid var(--line); color: var(--text-hi);
   padding: 6px 10px; border-radius: 4px; font-family: var(--font-mono); font-size: 13px;
   flex: 1; min-width: 0;
+}
+
+/* ---------------- idle / background gating ----------------
+   Added with idle_optimizer: while a non-Meridian app (a game, etc.) is in
+   the foreground the launcher is invisible, so freeze all CSS animation and
+   transition work. The heavy canvas loops (blobs/threads) are paused
+   separately in app.js; audio keeps playing. Everything resumes the instant
+   focus returns to the suite. */
+body.app-idle *,
+body.app-idle *::before,
+body.app-idle *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
+
+/* CyberRadial primary hue — controlled by data-cr-hue on <body>.
+   Each hue overrides --cr-primary, which drives the hub glow, section
+   ring, active accent, and orb colours. Default is green (#a6e83f). */
+:root { --cr-primary: #a6e83f; }
+[data-cr-hue="green"]      { --cr-primary: #a6e83f; }
+[data-cr-hue="orange"]     { --cr-primary: #ff8c00; }
+[data-cr-hue="blue"]       { --cr-primary: #00bfff; }
+[data-cr-hue="red"]        { --cr-primary: #ff3040; }
+[data-cr-hue="purple"]     { --cr-primary: #bf5fff; }
+[data-cr-hue="yellow"]     { --cr-primary: #ffe600; }
+[data-cr-hue="pink"]       { --cr-primary: #ff69b4; }
+[data-cr-hue="chartreuse"] { --cr-primary: #7fff00; }
+
+/* Shifting rainbow: --cr-primary cycles through the full hue wheel over
+   time using a CSS animation. The @property registration lets the browser
+   interpolate between colour stops smoothly (without it, CSS can't tween
+   custom properties that hold <color> values). Fallback for browsers that
+   don't support @property: the animation simply has no visible effect and
+   the element stays at the initial-value colour — green — rather than
+   crashing or disappearing. */
+@property --cr-rainbow-color {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #ff0000;
+}
+@keyframes cr-rainbow-shift {
+  0%   { --cr-rainbow-color: #ff0040; }
+  14%  { --cr-rainbow-color: #ff8c00; }
+  28%  { --cr-rainbow-color: #ffe600; }
+  42%  { --cr-rainbow-color: #7fff00; }
+  57%  { --cr-rainbow-color: #00bfff; }
+  71%  { --cr-rainbow-color: #bf5fff; }
+  85%  { --cr-rainbow-color: #ff69b4; }
+  100% { --cr-rainbow-color: #ff0040; }
+}
+[data-cr-hue="rainbow-shift"] {
+  animation: cr-rainbow-shift 8s linear infinite;
+  --cr-primary: var(--cr-rainbow-color);
+}
+
+/* Alternating rainbow: JS writes --cr-alt-color on <body> each time
+   the section changes (see _crAltRainbowColors / onSectionChange in
+   app.js). The CSS just reads it. A smooth cross-fade uses a short
+   transition on --cr-primary via the @property registration above. */
+[data-cr-hue="rainbow-alt"] {
+  --cr-primary: var(--cr-alt-color, #ff0040);
+  transition: --cr-primary 0.6s ease;
+}
+
+/* When CyberRadial is active, --active-accent follows --cr-primary so
+   every accent-reading rule (glow, borders, selected states) picks up
+   the chosen hue automatically, without touching section-specific colours. */
+body.layout-cyberradial {
+  --active-accent: var(--cr-primary);
 }

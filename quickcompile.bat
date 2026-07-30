@@ -57,6 +57,21 @@ REM  1. Compile all six required apps using their own build
 REM     scripts, exactly like InstallMeridianSuite.bat's own
 REM     compile step - just without anything before it.
 REM ---------------------------------------------------------
+REM Build the native Rust backend once, up front. Best-effort: the
+REM per-app build scripts also call this, but doing it here first
+REM means it is built a single time and simply reused. A failure
+REM here is non-fatal - the apps fall back to pure Python.
+echo [0] Building native core (meridian_core)...
+call "%ROOT%BuildMeridianCore.bat"
+echo.
+
+REM Build gameinput_native.pyd (real GameInput SDK - fixes Xbox One
+REM Bluetooth silent-input bug). Best-effort: skipped automatically if
+REM already built or if the MSVC toolchain isn't present.
+echo [0b] Building gameinput_native (real GameInput SDK backend)...
+call "%ROOT%BuildGameInputNative.bat"
+echo.
+
 echo [1/3] Compiling all six required apps...
 set "FAILED="
 
@@ -167,10 +182,14 @@ if exist "%STAGE%" rmdir /s /q "%STAGE%"
 mkdir "%STAGE%"
 
 REM onefile apps - single exes straight in
-copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%dist\MeridianLauncher.exe"                 "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_Explorer\dist\Meridian Explorer.exe" "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%Meridian_FileBrowse\dist\Meridian FileBrowse.exe" "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%onscreenmenu\dist\onscreenmenu.exe"        "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
 
 REM default-shell-browser trampolines - best-effort, not required for the
 REM apps themselves to work, only for the "make default" settings
@@ -199,9 +218,12 @@ robocopy "%ROOT%Meridian Game Library\dist\Meridian Game Library" "%STAGE%" /E /
 if %ERRORLEVEL% GEQ 8 set "FAILED=1"
 
 REM companion scripts, docs, and the Playnite exporter extension
-copy /y "%ROOT%README.md"            "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul || set "FAILED=1"
-copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul || set "FAILED=1"
+copy /y "%ROOT%README.md"            "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%CONTROLS_README.txt"  "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
+copy /y "%ROOT%LICENSE.txt"          "%STAGE%\" >nul
+if errorlevel 1 set "FAILED=1"
 robocopy "%ROOT%Meridian_Exporter" "%STAGE%\Meridian_Exporter" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%themes" "%STAGE%\themes" /E /NFL /NDL /NJH /NJS >nul
 robocopy "%ROOT%Plugins" "%STAGE%\Plugins" /E /NFL /NDL /NJH /NJS >nul

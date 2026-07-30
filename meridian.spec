@@ -22,12 +22,24 @@
 
 block_cipher = None
 
+import os
+
+# Native Rust backend, if BuildMeridianCore.bat has produced it. Bundling is
+# conditional so a plain `pyinstaller meridian.spec` still works on a checkout
+# where the core hasn't been built — the app just falls back to pure Python.
+# See the try/except around `import meridian_core` in main.py / store.py.
+_core_binaries = []
+_core_hidden = []
+if os.path.exists('meridian_core.pyd'):
+    _core_binaries.append(('meridian_core.pyd', '.'))
+    _core_hidden.append('meridian_core')
+
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=_core_binaries,
     datas=[('frontend', 'frontend'), ('VERSION', '.')],
-    hiddenimports=[
+    hiddenimports=_core_hidden + [
         'webview.platforms.winforms',
         'webview.platforms.edgechromium',
         'win32gui', 'win32con', 'win32api',
@@ -45,11 +57,24 @@ a = Analysis(
     ],
     hookspath=[],
     runtime_hooks=[],
-    excludes=['gameinput_native'],  # see gameinput_api.py's sys.path fix - this stops
-    # PyInstaller's build-time analyzer from baking in a hollow reference to the
-    # SOURCE folder (repo root's gameinput_native/, sitting right next to main.py),
-    # which otherwise permanently shadows the real, externally-placed .pyd at
-    # runtime - see gameinput_native/README.md's "Distributing it" section.
+    excludes=[
+        'gameinput_native',  # see gameinput_api.py's sys.path fix - this stops
+        # PyInstaller's build-time analyzer from baking in a hollow reference to the
+        # SOURCE folder (repo root's gameinput_native/, sitting right next to main.py),
+        # which otherwise permanently shadows the real, externally-placed .pyd at
+        # runtime - see gameinput_native/README.md's "Distributing it" section.
+        #
+        # Size trim: the suite installer pip-installs PySide6/pygame/etc. because
+        # OTHER apps (onscreenmenu, Explorer, Game Library) need them - but the
+        # Launcher itself imports none of them (verified). Excluding them keeps
+        # them from being pulled into this exe. Each is safe: nothing in the
+        # Launcher's import graph touches them.
+        'PySide6', 'PyQt5', 'PyQt6', 'shiboken6',
+        'pygame',
+        'numpy', 'matplotlib', 'scipy', 'pandas',
+        'tkinter', '_tkinter',
+        'test',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
