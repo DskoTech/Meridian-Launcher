@@ -1,0 +1,198 @@
+MERIDIAN SUITE — END USER LICENSE AGREEMENT (EULA)
+====================================================
+
+Version 1.0.6  |  Effective date: August 2026
+DskoTech  |  https://github.com/DskoTech
+
+PLEASE READ THIS AGREEMENT CAREFULLY BEFORE INSTALLING OR USING THE
+MERIDIAN SUITE. BY INSTALLING, COPYING, OR OTHERWISE USING THE
+SOFTWARE, YOU AGREE TO BE BOUND BY THE TERMS OF THIS AGREEMENT. IF
+YOU DO NOT AGREE, DO NOT INSTALL OR USE THE SOFTWARE.
+
+────────────────────────────────────────────────────────────────────
+1. DEFINITIONS
+────────────────────────────────────────────────────────────────────
+
+"Software" means the Meridian Suite, including Meridian Launcher,
+Meridian Game Library, CyberDeckBrowser, Meridian Explorer, Meridian
+FileBrowse, onscreenmenu, XInputToKeyboard, and all associated files,
+themes, plugins, scripts, documentation, and update packages.
+
+"Licensor" means DskoTech and its author(s).
+
+"You" means the individual or entity installing or using the Software.
+
+────────────────────────────────────────────────────────────────────
+2. GRANT OF LICENSE
+────────────────────────────────────────────────────────────────────
+
+Subject to the terms of this Agreement, the Licensor grants You a
+personal, non-exclusive, non-transferable, revocable license to:
+
+  a) Install and use the Software on devices You own or control;
+  b) Make a reasonable number of backup copies for personal use.
+
+────────────────────────────────────────────────────────────────────
+3. RESTRICTIONS
+────────────────────────────────────────────────────────────────────
+
+You may NOT:
+
+  a) Sell, sublicense, rent, lease, or distribute the Software or
+     any portion of it for commercial gain without prior written
+     permission from the Licensor;
+  b) Remove or alter any copyright, trademark, or attribution notices
+     contained in the Software;
+  c) Use the Software to develop a competing product;
+  d) Reverse-engineer the compiled binaries for the purpose of
+     circumventing any licensing or security mechanism.
+
+Source code made available in the repository may be used under
+the terms stated in the repository's LICENSE file. If no such file
+is present, this EULA governs.
+
+────────────────────────────────────────────────────────────────────
+4. SYSTEM-MODIFYING FEATURES — IMPORTANT WARNING
+────────────────────────────────────────────────────────────────────
+
+The Macros section of Meridian Launcher includes features that make
+changes to Windows system settings, including but not limited to:
+
+  • Replacing the default Windows shell (explorer.exe)
+  • Modifying file-type handler and context-menu registry keys
+  • Registering Meridian components as default applications
+
+THESE CHANGES ARE REVERSIBLE. The same Macros section that applies
+them provides options to undo them. A PowerShell one-liner can also
+restore any changed setting manually.
+
+HOWEVER: If You uninstall or delete Meridian Launcher WITHOUT first
+reversing these settings, Windows may be left in a state where it
+cannot start the desktop environment normally. This is recoverable
+(via Windows Recovery, Safe Mode, or PowerShell), but may require
+technical knowledge to fix.
+
+BY USING THE MACROS FEATURES YOU ACKNOWLEDGE THAT:
+
+  i)  You have read and understood the above warning;
+  ii) You accept sole responsibility for any configuration changes
+      made through the Macros section and for reversing them before
+      removing the Software;
+  iii) The Licensor is not liable for any resulting system state.
+
+────────────────────────────────────────────────────────────────────
+5. THIRD-PARTY SOFTWARE
+────────────────────────────────────────────────────────────────────
+
+The Software may install, invoke, or bundle the following third-party
+components. Each is subject to its own license:
+
+  • Python (Python Software Foundation License)
+  • WebView2 Runtime (Microsoft Software License Terms)
+  • VLC media player / libvlc (LGPL 2.1)
+  • ffmpeg (LGPL 2.1 / GPL depending on build)
+  • PySide6 / Qt (LGPL 3.0)
+  • Microsoft GameInput SDK (Microsoft GDK License)
+  • SDL3 (zlib License)
+  • Rust standard library / crates (MIT / Apache 2.0)
+  • pybind11 (BSD 3-Clause)
+  • DuckDuckGo (accessed as a web service; DuckDuckGo Privacy Policy
+    applies to searches performed through CyberDeckBrowser)
+
+Licensor makes no warranties regarding third-party components. Their
+licenses are included in the respective vendor/ and Dependencies/
+subdirectories where applicable.
+
+────────────────────────────────────────────────────────────────────
+6. PRIVACY
+────────────────────────────────────────────────────────────────────
+
+The Software itself does not transmit telemetry, usage data, or
+personal information to the Licensor or any third party.
+
+CyberDeckBrowser is a WebView2-based browser. Websites You visit,
+including the default search engine (DuckDuckGo), may collect data
+per their own privacy policies. Browsing data (cookies, cache,
+history) is stored locally in %LOCALAPPDATA%\Meridian Launcher\ and
+is not shared with the Licensor.
+
+────────────────────────────────────────────────────────────────────
+7. UPDATES
+────────────────────────────────────────────────────────────────────
+
+The Licensor may release updates. Updates are subject to this EULA
+unless a newer agreement accompanies them. You are not obligated to
+install updates, but older versions may lack security fixes.
+
+────────────────────────────────────────────────────────────────────
+8. DISCLAIMER OF WARRANTIES
+────────────────────────────────────────────────────────────────────
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NON-INFRINGEMENT. THE LICENSOR DOES NOT WARRANT THAT THE SOFTWARE
+WILL BE ERROR-FREE, UNINTERRUPTED, OR COMPATIBLE WITH YOUR SYSTEM
+CONFIGURATION.
+
+────────────────────────────────────────────────────────────────────
+9. LIMITATION OF LIABILITY
+────────────────────────────────────────────────────────────────────
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR
+SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR DAMAGES FOR LOSS OF DATA,
+SYSTEM DOWNTIME, OR COST OF SUBSTITUTE GOODS, ARISING OUT OF OR
+RELATED TO THE USE OR INABILITY TO USE THE SOFTWARE, EVEN IF THE
+LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+IN NO EVENT SHALL THE LICENSOR'S TOTAL LIABILITY EXCEED THE AMOUNT
+YOU PAID FOR THE SOFTWARE (WHICH, IF THE SOFTWARE WAS OBTAINED FREE
+OF CHARGE, IS ZERO).
+
+────────────────────────────────────────────────────────────────────
+10. INDEMNIFICATION
+────────────────────────────────────────────────────────────────────
+
+You agree to indemnify and hold harmless the Licensor from any
+claims, losses, damages, or expenses (including reasonable legal
+fees) arising from (a) Your use of the Software in violation of this
+Agreement, (b) Your use of the Macros features without reversing
+system changes before uninstalling, or (c) Your violation of any
+applicable law.
+
+────────────────────────────────────────────────────────────────────
+11. TERMINATION
+────────────────────────────────────────────────────────────────────
+
+This license is effective until terminated. It terminates
+automatically if You breach any term. Upon termination You must
+destroy all copies of the Software in Your possession.
+
+────────────────────────────────────────────────────────────────────
+12. GOVERNING LAW
+────────────────────────────────────────────────────────────────────
+
+This Agreement shall be governed by and construed in accordance with
+applicable law. Any dispute arising from this Agreement shall be
+resolved in the jurisdiction where the Licensor is located.
+
+────────────────────────────────────────────────────────────────────
+13. ENTIRE AGREEMENT
+────────────────────────────────────────────────────────────────────
+
+This Agreement constitutes the entire agreement between You and the
+Licensor regarding the Software and supersedes all prior
+representations, agreements, or understandings. If any provision is
+found unenforceable, the remaining provisions continue in full force.
+
+────────────────────────────────────────────────────────────────────
+
+Copyright © 2026 DskoTech. All rights reserved.
+
+By using Meridian Suite you confirm that you have read, understood,
+and agreed to the terms of this End User License Agreement.
+
+====================================================
+END OF EULA — MERIDIAN SUITE v1.0.6
+====================================================

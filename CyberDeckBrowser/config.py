@@ -18,7 +18,7 @@ CONFIG_FILE = os.path.join(
 DEFAULTS = {
 
     "homepage":
-        "https://www.google.com",
+        "https://duckduckgo.com",
 
     "fullscreen":
         True,
@@ -27,7 +27,7 @@ DEFAULTS = {
         1.0,
 
     "search_engine":
-        "https://www.google.com/search?q=",
+        "https://duckduckgo.com/?q=",
 
     "mouse_sensitivity":
         30.0,

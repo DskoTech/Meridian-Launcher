@@ -1165,6 +1165,21 @@ async function refreshItemPanel() {
     } else if (cat.kind === "macro_list") {
       setSubfolderNavHidden(true);
       el("preview-pane").classList.add("hidden");
+      // Show a one-time-per-session warning before the user can run
+      // macros that change Windows system settings.
+      if (!state._macrosWarningAcknowledged) {
+        const proceed = await openConfirmModal(
+          "⚠ Macros — read before continuing",
+          "The options in Macros can change key Windows settings. Do not delete Meridian Launcher until you have undone these settings, or your system can \"break\" (it is easily fixable with PowerShell).\n\nDo you understand and wish to proceed?"
+        );
+        if (!proceed) {
+          // User declined — stay on the previous section.
+          state.catIndex = state.sectionsBrowseIndex = Math.max(0, state.catIndex);
+          renderCategories();
+          return;
+        }
+        state._macrosWarningAcknowledged = true;
+      }
       const items = await api().list_macro_items();
       state.items = items;
       state.selected = Math.min(state.selected, Math.max(items.length - 1, 0));
