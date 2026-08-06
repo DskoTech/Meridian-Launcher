@@ -1,3 +1,6 @@
+Donations keep me able to update:
+https://www.paypal.com/donate/?hosted_button_id=2J66ZUGCW9TDN
+
 # Meridian Launcher
 
 A cross-bar style desktop front-end / app launcher for Windows: one
