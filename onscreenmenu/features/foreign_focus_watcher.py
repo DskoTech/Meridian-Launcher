@@ -294,15 +294,14 @@ class ForeignFocusWatcher:
             return
 
         if is_secure_desktop_active():
-            # Can't reach the Secure Desktop directly - just make sure
-            # osk.exe exists and is running so Windows has the option to
-            # carry it over. Never auto-close here: we have no visibility
-            # into what's happening on that desktop, and closing osk.exe
-            # out from under an active elevation prompt would be actively
-            # unhelpful if it did get carried over.
-            if not is_osk_running():
-                launch_osk()
-                self._auto_opened = True
+            # Secure Desktop (UAC prompt) is active. We used to launch
+            # osk.exe here so Windows could carry it onto the Secure
+            # Desktop automatically — but this causes an unexpected OSK
+            # popup from the user's perspective. The manual X-button
+            # path is the right way to open the keyboard; we don't
+            # launch it automatically even for UAC prompts.
+            # Still track the state so the close path works correctly
+            # when the Secure Desktop is dismissed.
             self._was_secure_desktop = True
             return
 
@@ -321,32 +320,23 @@ class ForeignFocusWatcher:
         is_meridian_or_shell = proc_name in MERIDIAN_PROCESS_NAMES or proc_name == "__shell__"
 
         if not is_meridian_or_shell and proc_name != "osk.exe":
-            # Only ever launches because something TYPEABLE actually has
-            # focus right now - see _focused_text_field_hwnd's docstring
-            # for why a plain "some foreign window is active" check (the
-            # old behavior here) wasn't enough: that opened OSK for
-            # anything at all with focus, installers/video players/
-            # anything with nowhere to type included.
+            # Auto-launch deliberately disabled: onscreenmenu must never
+            # pop the OSK without an explicit user gesture (X button →
+            # Virtual Keyboard in the menu). The field-focus detection
+            # below is preserved so the auto-CLOSE path still works
+            # (closing the OSK when focus returns to Meridian), but
+            # launch_osk() is not called automatically.
             field_hwnd = _focused_text_field_hwnd()
             if field_hwnd:
                 if field_hwnd != self._last_field_hwnd:
-                    # A genuinely new field gained focus (could be a
-                    # different field in the same window, or a whole new
-                    # window) - give auto-invoke its one attempt for
-                    # THIS field. If manually closed again afterward
-                    # while this SAME field stays focused, field_hwnd
-                    # won't change on the next tick, so it won't be
-                    # reopened - same "manual close sticks" guarantee
-                    # the old window-based version had, just scoped to
-                    # the actual field instead of the whole window.
-                    if not is_osk_running():
-                        launch_osk()
-                        self._auto_opened = True
+                    # Track the field so a manual open/close isn't
+                    # re-triggered by the same field staying focused,
+                    # but do NOT call launch_osk() automatically.
                     self._last_field_hwnd = field_hwnd
             else:
-                # No text field focused (anymore, or never was) - close
-                # what auto-invoke opened, even though the window itself
-                # may still be in the foreground.
+                # No text field focused — close what auto-invoke opened
+                # (only relevant if the user manually opened it, since
+                # we no longer open it automatically).
                 if self._auto_opened and is_osk_running():
                     close_osk()
                 self._auto_opened = False
